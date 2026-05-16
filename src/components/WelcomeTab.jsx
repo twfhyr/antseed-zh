@@ -1,22 +1,29 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { ExternalLink, Zap, Users } from 'lucide-react';
+import { fetchServices } from '../api';
 
-const SELLER_INFO = {
-  peerId: '412282c48584073c5aee6a79945f105a7777e194',
-  displayName: 'antseed-zh',
-  wallet: '0x412282C48584073c5aEE6A79945f105a7777E194',
-  models: [
-    { name: 'minimax-m2.7', input: 0.20, output: 0.80, bestFor: 'chat, coding (cheapest)' },
-    { name: 'minimax-m2.7-fast', input: 0.25, output: 0.70, bestFor: 'chat, fast responses' },
-    { name: 'mimo-v2.5', input: 0.50, output: 2.50, bestFor: 'chat, coding' },
-    { name: 'glm-5.1', input: 0.55, output: 0.55, bestFor: 'chat, coding (symmetric)' },
-    { name: 'kimi-k2.5', input: 0.72, output: 3.75, bestFor: 'chat, math, coding' },
-    { name: 'mimo-v2.5-pro', input: 1.25, output: 3.75, bestFor: 'chat, coding (pro)' },
-    { name: 'kimi-k2.6', input: 1.15, output: 4.80, bestFor: 'chat, math, coding (latest)' },
-  ],
-};
+const MY_PEER_ID = '412282c48584073c5aee6a79945f105a7777e194';
+const MY_SELLER_ID = `seller_${MY_PEER_ID}`;
 
 function WelcomeTab() {
+  const [models, setModels] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    async function loadModels() {
+      try {
+        const allServices = await fetchServices();
+        const mine = allServices.filter(s => s.sellerId === MY_SELLER_ID);
+        setModels(mine);
+      } catch {
+        setModels([]);
+      } finally {
+        setLoading(false);
+      }
+    }
+    loadModels();
+  }, []);
+
   const copyToClipboard = (text) => {
     navigator.clipboard.writeText(text);
   };
@@ -43,10 +50,10 @@ function WelcomeTab() {
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
               <span style={{ color: 'var(--text-secondary)', width: '80px' }}>Peer ID:</span>
               <code style={{ flex: 1, background: 'var(--bg-primary)', padding: '0.5rem', borderRadius: '6px', fontSize: '0.875rem' }}>
-                {SELLER_INFO.peerId}
+                {MY_PEER_ID}
               </code>
               <button
-                onClick={() => copyToClipboard(SELLER_INFO.peerId)}
+                onClick={() => copyToClipboard(MY_PEER_ID)}
                 style={{ background: 'var(--accent)', border: 'none', color: 'white', padding: '0.5rem', borderRadius: '6px', cursor: 'pointer', fontSize: '0.75rem' }}
               >
                 Copy
@@ -55,10 +62,10 @@ function WelcomeTab() {
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
               <span style={{ color: 'var(--text-secondary)', width: '80px' }}>Command:</span>
               <code style={{ flex: 1, background: 'var(--bg-primary)', padding: '0.5rem', borderRadius: '6px', fontSize: '0.875rem', fontFamily: 'monospace' }}>
-                antseed buyer connection set --peer {SELLER_INFO.peerId}
+                antseed buyer connection set --peer {MY_PEER_ID}
               </code>
               <button
-                onClick={() => copyToClipboard(`antseed buyer connection set --peer ${SELLER_INFO.peerId}`)}
+                onClick={() => copyToClipboard(`antseed buyer connection set --peer ${MY_PEER_ID}`)}
                 style={{ background: 'var(--accent)', border: 'none', color: 'white', padding: '0.5rem', borderRadius: '6px', cursor: 'pointer', fontSize: '0.75rem' }}
               >
                 Copy
@@ -81,16 +88,22 @@ function WelcomeTab() {
                 <th>Model</th>
                 <th>Input ($/1M)</th>
                 <th>Output ($/1M)</th>
-                <th>Best for</th>
+                <th>Status</th>
+                <th>Load</th>
               </tr>
             </thead>
             <tbody>
-              {SELLER_INFO.models.map(m => (
-                <tr key={m.name}>
-                  <td><code style={{ fontSize: '0.875rem' }}>{m.name}</code></td>
-                  <td className="price">${m.input}</td>
-                  <td className="price">${m.output}</td>
-                  <td style={{ color: 'var(--text-secondary)', fontSize: '0.875rem' }}>{m.bestFor}</td>
+              {loading ? (
+                <tr><td colSpan={5} style={{ textAlign: 'center', color: 'var(--text-secondary)' }}>Loading...</td></tr>
+              ) : models.length === 0 ? (
+                <tr><td colSpan={5} style={{ textAlign: 'center', color: 'var(--text-secondary)' }}>No services found</td></tr>
+              ) : models.map(svc => (
+                <tr key={svc.id}>
+                  <td><code style={{ fontSize: '0.875rem' }}>{svc.name}</code></td>
+                  <td className="price">${svc.pricing?.inputUsdPerMillion ?? 0}</td>
+                  <td className="price">${svc.pricing?.outputUsdPerMillion ?? 0}</td>
+                  <td style={{ color: svc.status === 'online' ? 'var(--success)' : 'var(--text-secondary)', fontSize: '0.875rem' }}>{svc.status}</td>
+                  <td style={{ fontSize: '0.875rem' }}>{svc.currentLoad}/{svc.maxConcurrency}</td>
                 </tr>
               ))}
             </tbody>
@@ -102,7 +115,7 @@ function WelcomeTab() {
           <ol style={{ paddingLeft: '1.25rem', color: 'var(--text-secondary)', fontSize: '0.875rem', display: 'grid', gap: '0.5rem' }}>
             <li>Install antseed buyer CLI: <code style={{ background: 'var(--bg-primary)', padding: '0.125rem 0.375rem', borderRadius: '4px' }}>npm install -g @antseed/buyer</code></li>
             <li>Configure your wallet with USDC on Base</li>
-            <li>Connect to antseed-zh: <code style={{ background: 'var(--bg-primary)', padding: '0.125rem 0.375rem', borderRadius: '4px' }}>antseed buyer connection set --peer {SELLER_INFO.peerId}</code></li>
+            <li>Connect to antseed-zh: <code style={{ background: 'var(--bg-primary)', padding: '0.125rem 0.375rem', borderRadius: '4px' }}>antseed buyer connection set --peer {MY_PEER_ID}</code></li>
             <li>Start making inference requests!</li>
           </ol>
           <div style={{ marginTop: '1rem', fontSize: '0.875rem', color: 'var(--text-secondary)' }}>

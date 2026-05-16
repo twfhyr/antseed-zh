@@ -90,41 +90,48 @@ function ClaimANTS() {
   const isValidAddress = (addr) => /^0x[a-fA-F0-9]{40}$/.test(addr);
 
   // ── Load data for connected wallet ──
+  const loadData = async (addr, bustCache = false) => {
+    setLoading(true);
+    try {
+      const info = await fetchEmissionsEpochInfo();
+      setEpochInfo(info);
+
+      if (info.currentEpoch > 0) {
+        const epochs = Array.from({ length: Math.min(info.currentEpoch + 1, 52) }, (_, i) => i);
+        const pending = await fetchEmissionsPending(addr, epochs, bustCache);
+        setPendingData(pending);
+      }
+
+      const bal = await fetchEmissionsBalance(addr);
+      setBalance(bal);
+    } catch (e) {
+      console.error('Failed to load emissions data:', e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
     if (!isConnected || !address) {
       setPendingData(null);
       setBalance(null);
       return;
     }
-    
-    async function load() {
-      setLoading(true);
-      try {
-        const info = await fetchEmissionsEpochInfo();
-        setEpochInfo(info);
-        
-        if (info.currentEpoch > 0) {
-const epochs = Array.from({ length: Math.min(info.currentEpoch + 1, 52) }, (_, i) => i);
-          const pending = await fetchEmissionsPending(address, epochs);
-          setPendingData(pending);
-        }
-        
-        const bal = await fetchEmissionsBalance(address);
-        setBalance(bal);
-      } catch (e) {
-        console.error('Failed to load emissions data:', e);
-      } finally {
-        setLoading(false);
-      }
-    }
-    
-    load();
+    loadData(address);
   }, [isConnected, address]);
 
   // ── Reset write state when claim type changes ──
   useEffect(() => {
     resetWrite();
   }, [claimType, resetWrite]);
+
+  // ── Reload data after successful claim ──
+  useEffect(() => {
+    if (isConfirmed) {
+      const addr = isConnected ? address : searchAddress;
+      if (addr) loadData(addr, true);
+    }
+  }, [isConfirmed]);
 
   // ── Search function ──
   const handleSearch = async (e) => {
@@ -146,7 +153,7 @@ const epochs = Array.from({ length: Math.min(info.currentEpoch + 1, 52) }, (_, i
       
       if (info.currentEpoch > 0) {
         const epochs = Array.from({ length: Math.min(info.currentEpoch + 1, 52) }, (_, i) => i);
-        const pending = await fetchEmissionsPending(addr, epochs);
+        const pending = await fetchEmissionsPending(addr, epochs, true);
         setSearchData(pending);
       }
       
@@ -176,6 +183,27 @@ const epochs = Array.from({ length: Math.min(info.currentEpoch + 1, 52) }, (_, i
         abi: EMISSIONS_ABI,
         functionName: 'claimSellerEmissions',
         args: [claimEpochs],
+      });
+    }
+  };
+
+  // ── Per-epoch claim handler ──
+  const handleClaimEpoch = (epochData, type) => {
+    if (!isConnected || !address) return;
+
+    if (type === 'seller') {
+      writeContract({
+        address: EMISSIONS_CONTRACT,
+        abi: EMISSIONS_ABI,
+        functionName: 'claimSellerEmissions',
+        args: [[epochData.epoch]],
+      });
+    } else {
+      writeContract({
+        address: EMISSIONS_CONTRACT,
+        abi: EMISSIONS_ABI,
+        functionName: 'claimBuyerEmissions',
+        args: [address, [epochData.epoch]],
       });
     }
   };
@@ -482,36 +510,104 @@ const epochs = Array.from({ length: Math.min(info.currentEpoch + 1, 52) }, (_, i
             <h3 style={{ fontSize: '1.125rem', fontWeight: 600, marginBottom: '1rem' }}>Epoch Breakdown</h3>
             {displayData?.epochs?.length > 0 ? (
               <div style={{ overflowX: 'auto' }}>
-                <table className="table" style={{ minWidth: '600px' }}>
+                <table className="table" style={{ minWidth: '700px' }}>
                   <thead>
                     <tr>
                       <th>Epoch</th>
                       <th>Buyer Points</th>
                       <th>Seller Points</th>
-                      <th>Buyer Status</th>
-                      <th>Seller Status</th>
+                      <th>ANTS</th>
+                      <th>Buyer Claim</th>
+                      <th>Seller Claim</th>
                     </tr>
                   </thead>
                   <tbody>
                     {[...displayData.epochs]
                       .reverse()
-                      .map((e) => (
-                        <tr key={e.epoch}>
-                          <td>Epoch {e.epoch}</td>
-                          <td>{e.buyerPoints.toLocaleString()}{e.buyerReward > 0 ? <span style={{ color: 'var(--text-secondary)', fontSize: '0.75rem' }}> ({e.buyerReward.toFixed(4)} ANTS)</span> : ''}</td>
-                          <td>{e.sellerPoints.toLocaleString()}{e.sellerReward > 0 ? <span style={{ color: 'var(--text-secondary)', fontSize: '0.75rem' }}> ({e.sellerReward.toFixed(4)} ANTS)</span> : ''}</td>
-                          <td>
-                            <span className={`status-badge ${e.buyerClaimed ? 'offline' : 'online'}`} style={{ fontSize: '0.75rem' }}>
-                              {e.buyerClaimed ? 'Claimed' : e.buyerPoints > 0 ? 'Unclaimed' : '—'}
-                            </span>
-                          </td>
-                          <td>
-                            <span className={`status-badge ${e.sellerClaimed ? 'offline' : 'online'}`} style={{ fontSize: '0.75rem' }}>
-                              {e.sellerClaimed ? 'Claimed' : e.sellerPoints > 0 ? 'Unclaimed' : '—'}
-                            </span>
-                          </td>
-                        </tr>
-                      ))}
+                      .map((e) => {
+                        const totalAnts = (e.sellerReward || 0) + (e.buyerReward || 0);
+                        const isCurrentEpoch = e.isCurrentEpoch;
+                        const sellerClaimable = !isCurrentEpoch && e.sellerReward > 0 && !e.sellerClaimed;
+                        const buyerClaimable = !isCurrentEpoch && e.buyerReward > 0 && !e.buyerClaimed;
+
+                        return (
+                          <tr key={e.epoch}>
+                            <td>
+                              Epoch {e.epoch}
+                              {isCurrentEpoch && <span style={{ color: 'var(--accent)', fontSize: '0.7rem', marginLeft: '0.375rem' }}>current</span>}
+                            </td>
+                            <td>{e.buyerPoints.toLocaleString()}</td>
+                            <td>{e.sellerPoints.toLocaleString()}</td>
+                            <td style={{ fontWeight: 600 }}>{totalAnts > 0 ? totalAnts.toFixed(4) : '—'}</td>
+                            <td>
+                              {isCurrentEpoch ? (
+                                <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', fontStyle: 'italic' }}>Ongoing</span>
+                              ) : e.buyerClaimed ? (
+                                <span className="status-badge offline" style={{ fontSize: '0.75rem' }}>Claimed</span>
+                              ) : buyerClaimable && isConnected ? (
+                                <button
+                                  onClick={() => handleClaimEpoch(e, 'buyer')}
+                                  disabled={isClaiming || isConfirming}
+                                  style={{
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '0.25rem',
+                                    padding: '0.25rem 0.625rem',
+                                    borderRadius: '6px',
+                                    border: 'none',
+                                    background: 'var(--accent)',
+                                    color: 'white',
+                                    fontWeight: 600,
+                                    cursor: isClaiming || isConfirming ? 'wait' : 'pointer',
+                                    fontSize: '0.75rem',
+                                    opacity: isClaiming || isConfirming ? 0.5 : 1,
+                                  }}
+                                >
+                                  <Zap size={12} />
+                                  Claim
+                                </button>
+                              ) : buyerClaimable && !isConnected ? (
+                                <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Connect wallet</span>
+                              ) : (
+                                <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>—</span>
+                              )}
+                            </td>
+                            <td>
+                              {isCurrentEpoch ? (
+                                <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', fontStyle: 'italic' }}>Ongoing</span>
+                              ) : e.sellerClaimed ? (
+                                <span className="status-badge offline" style={{ fontSize: '0.75rem' }}>Claimed</span>
+                              ) : sellerClaimable && isConnected ? (
+                                <button
+                                  onClick={() => handleClaimEpoch(e, 'seller')}
+                                  disabled={isClaiming || isConfirming}
+                                  style={{
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '0.25rem',
+                                    padding: '0.25rem 0.625rem',
+                                    borderRadius: '6px',
+                                    border: 'none',
+                                    background: 'var(--accent)',
+                                    color: 'white',
+                                    fontWeight: 600,
+                                    cursor: isClaiming || isConfirming ? 'wait' : 'pointer',
+                                    fontSize: '0.75rem',
+                                    opacity: isClaiming || isConfirming ? 0.5 : 1,
+                                  }}
+                                >
+                                  <Zap size={12} />
+                                  Claim
+                                </button>
+                              ) : sellerClaimable && !isConnected ? (
+                                <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Connect wallet</span>
+                              ) : (
+                                <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>—</span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
                   </tbody>
                 </table>
               </div>

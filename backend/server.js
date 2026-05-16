@@ -323,7 +323,8 @@ app.get('/api/emissions/pending', async (req, res) => {
     if (!address) return res.status(400).json({ error: 'address query param required' });
     if (epochs.length === 0) return res.json({ seller: '0', buyer: '0', epochs: [] });
 
-    const cached = db.prepare('SELECT data FROM address_emissions WHERE address = ?').get(address.toLowerCase());
+    const bustCache = req.query.bust === '1';
+    const cached = bustCache ? null : db.prepare('SELECT data FROM address_emissions WHERE address = ?').get(address.toLowerCase());
     if (cached) {
       return res.json(JSON.parse(cached.data));
     }
@@ -332,8 +333,13 @@ app.get('/api/emissions/pending', async (req, res) => {
     const sellerTotal = Number(result.seller) / 1e18;
     const buyerTotal = Number(result.buyer) / 1e18;
 
+    const epochInfo = await emissionsClient.getEpochInfo();
+    const currentEpoch = Number(epochInfo.epoch);
+
     const epochDetails = [];
     for (const epoch of epochs) {
+      const isCurrent = epoch >= currentEpoch;
+
       const [sp, bp, esp, ebp, sellerClaimed, buyerClaimed, epochEmission] = await Promise.all([
         emissionsClient.userSellerPoints(address, epoch),
         emissionsClient.userBuyerPoints(address, epoch),
@@ -349,8 +355,18 @@ app.get('/api/emissions/pending', async (req, res) => {
       const totalSellerPts = Number(esp);
       const totalBuyerPts = Number(ebp);
       const emission = Number(epochEmission) / 1e18;
-      const sellerReward = totalSellerPts > 0 ? (userSellerPts / totalSellerPts) * emission * 0.5 : 0;
-      const buyerReward = totalBuyerPts > 0 ? (userBuyerPts / totalBuyerPts) * emission * 0.2 : 0;
+
+      let sellerReward = 0;
+      let buyerReward = 0;
+
+      if (isCurrent) {
+        sellerReward = totalSellerPts > 0 ? (userSellerPts / totalSellerPts) * emission * 0.5 : 0;
+        buyerReward = totalBuyerPts > 0 ? (userBuyerPts / totalBuyerPts) * emission * 0.2 : 0;
+      } else {
+        const pending = await emissionsClient.pendingEmissions(address, [epoch]);
+        sellerReward = Number(pending.seller) / 1e18;
+        buyerReward = Number(pending.buyer) / 1e18;
+      }
 
       epochDetails.push({
         epoch,
@@ -360,6 +376,7 @@ app.get('/api/emissions/pending', async (req, res) => {
         buyerReward,
         sellerClaimed,
         buyerClaimed,
+        isCurrentEpoch: isCurrent,
       });
     }
 

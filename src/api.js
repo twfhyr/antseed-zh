@@ -34,8 +34,9 @@ export async function fetchEmissionsEpochInfo() {
   return get('/emissions/epoch-info');
 }
 
-export async function fetchEmissionsPending(address, epochs) {
-  return get(`/emissions/pending?address=${address}&epochs=${epochs.join(',')}`);
+export async function fetchEmissionsPending(address, epochs, bustCache = false) {
+  const bust = bustCache ? '&bust=1' : '';
+  return get(`/emissions/pending?address=${address}&epochs=${epochs.join(',')}${bust}`);
 }
 
 export async function fetchEmissionsBalance(address) {
