@@ -6,9 +6,25 @@ A peer-to-peer AI inference marketplace dashboard that displays real live networ
 
 ```bash
 npm install
-npm run dev        # starts backend + frontend concurrently
-npm run server     # backend only
-npm run build      # production build
+npm run dev # starts backend + frontend concurrently (interactive, for local dev)
+npm run server # backend only
+npm run build # production build
+```
+
+### Running in Background / Production
+
+`npm run dev` is for interactive local development (it runs Vite + Express via `concurrently`). For persistent or headless environments, run the backend directly — it serves the built frontend from `dist/` on a single port:
+
+```bash
+npm run build                # ensure dist/ is up to date
+nohup node backend/server.js > /tmp/server.log 2>&1 &
+```
+
+This keeps the process alive after the terminal exits. Verify with:
+
+```bash
+curl -s http://localhost:3001/api/stats   # should return JSON
+curl -s http://localhost:3001/             # should return HTML
 ```
 
 ## What's In This Repo
@@ -76,6 +92,23 @@ Express Server (PORT 3001)
 | PORT | 3001 | Express server port |
 
 No .env file is required out of the box.
+
+---
+
+## Emissions Contract Migration
+
+The emissions contract was migrated during epoch 4. Points must be read from **both** contracts:
+
+| Contract | Address | Epochs |
+|---|---|---|
+| V1 (legacy) | `0x36877fBa8Fa333aa46a1c57b66D132E4995C86b5` | Epochs 0–3 (all points), Epoch 4 (partial) |
+| V2 (current) | `0xF13bE52c4A3afC6AE29536f073588d01A0564088` | Epoch 4 (partial), Epoch 5+ (all points) |
+
+- For epochs 0–3: only the V1 contract has points. Claim from V1.
+- For epoch 4: both contracts have partial points. Add them together for totals. Claim from both contracts.
+- For epoch 5+: only the V2 contract has points. Claim from V2.
+
+The backend (`/api/emissions/pending`) merges both contracts automatically. The frontend (`ClaimANTS.jsx`) routes claim transactions to the correct contract based on epoch.
 
 ---
 

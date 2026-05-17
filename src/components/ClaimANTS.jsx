@@ -1,8 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import {
-  ConnectButton,
-} from '@rainbow-me/rainbowkit';
-import {
   useAccount,
   useWriteContract,
   useWaitForTransactionReceipt,
@@ -22,6 +19,7 @@ import {
 import { fetchEmissionsEpochInfo, fetchEmissionsPending, fetchEmissionsBalance } from '../api';
 
 const EMISSIONS_CONTRACT = '0xF13bE52c4A3afC6AE29536f073588d01A0564088';
+const EMISSIONS_V1_CONTRACT = '0x36877fBa8Fa333aa46a1c57b66D132E4995C86b5';
 
 // Emissions ABI for claim functions
 const EMISSIONS_ABI = [
@@ -57,13 +55,17 @@ function ClaimANTS() {
   const [claimType, setClaimType] = useState('buyer');
   const [claimEpochs, setClaimEpochs] = useState([]);
   
-  // Search states (for non-connected users)
-  const [searchInput, setSearchInput] = useState('');
-  const [searchAddress, setSearchAddress] = useState(null);
-  const [searchData, setSearchData] = useState(null);
-  const [searchBalance, setSearchBalance] = useState(null);
-  const [searchLoading, setSearchLoading] = useState(false);
-  const [searchError, setSearchError] = useState(null);
+ // Search states (for non-connected users)
+ const [searchInput, setSearchInput] = useState('');
+ const [searchAddress, setSearchAddress] = useState(null);
+ const [searchData, setSearchData] = useState(null);
+ const [searchBalance, setSearchBalance] = useState(null);
+ const [searchLoading, setSearchLoading] = useState(false);
+ const [searchError, setSearchError] = useState(null);
+
+ // Buyer channel address (for buyer emissions tracked under a different address)
+ const [buyerAddresses, setBuyerAddresses] = useState([]);
+ const [buyerAddressInput, setBuyerAddressInput] = useState('');
 
   // Wagmi write hook
   const { 
@@ -90,35 +92,44 @@ function ClaimANTS() {
   const isValidAddress = (addr) => /^0x[a-fA-F0-9]{40}$/.test(addr);
 
   // ── Load data for connected wallet ──
-  const loadData = async (addr, bustCache = false) => {
-    setLoading(true);
-    try {
-      const info = await fetchEmissionsEpochInfo();
-      setEpochInfo(info);
+ const loadData = async (addr, bustCache = false) => {
+ setLoading(true);
+ try {
+ const info = await fetchEmissionsEpochInfo();
+ setEpochInfo(info);
 
-      if (info.currentEpoch > 0) {
-        const epochs = Array.from({ length: Math.min(info.currentEpoch + 1, 52) }, (_, i) => i);
-        const pending = await fetchEmissionsPending(addr, epochs, bustCache);
-        setPendingData(pending);
-      }
+ if (info.currentEpoch > 0) {
+ const epochs = Array.from({ length: Math.min(info.currentEpoch + 1, 52) }, (_, i) => i);
+ const pending = await fetchEmissionsPending(addr, epochs, bustCache, buyerAddresses);
+ setPendingData(pending);
+ }
 
-      const bal = await fetchEmissionsBalance(addr);
-      setBalance(bal);
-    } catch (e) {
-      console.error('Failed to load emissions data:', e);
-    } finally {
-      setLoading(false);
-    }
-  };
+ const bal = await fetchEmissionsBalance(addr);
+ setBalance(bal);
+ } catch (e) {
+ console.error('Failed to load emissions data:', e);
+ } finally {
+ setLoading(false);
+ }
+ };
 
-  useEffect(() => {
-    if (!isConnected || !address) {
-      setPendingData(null);
-      setBalance(null);
-      return;
-    }
-    loadData(address);
-  }, [isConnected, address]);
+ useEffect(() => {
+ if (!isConnected || !address) {
+ setPendingData(null);
+ setBalance(null);
+ return;
+ }
+ (async () => {
+ try {
+ const resp = await fetch(`/api/operator-buyers?operator=${address.toLowerCase()}`);
+ const rows = await resp.json();
+ if (rows.length > 0) {
+ setBuyerAddresses(rows.map(r => r.buyer));
+ }
+ } catch {}
+ })();
+ loadData(address);
+ }, [isConnected, address]);
 
   // ── Reset write state when claim type changes ──
   useEffect(() => {
@@ -134,26 +145,34 @@ function ClaimANTS() {
   }, [isConfirmed]);
 
   // ── Search function ──
-  const handleSearch = async (e) => {
-    e?.preventDefault();
-    const addr = searchInput.trim();
-    if (!isValidAddress(addr)) {
-      setSearchError('Invalid address format. Must be 0x followed by 40 hex characters.');
-      return;
-    }
-    setSearchAddress(addr);
-    setSearchLoading(true);
-    setSearchError(null);
-    setSearchData(null);
-    setSearchBalance(null);
-    
-    try {
-      const info = await fetchEmissionsEpochInfo();
-      setEpochInfo(info);
-      
-      if (info.currentEpoch > 0) {
-        const epochs = Array.from({ length: Math.min(info.currentEpoch + 1, 52) }, (_, i) => i);
-        const pending = await fetchEmissionsPending(addr, epochs, true);
+ const handleSearch = async (e) => {
+ e?.preventDefault();
+ const addr = searchInput.trim();
+ if (!isValidAddress(addr)) {
+ setSearchError('Invalid address format. Must be 0x followed by 40 hex characters.');
+ return;
+ }
+ setSearchAddress(addr);
+ setSearchLoading(true);
+ setSearchError(null);
+ setSearchData(null);
+ setSearchBalance(null);
+
+ try {
+ const resp = await fetch(`/api/operator-buyers?operator=${addr.toLowerCase()}`);
+ const rows = await resp.json();
+ if (rows.length > 0) {
+ setBuyerAddresses(rows.map(r => r.buyer));
+ }
+ } catch {}
+
+ try {
+ const info = await fetchEmissionsEpochInfo();
+ setEpochInfo(info);
+
+ if (info.currentEpoch > 0) {
+ const epochs = Array.from({ length: Math.min(info.currentEpoch + 1, 52) }, (_, i) => i);
+        const pending = await fetchEmissionsPending(addr, epochs, true, buyerAddresses);
         setSearchData(pending);
       }
       
@@ -167,46 +186,41 @@ function ClaimANTS() {
   };
 
   // ── Claim handler ──
-  const handleClaim = () => {
-    if (!isConnected || !address || claimEpochs.length === 0) return;
-    
-    if (claimType === 'buyer') {
-      writeContract({
-        address: EMISSIONS_CONTRACT,
-        abi: EMISSIONS_ABI,
-        functionName: 'claimBuyerEmissions',
-        args: [address, claimEpochs],
-      });
+const handleClaim = () => {
+  if (!isConnected || !address || claimEpochs.length === 0) return;
+
+  const v2Epochs = claimEpochs.filter(e => e >= 4);
+  const v1Epochs = claimEpochs.filter(e => e < 4);
+
+  const doClaim = (contract, epochs, type) => {
+    if (epochs.length === 0) return;
+    if (type === 'buyer') {
+      writeContract({ address: contract, abi: EMISSIONS_ABI, functionName: 'claimBuyerEmissions', args: [address, epochs] });
     } else {
-      writeContract({
-        address: EMISSIONS_CONTRACT,
-        abi: EMISSIONS_ABI,
-        functionName: 'claimSellerEmissions',
-        args: [claimEpochs],
-      });
+      writeContract({ address: contract, abi: EMISSIONS_ABI, functionName: 'claimSellerEmissions', args: [epochs] });
     }
   };
 
-  // ── Per-epoch claim handler ──
-  const handleClaimEpoch = (epochData, type) => {
-    if (!isConnected || !address) return;
+  if (v1Epochs.length > 0) {
+    doClaim(EMISSIONS_V1_CONTRACT, v1Epochs, claimType);
+  }
+  if (v2Epochs.length > 0) {
+    doClaim(EMISSIONS_CONTRACT, v2Epochs, claimType);
+  }
+};
 
-    if (type === 'seller') {
-      writeContract({
-        address: EMISSIONS_CONTRACT,
-        abi: EMISSIONS_ABI,
-        functionName: 'claimSellerEmissions',
-        args: [[epochData.epoch]],
-      });
-    } else {
-      writeContract({
-        address: EMISSIONS_CONTRACT,
-        abi: EMISSIONS_ABI,
-        functionName: 'claimBuyerEmissions',
-        args: [address, [epochData.epoch]],
-      });
-    }
-  };
+// ── Per-epoch claim handler ──
+const handleClaimEpoch = (epochData, type) => {
+  if (!isConnected || !address) return;
+
+  const contract = epochData.epoch < 4 ? EMISSIONS_V1_CONTRACT : EMISSIONS_CONTRACT;
+
+  if (type === 'seller') {
+    writeContract({ address: contract, abi: EMISSIONS_ABI, functionName: 'claimSellerEmissions', args: [[epochData.epoch]] });
+  } else {
+    writeContract({ address: contract, abi: EMISSIONS_ABI, functionName: 'claimBuyerEmissions', args: [address, [epochData.epoch]] });
+  }
+};
 
   // ── Derived state ──
   const displayAddress = isConnected ? address : searchAddress;
@@ -238,24 +252,18 @@ function ClaimANTS() {
   return (
     <div className="table-container" style={{ padding: '2rem' }}>
       <div style={{ maxWidth: '900px' }}>
-        {/* Header */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '1rem' }}>
-          <div>
-            <h2 style={{ fontSize: '1.5rem', fontWeight: 700, marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <Award size={24} style={{ color: 'var(--accent)' }} />
-              Claim ANTS
-            </h2>
-            <p style={{ color: 'var(--text-secondary)', fontSize: '0.875rem' }}>
-              Check and claim your ANTS emissions on Base mainnet
-            </p>
-          </div>
-
-          <ConnectButton 
-            showBalance={false}
-            accountStatus="address"
-            chainStatus="icon"
-          />
-        </div>
+ {/* Header */}
+ <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '1rem' }}>
+ <div>
+ <h2 style={{ fontSize: '1.5rem', fontWeight: 700, marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+ <Award size={24} style={{ color: 'var(--accent)' }} />
+ Claim ANTS
+ </h2>
+ <p style={{ color: 'var(--text-secondary)', fontSize: '0.875rem' }}>
+ Check and claim your ANTS emissions on Base mainnet
+ </p>
+ </div>
+ </div>
 
         {/* Search section for non-connected users */}
         {!isConnected && (
@@ -316,16 +324,105 @@ function ClaimANTS() {
           </div>
         )}
 
-        {/* Not connected and no search yet */}
-        {!isConnected && !searchAddress && !searchLoading && (
-          <div style={{ textAlign: 'center', padding: '3rem 2rem', color: 'var(--text-secondary)' }}>
-            <Wallet size={48} style={{ marginBottom: '1rem', opacity: 0.5 }} />
-            <p>Connect your wallet or search an address to view ANTS emissions.</p>
-            <p style={{ fontSize: '0.8rem', marginTop: '0.5rem', opacity: 0.7 }}>
-              Supports MetaMask, Coinbase Wallet, Rainbow, and other wallets on Base.
-            </p>
-          </div>
-        )}
+ {/* Not connected and no search yet */}
+ {!isConnected && !searchAddress && !searchLoading && (
+ <div style={{ textAlign: 'center', padding: '3rem 2rem', color: 'var(--text-secondary)' }}>
+ <Wallet size={48} style={{ marginBottom: '1rem', opacity: 0.5 }} />
+ <p>Connect your wallet or search an address to view ANTS emissions.</p>
+ <p style={{ fontSize: '0.8rem', marginTop: '0.5rem', opacity: 0.7 }}>
+ Supports MetaMask, Coinbase Wallet, Rainbow, and other wallets on Base.
+ </p>
+ </div>
+ )}
+
+ {/* Buyer channel address input */}
+ {(isConnected || searchAddress) && (
+ <div style={{ marginBottom: '1rem' }}>
+ <div style={{ background: 'var(--bg-secondary)', padding: '1rem', borderRadius: '12px' }}>
+ <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: buyerAddresses.length > 0 ? '0.5rem' : 0 }}>
+ <Wallet size={14} style={{ color: 'var(--accent)' }} />
+ <span style={{ fontSize: '0.8rem', fontWeight: 600 }}>Buyer Addresses</span>
+ <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>- signer wallet for buyer points (Deposits operator mapping)</span>
+ </div>
+ {buyerAddresses.length > 0 && (
+ <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.375rem', marginBottom: '0.5rem' }}>
+ {buyerAddresses.map((ba) => (
+ <span key={ba} style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem', background: 'var(--bg-primary)', padding: '0.25rem 0.5rem', borderRadius: '6px', fontSize: '0.75rem', fontFamily: 'monospace' }}>
+ {truncateAddress(ba)}
+ <button onClick={async () => {
+ setBuyerAddresses(prev => prev.filter(a => a !== ba));
+ const op = displayAddress.toLowerCase();
+ if (op) {
+ try { await fetch('/api/operator-buyers', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ operator: op, buyer: ba.toLowerCase() }) }); } catch {}
+ }
+ }} style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '0.75rem', padding: 0, lineHeight: 1 }}>&times;</button>
+ </span>
+ ))}
+ </div>
+ )}
+ <div style={{ display: 'flex', gap: '0.375rem' }}>
+ <input
+ type="text"
+ value={buyerAddressInput}
+ onChange={(e) => setBuyerAddressInput(e.target.value)}
+ placeholder="0x... add a buyer address"
+ style={{
+ flex: 1,
+ background: 'var(--bg-primary)',
+ border: '1px solid var(--border)',
+ borderRadius: '6px',
+ padding: '0.375rem 0.625rem',
+ color: 'var(--text-primary)',
+ fontFamily: 'monospace',
+ fontSize: '0.75rem',
+ outline: 'none',
+ }}
+ onKeyDown={async (e) => {
+ if (e.key === 'Enter') {
+ e.preventDefault();
+ const addr = buyerAddressInput.trim();
+ if (isValidAddress(addr) && !buyerAddresses.includes(addr)) {
+ setBuyerAddresses(prev => [...prev, addr]);
+ setBuyerAddressInput('');
+ const op = displayAddress.toLowerCase();
+ if (op) {
+ try { await fetch('/api/operator-buyers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ operator: op, buyer: addr.toLowerCase() }) }); } catch {}
+ }
+ }
+ }
+ }}
+ />
+ <button
+ onClick={async () => {
+ const addr = buyerAddressInput.trim();
+ if (isValidAddress(addr) && !buyerAddresses.includes(addr)) {
+ setBuyerAddresses(prev => [...prev, addr]);
+ setBuyerAddressInput('');
+ const op = displayAddress.toLowerCase();
+ if (op) {
+ try { await fetch('/api/operator-buyers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ operator: op, buyer: addr.toLowerCase() }) }); } catch {}
+ }
+ }
+ }}
+ disabled={!isValidAddress(buyerAddressInput.trim()) || buyerAddresses.includes(buyerAddressInput.trim())}
+ style={{
+ padding: '0.375rem 0.75rem',
+ borderRadius: '6px',
+ border: 'none',
+ background: isValidAddress(buyerAddressInput.trim()) && !buyerAddresses.includes(buyerAddressInput.trim()) ? 'var(--accent)' : 'var(--border)',
+ color: isValidAddress(buyerAddressInput.trim()) && !buyerAddresses.includes(buyerAddressInput.trim()) ? 'white' : 'var(--text-secondary)',
+ fontWeight: 600,
+ cursor: isValidAddress(buyerAddressInput.trim()) && !buyerAddresses.includes(buyerAddressInput.trim()) ? 'pointer' : 'not-allowed',
+ fontSize: '0.75rem',
+ whiteSpace: 'nowrap',
+ }}
+ >
+ Add
+ </button>
+ </div>
+ </div>
+ </div>
+ )}
 
         {/* Loading state */}
         {isLoading && (

@@ -205,6 +205,45 @@ const txHash2 = await client.claimSellerEmissions(signer, [1, 2, 3]);
 
 ---
 
+## Lessons Learned
+
+### 1. Always rebuild before restarting the server
+
+After adding new API routes to `backend/server.js`, you **must** run `npm run build` (or `vite build`) and then restart the Express server. The server serves the SPA from `dist/` via a catch-all fallback:
+
+```js
+app.use(express.static(path.join(__dirname, '../dist')));
+app.use((_req, res) => {
+  res.sendFile(path.join(__dirname, '../dist/index.html'));
+});
+```
+
+If the old `dist/` is still in place when the server starts, new `/api/*` routes may be shadowed by the static middleware or the SPA fallback, returning `index.html` instead of JSON. The fix is always: **build first, then restart**.
+
+### 2. API route registration order matters with SPA fallback
+
+Express evaluates middleware in registration order. The `express.static` and catch-all fallback must be registered **after** all `/api/*` routes. If you accidentally place them before an API route, that route will never be reached — the fallback will serve `index.html` for every unmatched path. Keep this invariant:
+
+```
+/api/* routes  →  express.static  →  SPA catch-all
+```
+
+### 3. User-facing copy actions must confirm success
+
+When implementing "copy to clipboard" buttons, always provide inline feedback (e.g., button text briefly changes to "Copied!") instead of using `alert()`. A popup dialog is disruptive and not user-friendly. Use a state-driven approach: set a `copiedKey` state on copy, render "Copied!" on the button, and clear it after a short timeout (1.5s).
+
+### 4. Environment-dependent endpoints must be tested end-to-end
+
+The `/api/provider/models` endpoint proxies to an external service (`PROVIDER_BASE_URL`). When testing, verify the full chain:
+
+1. External service is reachable: `curl $PROVIDER_BASE_URL/models`
+2. Backend API returns JSON: `curl localhost:3001/api/provider/models`
+3. Frontend renders the data correctly
+
+Skipping any step can lead to false confidence. In this project, step 2 failed because the stale `dist/` caused the SPA fallback to intercept the route.
+
+---
+
 ## Network Diagram
 
 ```

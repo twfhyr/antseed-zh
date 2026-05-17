@@ -1,32 +1,45 @@
 import React, { useState, useEffect } from 'react';
 import { ExternalLink, Zap, Users } from 'lucide-react';
-import { fetchServices } from '../api';
+import { fetchProviderModels } from '../api';
 
 const MY_PEER_ID = '412282c48584073c5aee6a79945f105a7777e194';
 const MY_SELLER_ID = `seller_${MY_PEER_ID}`;
 
 function WelcomeTab() {
-  const [models, setModels] = useState([]);
-  const [loading, setLoading] = useState(true);
+ const [models, setModels] = useState([]);
+ const [loading, setLoading] = useState(true);
+ const [copiedKey, setCopiedKey] = useState(null);
 
-  useEffect(() => {
-    async function loadModels() {
-      try {
-        const allServices = await fetchServices();
-        const mine = allServices.filter(s => s.sellerId === MY_SELLER_ID);
-        setModels(mine);
-      } catch {
-        setModels([]);
-      } finally {
-        setLoading(false);
-      }
-    }
-    loadModels();
-  }, []);
+useEffect(() => {
+async function loadModels() {
+try {
+const data = await fetchProviderModels();
+setModels(data);
+} catch {
+setModels([]);
+} finally {
+setLoading(false);
+}
+}
+loadModels();
+}, []);
 
-  const copyToClipboard = (text) => {
-    navigator.clipboard.writeText(text);
-  };
+ const copyToClipboard = async (text, key) => {
+ try {
+ await navigator.clipboard.writeText(text);
+ } catch {
+ const ta = document.createElement('textarea');
+ ta.value = text;
+ ta.style.position = 'fixed';
+ ta.style.opacity = '0';
+ document.body.appendChild(ta);
+ ta.select();
+ document.execCommand('copy');
+ document.body.removeChild(ta);
+ }
+ setCopiedKey(key);
+ setTimeout(() => setCopiedKey(null), 1500);
+ };
 
   return (
     <div className="table-container">
@@ -52,24 +65,24 @@ function WelcomeTab() {
               <code style={{ flex: 1, background: 'var(--bg-primary)', padding: '0.5rem', borderRadius: '6px', fontSize: '0.875rem' }}>
                 {MY_PEER_ID}
               </code>
-              <button
-                onClick={() => copyToClipboard(MY_PEER_ID)}
-                style={{ background: 'var(--accent)', border: 'none', color: 'white', padding: '0.5rem', borderRadius: '6px', cursor: 'pointer', fontSize: '0.75rem' }}
-              >
-                Copy
-              </button>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <span style={{ color: 'var(--text-secondary)', width: '80px' }}>Command:</span>
-              <code style={{ flex: 1, background: 'var(--bg-primary)', padding: '0.5rem', borderRadius: '6px', fontSize: '0.875rem', fontFamily: 'monospace' }}>
-                antseed buyer connection set --peer {MY_PEER_ID}
-              </code>
-              <button
-                onClick={() => copyToClipboard(`antseed buyer connection set --peer ${MY_PEER_ID}`)}
-                style={{ background: 'var(--accent)', border: 'none', color: 'white', padding: '0.5rem', borderRadius: '6px', cursor: 'pointer', fontSize: '0.75rem' }}
-              >
-                Copy
-              </button>
+ <button
+ onClick={() => copyToClipboard(MY_PEER_ID, 'peer')}
+ style={{ background: 'var(--accent)', border: 'none', color: 'white', padding: '0.5rem', borderRadius: '6px', cursor: 'pointer', fontSize: '0.75rem', minWidth: '52px' }}
+ >
+ {copiedKey === 'peer' ? 'Copied!' : 'Copy'}
+ </button>
+ </div>
+ <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+ <span style={{ color: 'var(--text-secondary)', width: '80px' }}>Command:</span>
+ <code style={{ flex: 1, background: 'var(--bg-primary)', padding: '0.5rem', borderRadius: '6px', fontSize: '0.875rem', fontFamily: 'monospace' }}>
+ antseed buyer connection set --peer {MY_PEER_ID}
+ </code>
+ <button
+ onClick={() => copyToClipboard(`antseed buyer connection set --peer ${MY_PEER_ID}`, 'cmd')}
+ style={{ background: 'var(--accent)', border: 'none', color: 'white', padding: '0.5rem', borderRadius: '6px', cursor: 'pointer', fontSize: '0.75rem', minWidth: '52px' }}
+ >
+ {copiedKey === 'cmd' ? 'Copied!' : 'Copy'}
+ </button>
             </div>
           </div>
 
@@ -82,32 +95,26 @@ function WelcomeTab() {
             <h3 style={{ fontSize: '1.125rem', fontWeight: 600 }}>Available Models</h3>
           </div>
 
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Model</th>
-                <th>Input ($/1M)</th>
-                <th>Output ($/1M)</th>
-                <th>Status</th>
-                <th>Load</th>
-              </tr>
-            </thead>
-            <tbody>
-              {loading ? (
-                <tr><td colSpan={5} style={{ textAlign: 'center', color: 'var(--text-secondary)' }}>Loading...</td></tr>
-              ) : models.length === 0 ? (
-                <tr><td colSpan={5} style={{ textAlign: 'center', color: 'var(--text-secondary)' }}>No services found</td></tr>
-              ) : models.map(svc => (
-                <tr key={svc.id}>
-                  <td><code style={{ fontSize: '0.875rem' }}>{svc.name}</code></td>
-                  <td className="price">${svc.pricing?.inputUsdPerMillion ?? 0}</td>
-                  <td className="price">${svc.pricing?.outputUsdPerMillion ?? 0}</td>
-                  <td style={{ color: svc.status === 'online' ? 'var(--success)' : 'var(--text-secondary)', fontSize: '0.875rem' }}>{svc.status}</td>
-                  <td style={{ fontSize: '0.875rem' }}>{svc.currentLoad}/{svc.maxConcurrency}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Model ID</th>
+                    <th>Owner</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {loading ? (
+                    <tr><td colSpan={2} style={{ textAlign: 'center', color: 'var(--text-secondary)' }}>Loading...</td></tr>
+                  ) : models.length === 0 ? (
+                    <tr><td colSpan={2} style={{ textAlign: 'center', color: 'var(--text-secondary)' }}>No models found</td></tr>
+                  ) : models.map(m => (
+                    <tr key={m.id}>
+                      <td><code style={{ fontSize: '0.875rem' }}>{m.id}</code></td>
+                      <td style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>{m.owned_by}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
         </div>
 
         <div style={{ background: 'var(--bg-secondary)', borderRadius: '12px', padding: '1.5rem' }}>

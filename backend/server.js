@@ -5,7 +5,9 @@ import { fileURLToPath } from 'url';
 import db from './database.js';
 import { syncFromOfficialNetwork } from './sync-official.js';
 import { readChainMetrics, updateChainMetrics, startChainPoller } from './chain-poller.js';
-import { EmissionsClient, ANTSTokenClient, resolveChainConfig } from '@antseed/node';
+import { EmissionsClient, ANTSTokenClient, DepositsClient, resolveChainConfig } from '@antseed/node';
+
+const PROVIDER_BASE = process.env.PROVIDER_BASE_URL || 'http://localhost:8377/v1';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -42,6 +44,18 @@ function parseService(row) {
     },
   };
 }
+
+// ─── Stats ───
+app.get('/api/provider/models', async (_req, res) => {
+  try {
+    const r = await fetch(`${PROVIDER_BASE}/models`);
+    if (!r.ok) throw new Error(`Provider returned ${r.status}`);
+    const json = await r.json();
+    res.json(json.data || []);
+  } catch (e) {
+    res.status(502).json({ error: `Failed to fetch models from provider: ${e.message}` });
+  }
+});
 
 // ─── Stats ───
 app.get('/api/stats', (_req, res) => {
@@ -284,19 +298,151 @@ app.post('/api/admin/sync', async (_req, res) => {
   }
 });
 
+const EMISSIONS_V1_ADDRESS = '0x36877fBa8Fa333aa46a1c57b66D132E4995C86b5';
+const MIGRATION_EPOCH = 4;
+
 const emissionsCfg = resolveChainConfig('base-mainnet');
 const emissionsClient = new EmissionsClient({
   rpcUrl: emissionsCfg.rpcUrl,
   fallbackRpcUrls: emissionsCfg.fallbackRpcUrls,
-  contractAddress: '0xF13bE52c4A3afC6AE29536f073588d01A0564088',
+  contractAddress: emissionsCfg.emissionsContractAddress,
+  evmChainId: emissionsCfg.evmChainId,
+});
+
+const emissionsV1Client = new EmissionsClient({
+  rpcUrl: emissionsCfg.rpcUrl,
+  fallbackRpcUrls: emissionsCfg.fallbackRpcUrls,
+  contractAddress: EMISSIONS_V1_ADDRESS,
   evmChainId: emissionsCfg.evmChainId,
 });
 
 const antsTokenClient = new ANTSTokenClient({
-  rpcUrl: emissionsCfg.rpcUrl,
-  fallbackRpcUrls: emissionsCfg.fallbackRpcUrls,
-  contractAddress: emissionsCfg.antsTokenAddress,
-  evmChainId: emissionsCfg.evmChainId,
+rpcUrl: emissionsCfg.rpcUrl,
+fallbackRpcUrls: emissionsCfg.fallbackRpcUrls,
+contractAddress: emissionsCfg.antsTokenAddress,
+evmChainId: emissionsCfg.evmChainId,
+});
+
+const depositsClient = new DepositsClient({
+rpcUrl: emissionsCfg.rpcUrl,
+fallbackRpcUrls: emissionsCfg.fallbackRpcUrls,
+contractAddress: emissionsCfg.depositsContractAddress,
+evmChainId: emissionsCfg.evmChainId,
+});
+
+app.get('/api/deposits/config', (_req, res) => {
+res.json({
+chainId: 'base-mainnet',
+evmChainId: emissionsCfg.evmChainId,
+rpcUrl: emissionsCfg.rpcUrl,
+depositsContractAddress: emissionsCfg.depositsContractAddress,
+channelsContractAddress: emissionsCfg.channelsContractAddress,
+usdcContractAddress: emissionsCfg.usdcContractAddress,
+emissionsContractAddress: emissionsCfg.emissionsContractAddress,
+antsTokenAddress: emissionsCfg.antsTokenAddress,
+});
+});
+
+app.get('/api/deposits/balance', async (req, res) => {
+try {
+const address = req.query.address;
+if (!address) return res.status(400).json({ error: 'address query param required' });
+const bal = await depositsClient.getBuyerBalance(address);
+const creditLimit = await depositsClient.getBuyerCreditLimit(address);
+const available = Number(bal.available) / 1e6;
+const reserved = Number(bal.reserved) / 1e6;
+res.json({
+evmAddress: address,
+available: available.toFixed(2),
+reserved: reserved.toFixed(2),
+total: (available + reserved).toFixed(2),
+creditLimit: (Number(creditLimit) / 1e6).toFixed(2),
+});
+} catch (e) {
+res.status(500).json({ error: e.message });
+}
+});
+
+app.get('/api/deposits/operator', async (req, res) => {
+try {
+const address = req.query.address;
+if (!address) return res.status(400).json({ error: 'address query param required' });
+const operator = await depositsClient.getOperator(address);
+res.json({ operator });
+} catch (e) {
+res.status(500).json({ error: e.message });
+}
+});
+
+app.get('/api/channels', async (_req, res) => {
+try {
+const url = `${PROVIDER_BASE.replace(/\/v1$/, '')}/v1/_antseed/channels?all=1`;
+const resp = await fetch(url);
+if (!resp.ok) return res.json({ channels: [] });
+const body = await resp.json();
+res.json({ channels: body.channels ?? [] });
+} catch (e) {
+res.json({ channels: [] });
+}
+});
+
+app.get('/api/buyer-usage', async (_req, res) => {
+try {
+const url = `${PROVIDER_BASE.replace(/\/v1$/, '')}/v1/_antseed/buyer-usage`;
+const resp = await fetch(url);
+if (!resp.ok) return res.json({
+totalRequests: 0, totalInputTokens: '0', totalOutputTokens: '0',
+totalSettlements: 0, uniqueSellers: 0, activeChannels: 0, channels: [],
+});
+const body = await resp.json();
+res.json(body.totals ?? {
+totalRequests: 0, totalInputTokens: '0', totalOutputTokens: '0',
+totalSettlements: 0, uniqueSellers: 0, activeChannels: 0, channels: [],
+});
+} catch (e) {
+res.json({
+totalRequests: 0, totalInputTokens: '0', totalOutputTokens: '0',
+totalSettlements: 0, uniqueSellers: 0, activeChannels: 0, channels: [],
+});
+}
+});
+
+app.get('/api/network-stats', async (_req, res) => {
+try {
+const statsUrl = emissionsCfg.networkStatsUrl;
+if (!statsUrl) return res.json({ totals: { activePeers: 0, totalRequests: '0', totalInputTokens: '0', totalOutputTokens: '0', totalSettlements: 0 } });
+const resp = await fetch(`${statsUrl.replace(/\/$/, '')}/stats`);
+if (!resp.ok) throw new Error(`network-stats returned ${resp.status}`);
+const body = await resp.json();
+const peers = Array.isArray(body.peers) ? body.peers : [];
+const activePeers = peers.filter(p => p.onChainStats).length;
+if (body.totals) {
+return res.json({
+totals: {
+activePeers,
+totalRequests: body.totals.totalRequests ?? '0',
+totalInputTokens: body.totals.totalInputTokens ?? '0',
+totalOutputTokens: body.totals.totalOutputTokens ?? '0',
+totalSettlements: Number(body.totals.settlementCount ?? 0),
+...(typeof body.totals.sellerCount === 'number' ? { sellerCount: body.totals.sellerCount } : {}),
+},
+});
+}
+let totalRequests = 0n, totalInputTokens = 0n, totalOutputTokens = 0n, totalSettlements = 0;
+for (const peer of peers) {
+const s = peer.onChainStats;
+if (!s) continue;
+try { totalRequests += BigInt(s.totalRequests ?? '0'); } catch {}
+try { totalInputTokens += BigInt(s.totalInputTokens ?? '0'); } catch {}
+try { totalOutputTokens += BigInt(s.totalOutputTokens ?? '0'); } catch {}
+totalSettlements += Number(s.settlementCount ?? 0);
+}
+res.json({
+totals: { activePeers, totalRequests: totalRequests.toString(), totalInputTokens: totalInputTokens.toString(), totalOutputTokens: totalOutputTokens.toString(), totalSettlements },
+});
+} catch (e) {
+res.status(500).json({ error: e.message });
+}
 });
 
 app.get('/api/emissions/epoch-info', async (_req, res) => {
@@ -317,85 +463,181 @@ app.get('/api/emissions/epoch-info', async (_req, res) => {
 });
 
 app.get('/api/emissions/pending', async (req, res) => {
-  try {
-    const address = req.query.address;
-    const epochs = req.query.epochs ? req.query.epochs.split(',').map(Number) : [];
-    if (!address) return res.status(400).json({ error: 'address query param required' });
-    if (epochs.length === 0) return res.json({ seller: '0', buyer: '0', epochs: [] });
+ try {
+ const rawAddress = req.query.address;
+ const extraAddresses = req.query.buyer_addresses ? req.query.buyer_addresses.split(',').map(a => a.trim()).filter(Boolean) : [];
+ const epochs = req.query.epochs ? req.query.epochs.split(',').map(Number) : [];
+ if (!rawAddress) return res.status(400).json({ error: 'address query param required' });
+ if (epochs.length === 0) return res.json({ seller: '0', buyer: '0', epochs: [] });
 
-    const bustCache = req.query.bust === '1';
-    const cached = bustCache ? null : db.prepare('SELECT data FROM address_emissions WHERE address = ?').get(address.toLowerCase());
-    if (cached) {
-      return res.json(JSON.parse(cached.data));
-    }
+ const bustCache = req.query.bust === '1';
+ const cacheKey = rawAddress.toLowerCase() + (extraAddresses.length ? ':' + extraAddresses.join(',') : '');
+ const cached = bustCache ? null : db.prepare('SELECT data FROM address_emissions WHERE address = ?').get(cacheKey);
+ if (cached) {
+ return res.json(JSON.parse(cached.data));
+ }
 
-    const result = await emissionsClient.pendingEmissions(address, epochs);
-    const sellerTotal = Number(result.seller) / 1e18;
-    const buyerTotal = Number(result.buyer) / 1e18;
+ const dbBuyers = db.prepare('SELECT buyer FROM operator_buyers WHERE operator = ?').all(rawAddress.toLowerCase());
+ const dbBuyerAddresses = dbBuyers.map(r => r.buyer);
+ const allAddresses = [rawAddress, ...extraAddresses, ...dbBuyerAddresses.filter(a => !extraAddresses.includes(a) && a !== rawAddress)];
+ const uniqueAddresses = [...new Set(allAddresses.map(a => a.toLowerCase()))];
+ const epochInfo = await emissionsClient.getEpochInfo();
+ const currentEpoch = Number(epochInfo.epoch);
+ const epochDetails = [];
+ let sellerTotal = 0;
+ let buyerTotal = 0;
 
-    const epochInfo = await emissionsClient.getEpochInfo();
-    const currentEpoch = Number(epochInfo.epoch);
+ for (const epoch of epochs) {
+ const isCurrent = epoch >= currentEpoch;
+ let epochSellerPts = 0;
+ let epochBuyerPts = 0;
+ let epochSellerReward = 0;
+ let epochBuyerReward = 0;
+ let epochSellerClaimed = false;
+ let epochBuyerClaimed = false;
 
-    const epochDetails = [];
-    for (const epoch of epochs) {
-      const isCurrent = epoch >= currentEpoch;
+        for (const addr of uniqueAddresses) {
+          const [sp, bp, esp, ebp, sc, bc, epochEmission] = await Promise.all([
+            emissionsClient.userSellerPoints(addr, epoch),
+            emissionsClient.userBuyerPoints(addr, epoch),
+            emissionsClient.epochTotalSellerPoints(epoch),
+            emissionsClient.epochTotalBuyerPoints(epoch),
+            emissionsClient.sellerEpochClaimed(addr, epoch),
+            emissionsClient.buyerEpochClaimed(addr, epoch),
+            emissionsClient.getEpochEmission(epoch),
+          ]);
 
-      const [sp, bp, esp, ebp, sellerClaimed, buyerClaimed, epochEmission] = await Promise.all([
-        emissionsClient.userSellerPoints(address, epoch),
-        emissionsClient.userBuyerPoints(address, epoch),
-        emissionsClient.epochTotalSellerPoints(epoch),
-        emissionsClient.epochTotalBuyerPoints(epoch),
-        emissionsClient.sellerEpochClaimed(address, epoch),
-        emissionsClient.buyerEpochClaimed(address, epoch),
-        emissionsClient.getEpochEmission(epoch),
-      ]);
+          let v1SellerPts = 0;
+          let v1BuyerPts = 0;
+          let v1TotalSellerPts = 0;
+          let v1TotalBuyerPts = 0;
+          if (epoch <= MIGRATION_EPOCH) {
+            const [v1sp, v1bp, v1esp, v1ebp] = await Promise.all([
+              emissionsV1Client.userSellerPoints(addr, epoch),
+              emissionsV1Client.userBuyerPoints(addr, epoch),
+              emissionsV1Client.epochTotalSellerPoints(epoch),
+              emissionsV1Client.epochTotalBuyerPoints(epoch),
+            ]);
+            v1SellerPts = Number(v1sp);
+            v1BuyerPts = Number(v1bp);
+            v1TotalSellerPts = Number(v1esp);
+            v1TotalBuyerPts = Number(v1ebp);
 
-      const userSellerPts = Number(sp);
-      const userBuyerPts = Number(bp);
-      const totalSellerPts = Number(esp);
-      const totalBuyerPts = Number(ebp);
-      const emission = Number(epochEmission) / 1e18;
+            if (epoch < MIGRATION_EPOCH) {
+              const v1sc = await emissionsV1Client.sellerEpochClaimed(addr, epoch);
+              const v1bc = await emissionsV1Client.buyerEpochClaimed(addr, epoch);
+              if (v1sc) epochSellerClaimed = true;
+              if (v1bc) epochBuyerClaimed = true;
+            }
+          }
 
-      let sellerReward = 0;
-      let buyerReward = 0;
+          const userSellerPts = Number(sp) + v1SellerPts;
+          const userBuyerPts = Number(bp) + v1BuyerPts;
+          const totalSellerPts = Number(esp) + v1TotalSellerPts;
+          const totalBuyerPts = Number(ebp) + v1TotalBuyerPts;
+          const emission = Number(epochEmission) / 1e18;
 
-      if (isCurrent) {
-        sellerReward = totalSellerPts > 0 ? (userSellerPts / totalSellerPts) * emission * 0.5 : 0;
-        buyerReward = totalBuyerPts > 0 ? (userBuyerPts / totalBuyerPts) * emission * 0.2 : 0;
-      } else {
-        const pending = await emissionsClient.pendingEmissions(address, [epoch]);
-        sellerReward = Number(pending.seller) / 1e18;
-        buyerReward = Number(pending.buyer) / 1e18;
+          if (userSellerPts > 0 || userBuyerPts > 0) {
+            epochSellerPts += userSellerPts;
+            epochBuyerPts += userBuyerPts;
+
+            if (isCurrent) {
+              epochSellerReward += totalSellerPts > 0 ? (userSellerPts / totalSellerPts) * emission * 0.5 : 0;
+              epochBuyerReward += totalBuyerPts > 0 ? (userBuyerPts / totalBuyerPts) * emission * 0.2 : 0;
+            } else {
+              const pending = await emissionsClient.pendingEmissions(addr, [epoch]);
+              epochSellerReward += Number(pending.seller) / 1e18;
+              epochBuyerReward += Number(pending.buyer) / 1e18;
+              if (epoch <= MIGRATION_EPOCH) {
+                const v1Pending = await emissionsV1Client.pendingEmissions(addr, [epoch]);
+                epochSellerReward += Number(v1Pending.seller) / 1e18;
+                epochBuyerReward += Number(v1Pending.buyer) / 1e18;
+              }
+            }
+          }
+          if (sc) epochSellerClaimed = true;
+          if (bc) epochBuyerClaimed = true;
+        }
+
+ epochDetails.push({
+ epoch,
+ sellerPoints: epochSellerPts,
+ buyerPoints: epochBuyerPts,
+ sellerReward: epochSellerReward,
+ buyerReward: epochBuyerReward,
+ sellerClaimed: epochSellerClaimed,
+ buyerClaimed: epochBuyerClaimed,
+ isCurrentEpoch: isCurrent,
+ });
+ }
+
+      for (const addr of uniqueAddresses) {
+        const pending = await emissionsClient.pendingEmissions(addr, epochs);
+        sellerTotal += Number(pending.seller) / 1e18;
+        buyerTotal += Number(pending.buyer) / 1e18;
+        const v1Epochs = epochs.filter(e => e <= MIGRATION_EPOCH);
+        if (v1Epochs.length > 0) {
+          const v1Pending = await emissionsV1Client.pendingEmissions(addr, v1Epochs);
+          sellerTotal += Number(v1Pending.seller) / 1e18;
+          buyerTotal += Number(v1Pending.buyer) / 1e18;
+        }
       }
 
-      epochDetails.push({
-        epoch,
-        sellerPoints: userSellerPts,
-        buyerPoints: userBuyerPts,
-        sellerReward,
-        buyerReward,
-        sellerClaimed,
-        buyerClaimed,
-        isCurrentEpoch: isCurrent,
-      });
-    }
+ const data = {
+ seller: sellerTotal.toFixed(6),
+ buyer: buyerTotal.toFixed(6),
+ epochs: epochDetails,
+ };
 
-    const data = {
-      seller: sellerTotal.toFixed(6),
-      buyer: buyerTotal.toFixed(6),
-      epochs: epochDetails,
-    };
+ db.prepare('INSERT OR REPLACE INTO address_emissions (address, data, fetched_at) VALUES (?, ?, ?)').run(
+ cacheKey,
+ JSON.stringify(data),
+ Date.now()
+ );
 
-    db.prepare('INSERT OR REPLACE INTO address_emissions (address, data, fetched_at) VALUES (?, ?, ?)').run(
-      address.toLowerCase(),
-      JSON.stringify(data),
-      Date.now()
-    );
+ res.json(data);
+ } catch (e) {
+ res.status(500).json({ error: e.message });
+ }
+});
 
-    res.json(data);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+app.get('/api/operator-buyers', (req, res) => {
+ try {
+ const operator = req.query.operator;
+ if (operator) {
+ const rows = db.prepare('SELECT operator, buyer FROM operator_buyers WHERE operator = ?').all(operator.toLowerCase());
+ return res.json(rows);
+ }
+ const rows = db.prepare('SELECT operator, buyer FROM operator_buyers').all();
+ res.json(rows);
+ } catch (e) {
+ res.status(500).json({ error: e.message });
+ }
+});
+
+app.post('/api/operator-buyers', (req, res) => {
+ try {
+ const { operator, buyer } = req.body;
+ if (!operator || !buyer) return res.status(400).json({ error: 'operator and buyer required' });
+ if (!/^0x[a-fA-F0-9]{40}$/.test(operator) || !/^0x[a-fA-F0-9]{40}$/.test(buyer)) {
+ return res.status(400).json({ error: 'invalid address format' });
+ }
+ db.prepare('INSERT OR IGNORE INTO operator_buyers (operator, buyer) VALUES (?, ?)').run(operator.toLowerCase(), buyer.toLowerCase());
+ res.json({ ok: true });
+ } catch (e) {
+ res.status(500).json({ error: e.message });
+ }
+});
+
+app.delete('/api/operator-buyers', (req, res) => {
+ try {
+ const { operator, buyer } = req.body;
+ if (!operator || !buyer) return res.status(400).json({ error: 'operator and buyer required' });
+ db.prepare('DELETE FROM operator_buyers WHERE operator = ? AND buyer = ?').run(operator.toLowerCase(), buyer.toLowerCase());
+ res.json({ ok: true });
+ } catch (e) {
+ res.status(500).json({ error: e.message });
+ }
 });
 
 app.get('/api/emissions/claimed', async (req, res) => {
@@ -405,17 +647,33 @@ app.get('/api/emissions/claimed', async (req, res) => {
     if (!address) return res.status(400).json({ error: 'address query param required' });
     if (epochs.length === 0) return res.json({ seller: [], buyer: [] });
 
-    const sellerStatuses = await Promise.all(
-      epochs.map(e => emissionsClient.sellerEpochClaimed(address, e))
-    );
-    const buyerStatuses = await Promise.all(
-      epochs.map(e => emissionsClient.buyerEpochClaimed(address, e))
-    );
+        const sellerStatuses = await Promise.all(
+          epochs.map(e => emissionsClient.sellerEpochClaimed(address, e))
+        );
+        const buyerStatuses = await Promise.all(
+          epochs.map(e => emissionsClient.buyerEpochClaimed(address, e))
+        );
 
-    res.json({
-      seller: epochs.map((e, i) => ({ epoch: e, claimed: sellerStatuses[i] })),
-      buyer: epochs.map((e, i) => ({ epoch: e, claimed: buyerStatuses[i] })),
-    });
+        const v1SellerStatuses = await Promise.all(
+          epochs.filter(e => e < MIGRATION_EPOCH).map(e => emissionsV1Client.sellerEpochClaimed(address, e))
+        );
+        const v1BuyerStatuses = await Promise.all(
+          epochs.filter(e => e < MIGRATION_EPOCH).map(e => emissionsV1Client.buyerEpochClaimed(address, e))
+        );
+
+        const v1EpochIndexes = {};
+        epochs.filter(e => e < MIGRATION_EPOCH).forEach((e, i) => { v1EpochIndexes[e] = i; });
+
+        res.json({
+          seller: epochs.map((e, i) => ({
+            epoch: e,
+            claimed: sellerStatuses[i] || (v1EpochIndexes[e] !== undefined ? v1SellerStatuses[v1EpochIndexes[e]] : false),
+          })),
+          buyer: epochs.map((e, i) => ({
+            epoch: e,
+            claimed: buyerStatuses[i] || (v1EpochIndexes[e] !== undefined ? v1BuyerStatuses[v1EpochIndexes[e]] : false),
+          })),
+        });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

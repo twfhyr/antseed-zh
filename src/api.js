@@ -26,6 +26,10 @@ export async function fetchComputedStats() {
   return get('/computed-stats');
 }
 
+export async function fetchProviderModels() {
+  return get('/provider/models');
+}
+
 export async function fetchChainStats() {
   return get('/chain-stats');
 }
@@ -34,11 +38,36 @@ export async function fetchEmissionsEpochInfo() {
   return get('/emissions/epoch-info');
 }
 
-export async function fetchEmissionsPending(address, epochs, bustCache = false) {
-  const bust = bustCache ? '&bust=1' : '';
-  return get(`/emissions/pending?address=${address}&epochs=${epochs.join(',')}${bust}`);
+export async function fetchEmissionsPending(address, epochs, bustCache = false, buyerAddresses = []) {
+ const bust = bustCache ? '&bust=1' : '';
+ const buyerParam = buyerAddresses.length ? `&buyer_addresses=${buyerAddresses.join(',')}` : '';
+ return get(`/emissions/pending?address=${address}&epochs=${epochs.join(',')}${bust}${buyerParam}`);
 }
 
 export async function fetchEmissionsBalance(address) {
-  return get(`/emissions/balance?address=${address}`);
+return get(`/emissions/balance?address=${address}`);
+}
+
+export async function fetchDepositsConfig() {
+return get('/deposits/config');
+}
+
+export async function fetchDepositsBalance(address) {
+return get(`/deposits/balance?address=${address}`);
+}
+
+export async function fetchDepositsOperator(address) {
+return get(`/deposits/operator?address=${address}`);
+}
+
+export async function fetchChannels() {
+return get('/channels');
+}
+
+export async function fetchBuyerUsage() {
+return get('/buyer-usage');
+}
+
+export async function fetchNetworkStats() {
+return get('/network-stats');
 }

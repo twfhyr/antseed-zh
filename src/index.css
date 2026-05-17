@@ -30,29 +30,411 @@ body {
 }
 
 .header {
-  background: var(--bg-secondary);
-  border-bottom: 1px solid var(--border);
-  padding: 1.5rem 2rem;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+background: var(--bg-secondary);
+border-bottom: 1px solid var(--border);
+padding: 1.5rem 2rem;
+display: flex;
+align-items: center;
+justify-content: space-between;
 }
 
 .header h1 {
-  font-size: 1.5rem;
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
+font-size: 1.5rem;
+display: flex;
+align-items: center;
+gap: 0.75rem;
 }
 
 .header .logo {
-  width: 32px;
-  height: 32px;
-  background: var(--accent);
-  border-radius: 8px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+width: 32px;
+height: 32px;
+background: var(--accent);
+border-radius: 8px;
+display: flex;
+align-items: center;
+justify-content: center;
+}
+
+/* ── App Header ── */
+.app-header {
+background: var(--bg-secondary);
+border-bottom: 1px solid var(--border);
+padding: 0.75rem 1.5rem;
+display: flex;
+align-items: center;
+justify-content: space-between;
+position: sticky;
+top: 0;
+z-index: 50;
+}
+
+.app-header__brand {
+display: flex;
+align-items: center;
+gap: 0.625rem;
+}
+
+.header-balance {
+display: inline-flex;
+align-items: center;
+gap: 0.375rem;
+padding: 0.25rem 0.625rem;
+border-radius: 6px;
+background: rgba(16,185,129,0.12);
+color: var(--accent);
+font-size: 0.8125rem;
+font-weight: 600;
+margin-left: 0.5rem;
+}
+
+.btn-link {
+background: none;
+border: none;
+color: var(--info);
+cursor: pointer;
+text-decoration: none;
+font-size: 0.8125rem;
+}
+
+.btn-link:hover {
+text-decoration: underline;
+}
+
+.app-header__logo {
+width: 28px;
+height: 28px;
+background: var(--accent);
+border-radius: 7px;
+display: flex;
+align-items: center;
+justify-content: center;
+font-weight: 800;
+font-size: 0.875rem;
+color: white;
+}
+
+.app-header__title {
+font-size: 1.125rem;
+font-weight: 700;
+color: var(--text-primary);
+}
+
+.app-header__actions {
+display: flex;
+align-items: center;
+gap: 0.625rem;
+}
+
+/* ── Deposit Button ── */
+.deposit-btn {
+display: inline-flex;
+align-items: center;
+gap: 0.375rem;
+padding: 0.5rem 1rem;
+border-radius: 8px;
+border: 1px solid var(--accent);
+background: transparent;
+color: var(--accent);
+font-weight: 600;
+font-size: 0.8125rem;
+cursor: pointer;
+transition: background 0.15s, color 0.15s;
+}
+
+.deposit-btn:hover {
+background: var(--accent);
+color: white;
+}
+
+/* ── Modal Overlay ── */
+.modal-overlay {
+position: fixed;
+inset: 0;
+background: rgba(0, 0, 0, 0.6);
+display: flex;
+align-items: center;
+justify-content: center;
+z-index: 100;
+backdrop-filter: blur(4px);
+}
+
+.modal-content {
+background: var(--bg-secondary);
+border: 1px solid var(--border);
+border-radius: 16px;
+width: 100%;
+max-width: 440px;
+overflow: hidden;
+}
+
+.modal-header {
+display: flex;
+align-items: center;
+justify-content: space-between;
+padding: 1.25rem 1.5rem;
+border-bottom: 1px solid var(--border);
+}
+
+.modal-header h2 {
+font-size: 1.125rem;
+font-weight: 700;
+}
+
+.modal-close {
+background: none;
+border: none;
+color: var(--text-secondary);
+cursor: pointer;
+padding: 0.25rem;
+display: flex;
+align-items: center;
+justify-content: center;
+border-radius: 6px;
+transition: color 0.15s, background 0.15s;
+}
+
+.modal-close:hover {
+color: var(--text-primary);
+background: var(--bg-primary);
+}
+
+.modal-body {
+padding: 1.5rem;
+}
+
+.modal-desc {
+color: var(--text-secondary);
+font-size: 0.8125rem;
+margin-bottom: 1.25rem;
+line-height: 1.5;
+}
+
+/* ── Deposit Field ── */
+.deposit-field {
+margin-bottom: 1.25rem;
+}
+
+.deposit-field__header {
+display: flex;
+align-items: center;
+justify-content: space-between;
+margin-bottom: 0.5rem;
+}
+
+.deposit-field__header label {
+font-size: 0.8125rem;
+font-weight: 600;
+color: var(--text-primary);
+}
+
+.deposit-field__max {
+background: none;
+border: none;
+color: var(--accent);
+font-size: 0.75rem;
+cursor: pointer;
+padding: 0;
+font-weight: 500;
+}
+
+.deposit-field__max:hover {
+text-decoration: underline;
+}
+
+.deposit-field__input-wrap {
+display: flex;
+align-items: center;
+background: var(--bg-primary);
+border: 1px solid var(--border);
+border-radius: 10px;
+padding: 0 0.875rem;
+transition: border-color 0.15s;
+}
+
+.deposit-field__input-wrap:focus-within {
+border-color: var(--accent);
+}
+
+.deposit-field__input {
+flex: 1;
+background: transparent;
+border: none;
+padding: 0.75rem 0;
+color: var(--text-primary);
+font-size: 1.25rem;
+font-weight: 600;
+outline: none;
+font-family: inherit;
+-moz-appearance: textfield;
+}
+
+.deposit-field__input::-webkit-outer-spin-button,
+.deposit-field__input::-webkit-inner-spin-button {
+-webkit-appearance: none;
+margin: 0;
+}
+
+.deposit-field__suffix {
+color: var(--text-secondary);
+font-size: 0.875rem;
+font-weight: 500;
+margin-left: 0.5rem;
+}
+
+.deposit-field__quick {
+display: flex;
+gap: 0.375rem;
+margin-top: 0.5rem;
+}
+
+.deposit-field__quick-btn {
+padding: 0.25rem 0.75rem;
+border-radius: 6px;
+border: 1px solid var(--border);
+background: transparent;
+color: var(--text-secondary);
+font-size: 0.75rem;
+font-weight: 500;
+cursor: pointer;
+transition: border-color 0.15s, color 0.15s;
+}
+
+.deposit-field__quick-btn:hover {
+border-color: var(--accent);
+color: var(--accent);
+}
+
+.deposit-field__quick-btn:disabled {
+opacity: 0.5;
+cursor: not-allowed;
+}
+
+.deposit-field__error {
+display: flex;
+align-items: center;
+gap: 0.375rem;
+color: var(--danger);
+font-size: 0.75rem;
+margin-top: 0.5rem;
+}
+
+/* ── Deposit Info ── */
+.deposit-info {
+background: var(--bg-primary);
+border-radius: 10px;
+padding: 0.875rem 1rem;
+margin-bottom: 1.25rem;
+}
+
+.deposit-info__row {
+display: flex;
+align-items: center;
+justify-content: space-between;
+padding: 0.375rem 0;
+font-size: 0.8125rem;
+color: var(--text-secondary);
+}
+
+.deposit-info__mono {
+font-family: monospace;
+color: var(--text-primary);
+}
+
+/* ── Deposit Actions ── */
+.deposit-actions {
+display: flex;
+flex-direction: column;
+align-items: stretch;
+gap: 0.5rem;
+}
+
+.deposit-actions__btn {
+display: inline-flex;
+align-items: center;
+justify-content: center;
+gap: 0.5rem;
+padding: 0.75rem 1.5rem;
+border-radius: 10px;
+border: none;
+background: var(--accent);
+color: white;
+font-weight: 600;
+font-size: 0.875rem;
+cursor: pointer;
+transition: opacity 0.15s;
+width: 100%;
+}
+
+.deposit-actions__btn:disabled {
+opacity: 0.5;
+cursor: not-allowed;
+}
+
+.deposit-actions__btn:hover:not(:disabled) {
+opacity: 0.9;
+}
+
+.deposit-actions__hint {
+text-align: center;
+font-size: 0.75rem;
+color: var(--text-secondary);
+display: flex;
+align-items: center;
+justify-content: center;
+gap: 0.25rem;
+}
+
+.deposit-actions__hint--success {
+color: var(--accent);
+}
+
+/* ── Deposit Success ── */
+.deposit-success {
+display: flex;
+align-items: center;
+justify-content: center;
+gap: 0.5rem;
+padding: 1rem;
+background: rgba(16, 185, 129, 0.1);
+border: 1px solid rgba(16, 185, 129, 0.2);
+border-radius: 10px;
+font-weight: 600;
+font-size: 0.875rem;
+color: var(--accent);
+}
+
+.deposit-success__link {
+display: inline-flex;
+align-items: center;
+gap: 0.25rem;
+color: var(--info);
+text-decoration: none;
+font-size: 0.75rem;
+font-weight: 500;
+margin-left: 0.5rem;
+}
+
+.deposit-success__link:hover {
+text-decoration: underline;
+}
+
+/* ── Deposit Tx Link ── */
+.deposit-tx-link {
+text-align: center;
+margin-top: 0.75rem;
+}
+
+.deposit-tx-link a {
+color: var(--info);
+text-decoration: none;
+font-size: 0.75rem;
+display: inline-flex;
+align-items: center;
+gap: 0.25rem;
+}
+
+.deposit-tx-link a:hover {
+text-decoration: underline;
 }
 
 .connection-status {
@@ -342,23 +724,36 @@ body {
 }
 
 @media (max-width: 768px) {
-  .container {
-    padding: 1rem;
-  }
-  
-  .stats-grid {
-    grid-template-columns: 1fr;
-  }
-  
-  .search-box input {
-    width: 200px;
-  }
-  
-  .table-container {
-    overflow-x: auto;
-  }
-  
-  .table {
-    min-width: 800px;
-  }
+.container {
+padding: 1rem;
+}
+
+.app-header {
+padding: 0.625rem 1rem;
+}
+
+.app-header__title {
+display: none;
+}
+
+.stats-grid {
+grid-template-columns: 1fr;
+}
+
+.search-box input {
+width: 200px;
+}
+
+.table-container {
+overflow-x: auto;
+}
+
+.table {
+min-width: 800px;
+}
+
+.modal-content {
+max-width: calc(100vw - 2rem);
+margin: 0 1rem;
+}
 }

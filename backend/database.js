@@ -156,21 +156,45 @@ function seedIfEmpty() {
     );
   `);
 
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS address_emissions (
-      address TEXT PRIMARY KEY,
-      data TEXT NOT NULL,
-      fetched_at INTEGER NOT NULL
-    );
-  `);
+db.exec(`
+CREATE TABLE IF NOT EXISTS address_emissions (
+address TEXT PRIMARY KEY,
+data TEXT NOT NULL,
+fetched_at INTEGER NOT NULL
+);
+`);
 
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS address_balances (
-      address TEXT PRIMARY KEY,
-      ants REAL,
-      fetched_at INTEGER NOT NULL
-    );
-  `);
+db.exec(`
+CREATE TABLE IF NOT EXISTS address_balances (
+address TEXT PRIMARY KEY,
+ants REAL,
+fetched_at INTEGER NOT NULL
+);
+`);
+
+db.exec(`
+CREATE TABLE IF NOT EXISTS buyer_channels (
+address TEXT PRIMARY KEY,
+data TEXT NOT NULL,
+fetched_at INTEGER NOT NULL
+);
+`);
+
+db.exec(`
+CREATE TABLE IF NOT EXISTS operator_buyers (
+operator TEXT NOT NULL,
+buyer TEXT NOT NULL,
+PRIMARY KEY (operator, buyer)
+);
+`);
+
+const obCount = db.prepare('SELECT COUNT(*) as count FROM operator_buyers').get().count;
+if (obCount === 0) {
+db.prepare('INSERT INTO operator_buyers (operator, buyer) VALUES (?, ?)').run(
+'0xc43ddf3bee752183a2e1af96299298aee4b35409',
+'0x8e0abd6c6cfec9e643c205e7804e259ebff585c1'
+);
+}
 }
 
 seedIfEmpty();
