@@ -51,9 +51,8 @@ return get(`/emissions/balance?address=${address}`);
 export async function fetchDepositsConfig() {
 return get('/deposits/config');
 }
-
-export async function fetchDepositsBalance(address) {
-return get(`/deposits/balance?address=${address}`);
+export async function fetchDepositsBalance(buyerAddress) {
+return get(`/deposits/balance?address=${buyerAddress}`);
 }
 
 export async function fetchDepositsOperator(address) {

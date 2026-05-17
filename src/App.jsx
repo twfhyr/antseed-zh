@@ -10,7 +10,7 @@ import WithdrawModal from './components/WithdrawModal';
 import ChannelsView from './components/ChannelsView';
 import { AuthorizedWalletProvider } from './context/AuthorizedWalletContext';
 import { useAccount } from 'wagmi';
-import { fetchStats, fetchBuyers, fetchSellers, fetchServices } from './api';
+import { fetchStats, fetchBuyers, fetchSellers, fetchServices, fetchDepositsBalance, fetchDepositsConfig } from './api';
 
 function AppInner() {
 const { address } = useAccount();
@@ -18,6 +18,7 @@ const [activeTab, setActiveTab] = useState('welcome');
 const [depositOpen, setDepositOpen] = useState(false);
 const [withdrawOpen, setWithdrawOpen] = useState(false);
 const [withdrawBalance, setWithdrawBalance] = useState(null);
+const [buyerAddress, setBuyerAddress] = useState(null);
 const [buyers, setBuyers] = useState([]);
 const [sellers, setSellers] = useState([]);
 const [services, setServices] = useState([]);
@@ -48,18 +49,33 @@ setLoading(false);
 loadData();
 }, []);
 
-const handleWithdrawClick = async () => {
-if (address) {
+useEffect(() => {
+if (!address) { setBuyerAddress(null); return; }
+let cancelled = false;
+(async () => {
 try {
-const { fetchDepositsBalance } = await import('./api');
+const config = await fetchDepositsConfig();
+if (!cancelled && config.evmAddress) { setBuyerAddress(config.evmAddress); return; }
+} catch {}
+try {
 const bal = await fetchDepositsBalance(address);
-setWithdrawBalance(bal);
-} catch {
-setWithdrawBalance(null);
-}
-}
-setWithdrawOpen(true);
-};
+if (!cancelled && bal.evmAddress) setBuyerAddress(bal.evmAddress);
+} catch {}
+})();
+return () => { cancelled = true; };
+}, [address]);
+
+  const handleWithdrawClick = async () => {
+    if (buyerAddress) {
+      try {
+        const bal = await fetchDepositsBalance(buyerAddress);
+        setWithdrawBalance(bal);
+      } catch {
+        setWithdrawBalance(null);
+      }
+    }
+    setWithdrawOpen(true);
+  };
 
 if (loading) {
 return (
@@ -82,7 +98,7 @@ Make sure the API server is running on <code>http://localhost:3001</code>.
 
 return (
 <div className="dashboard">
-<Header onDepositClick={() => setDepositOpen(true)} onWithdrawClick={handleWithdrawClick} />
+<Header onDepositClick={() => setDepositOpen(true)} onWithdrawClick={handleWithdrawClick} buyerAddress={buyerAddress} />
 <main className="container" style={{ paddingTop: '1.5rem' }}>
 <div className="tabs">
 <button
@@ -130,8 +146,8 @@ $ANTS
 {activeTab === 'services' && <ServicesList services={services} />}
 {activeTab === 'ants' && <ANTSInfo />}
 </main>
-<DepositModal isOpen={depositOpen} onClose={() => setDepositOpen(false)} />
-<WithdrawModal isOpen={withdrawOpen} onClose={() => setWithdrawOpen(false)} balance={withdrawBalance} />
+<DepositModal isOpen={depositOpen} onClose={() => setDepositOpen(false)} buyerAddress={buyerAddress} />
+<WithdrawModal isOpen={withdrawOpen} onClose={() => setWithdrawOpen(false)} balance={withdrawBalance} buyerAddress={buyerAddress} />
 </div>
 );
 }
@@ -139,7 +155,7 @@ $ANTS
 function App() {
 const { address } = useAccount();
 return (
-<AuthorizedWalletProvider buyerAddress={address}>
+<AuthorizedWalletProvider operatorAddress={address}>
 <AppInner />
 </AuthorizedWalletProvider>
 );

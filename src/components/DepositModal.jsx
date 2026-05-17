@@ -80,10 +80,11 @@ function formatUSDC(wei) {
 
 const QUICK_AMOUNTS = [1, 5, 10, 50, 100];
 
-function DepositModal({ isOpen, onClose }) {
-  const { address, isConnected } = useAccount();
-  const [amount, setAmount] = useState('');
-  const [step, setStep] = useState('idle');
+function DepositModal({ isOpen, onClose, buyerAddress }) {
+const { address, isConnected } = useAccount();
+const [amount, setAmount] = useState('');
+const [step, setStep] = useState('idle');
+const depositTarget = buyerAddress ?? address;
 
   const { data: usdcBalance } = useBalance({
     address,
@@ -160,7 +161,7 @@ function DepositModal({ isOpen, onClose }) {
       address: DEPOSITS_ADDRESS,
       abi: DEPOSITS_ABI,
       functionName: 'deposit',
-      args: [address, depositAmount],
+      args: [depositTarget, depositAmount],
     });
   };
 
@@ -249,12 +250,12 @@ function DepositModal({ isOpen, onClose }) {
               <span>Current allowance</span>
               <span>{formatUSDC(currentAllowance)} USDC</span>
             </div>
-            <div className="deposit-info__row">
-              <span>Depositing to</span>
-              <span className="deposit-info__mono">
-                {DEPOSITS_ADDRESS.slice(0, 6)}...{DEPOSITS_ADDRESS.slice(-4)}
-              </span>
-            </div>
+      <div className="deposit-info__row">
+        <span>Depositing to</span>
+        <span className="deposit-info__mono">
+          {depositTarget ? `${depositTarget.slice(0, 6)}...${depositTarget.slice(-4)}` : '—'}
+        </span>
+      </div>
           </div>
 
           {step === 'done' ? (

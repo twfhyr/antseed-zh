@@ -6,18 +6,19 @@ import { fetchDepositsBalance } from '../api';
 
 const DEPOSITS_CONTRACT = '0x0F7a3a8f4Da01637d1202bb5443fcF7F88F99fD2';
 
-function Header({ onDepositClick, onWithdrawClick }) {
+function Header({ onDepositClick, onWithdrawClick, buyerAddress }) {
 const { isConnected, address } = useAccount();
 const [balance, setBalance] = useState(null);
 
 useEffect(() => {
 if (!isConnected || !address) { setBalance(null); return; }
+if (!buyerAddress) return;
 let cancelled = false;
-fetchDepositsBalance(address)
+fetchDepositsBalance(buyerAddress)
 .then(data => { if (!cancelled) setBalance(data); })
 .catch(() => {});
 return () => { cancelled = true; };
-}, [isConnected, address]);
+}, [isConnected, address, buyerAddress]);
 
 return (
 <header className="app-header">

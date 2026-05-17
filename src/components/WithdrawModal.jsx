@@ -39,10 +39,11 @@ return BigInt(whole + frac);
 
 const QUICK_AMOUNTS = [1, 5, 10, 50];
 
-function WithdrawModal({ isOpen, onClose, balance }) {
+function WithdrawModal({ isOpen, onClose, balance, buyerAddress }) {
 const { address, isConnected } = useAccount();
 const [amount, setAmount] = useState('');
 const [step, setStep] = useState('idle');
+const withdrawTarget = buyerAddress ?? address;
 
 const {
 data: withdrawHash,
@@ -59,17 +60,17 @@ isError: isError,
 const availableAmount = balance ? parseFloat(balance.available) : 0;
 const withdrawAmount = parseUSDC(amount);
 const exceedsBalance = withdrawAmount > 0n && parseFloat(amount) > availableAmount;
-const canWithdraw = withdrawAmount > 0n && !exceedsBalance && address;
+  const canWithdraw = withdrawAmount > 0n && !exceedsBalance && withdrawTarget;
 
-const handleWithdraw = () => {
-setStep('withdrawing');
-withdraw({
-address: DEPOSITS_ADDRESS,
-abi: DEPOSITS_WITHDRAW_ABI,
-functionName: 'withdraw',
-args: [address, withdrawAmount],
-});
-};
+  const handleWithdraw = () => {
+    setStep('withdrawing');
+    withdraw({
+      address: DEPOSITS_ADDRESS,
+      abi: DEPOSITS_WITHDRAW_ABI,
+      functionName: 'withdraw',
+      args: [withdrawTarget, withdrawAmount],
+    });
+  };
 
 const handleClose = () => {
 setAmount('');
@@ -152,12 +153,12 @@ Exceeds available balance
 <span>Reserved</span>
 <span>{balance ? parseFloat(balance.reserved).toFixed(2) : '0.00'} USDC</span>
 </div>
-<div className="deposit-info__row">
-<span>Withdrawing to</span>
-<span className="deposit-info__mono">
-{address ? `${address.slice(0, 6)}...${address.slice(-4)}` : '—'}
-</span>
-</div>
+      <div className="deposit-info__row">
+        <span>Withdrawing to</span>
+        <span className="deposit-info__mono">
+          {withdrawTarget ? `${withdrawTarget.slice(0, 6)}...${withdrawTarget.slice(-4)}` : '—'}
+        </span>
+      </div>
 </div>
 
 {step === 'done' || isConfirmed ? (

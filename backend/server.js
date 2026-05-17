@@ -302,6 +302,20 @@ const EMISSIONS_V1_ADDRESS = '0x36877fBa8Fa333aa46a1c57b66D132E4995C86b5';
 const MIGRATION_EPOCH = 4;
 
 const emissionsCfg = resolveChainConfig('base-mainnet');
+
+let buyerEvmAddress = null;
+try {
+const { identityFromPrivateKeyHex } = await import('@antseed/node');
+const fs = await import('fs');
+const path = await import('path');
+const identityPath = path.join(process.env.HOME, '.antseed', 'identity.key');
+const identityHex = process.env.ANTSEED_IDENTITY_HEX || fs.readFileSync(identityPath, 'utf8').trim();
+const id = identityFromPrivateKeyHex(identityHex);
+buyerEvmAddress = id.wallet.address;
+console.log(`Buyer EVM address (from identity): ${buyerEvmAddress}`);
+} catch (e) {
+console.warn('Could not load buyer identity:', e.message);
+}
 const emissionsClient = new EmissionsClient({
   rpcUrl: emissionsCfg.rpcUrl,
   fallbackRpcUrls: emissionsCfg.fallbackRpcUrls,
@@ -340,13 +354,14 @@ channelsContractAddress: emissionsCfg.channelsContractAddress,
 usdcContractAddress: emissionsCfg.usdcContractAddress,
 emissionsContractAddress: emissionsCfg.emissionsContractAddress,
 antsTokenAddress: emissionsCfg.antsTokenAddress,
+evmAddress: buyerEvmAddress,
 });
 });
-
 app.get('/api/deposits/balance', async (req, res) => {
 try {
 const address = req.query.address;
 if (!address) return res.status(400).json({ error: 'address query param required' });
+
 const bal = await depositsClient.getBuyerBalance(address);
 const creditLimit = await depositsClient.getBuyerCreditLimit(address);
 const available = Number(bal.available) / 1e6;
