@@ -2,6 +2,14 @@ import Database from 'better-sqlite3';
 
 const db = new Database('./backend/database.sqlite');
 
+function readBoolEnv(name, defaultValue) {
+  const raw = process.env[name];
+  if (raw === undefined) return defaultValue;
+  return !['0', 'false', 'no', 'off'].includes(String(raw).toLowerCase());
+}
+
+const SHOULD_SEED_SAMPLE_DATA = readBoolEnv('SEED_SAMPLE_DATA', true);
+
 // Enable WAL mode for better concurrency
 db.pragma('journal_mode = WAL');
 
@@ -59,6 +67,17 @@ db.exec(`
 `);
 
 function seedIfEmpty() {
+  if (!SHOULD_SEED_SAMPLE_DATA) {
+    const statsCount = db.prepare('SELECT COUNT(*) as count FROM stats').get().count;
+    if (statsCount === 0) {
+      db.prepare(`
+        INSERT INTO stats (id, total_buyers, total_sellers, total_services, total_volume, active_transactions, buyer_growth, seller_growth, service_growth, volume_growth, transaction_growth)
+        VALUES (1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+      `).run();
+    }
+    return;
+  }
+
   const buyerCount = db.prepare('SELECT COUNT(*) as count FROM buyers').get().count;
   if (buyerCount === 0) {
     const insertBuyer = db.prepare(`
@@ -189,7 +208,7 @@ PRIMARY KEY (operator, buyer)
 `);
 
 const obCount = db.prepare('SELECT COUNT(*) as count FROM operator_buyers').get().count;
-if (obCount === 0) {
+if (obCount === 0 && SHOULD_SEED_SAMPLE_DATA) {
 db.prepare('INSERT INTO operator_buyers (operator, buyer) VALUES (?, ?)').run(
 '0xc43ddf3bee752183a2e1af96299298aee4b35409',
 '0x8e0abd6c6cfec9e643c205e7804e259ebff585c1'

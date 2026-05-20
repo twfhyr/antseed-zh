@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useMemo } from 'react';
 import {
 useAccount,
 useWriteContract,
@@ -11,6 +11,7 @@ AlertCircle,
 ExternalLink,
 RefreshCw,
 } from 'lucide-react';
+import { useChannelsData } from '../hooks/useChannelsData';
 
 const CHANNELS_ADDRESS = '0x4d9bB6e20A0a2842CB1C4C22c4b3bEB2f03776E9';
 
@@ -173,54 +174,45 @@ background: 'var(--accent)', color: 'white', cursor: 'pointer', fontSize: '0.75r
 }
 
 function ChannelsView() {
-const [rawChannels, setRawChannels] = useState([]);
-const [loading, setLoading] = useState(true);
+  const { data: rawChannels = [], isLoading: rawLoading, refetch: refetchChannels } = useChannelsData();
 
-const fetchChannels = useCallback(async () => {
-setLoading(true);
-try {
-const resp = await fetch('/api/channels');
-const data = await resp.json();
-setRawChannels(data.channels || []);
-} catch (e) {
-setRawChannels([]);
-} finally {
-setLoading(false);
-}
-}, []);
+  const contracts = useMemo(() => rawChannels.map(c => ({
+    address: CHANNELS_ADDRESS,
+    abi: CHANNELS_ABI,
+    functionName: 'channels',
+    args: [c.channelId],
+  })), [rawChannels]);
 
-useEffect(() => { fetchChannels(); }, [fetchChannels]);
+  const { data: onChainReads, refetch: refetchOnChain, isFetching: onChainFetching } = useReadContracts({
+    contracts,
+    query: { enabled: contracts.length > 0, refetchOnWindowFocus: false },
+  });
 
-const contracts = useMemo(() => rawChannels.map(c => ({
-address: CHANNELS_ADDRESS,
-abi: CHANNELS_ABI,
-functionName: 'channels',
-args: [c.channelId],
-})), [rawChannels]);
+  const channels = useMemo(() => rawChannels.map((raw, i) => {
+    const read = onChainReads?.[i];
+    const tuple = read?.status === 'success' ? read.result : null;
+    const deposit = tuple ? Number(tuple.deposit) : Number(raw.reserveMax || 0);
+    const settled = tuple ? Number(tuple.settled) : Number(raw.cumulativeSigned || 0);
+    const closeRequestedAt = tuple ? Number(tuple.closeRequestedAt) : 0;
+    const status = tuple ? Number(tuple.status) : (raw.status === 'active' ? 1 : 2);
+    return {
+      channelId: raw.channelId,
+      seller: raw.seller || (tuple ? tuple.seller : ''),
+      deposit,
+      settled,
+      reservedAt: raw.reservedAt,
+      deadline: raw.deadline,
+      closeRequestedAt,
+      status,
+    };
+  }), [rawChannels, onChainReads]);
 
-const { data: onChainReads, refetch: refetchOnChain, isFetching: onChainFetching } = useReadContracts({
-contracts,
-query: { enabled: contracts.length > 0, refetchOnWindowFocus: false },
-});
+const loading = rawLoading;
 
-const channels = useMemo(() => rawChannels.map((raw, i) => {
-const read = onChainReads?.[i];
-const tuple = read?.status === 'success' ? read.result : null;
-const deposit = tuple ? Number(tuple.deposit) : Number(raw.reserveMax || 0);
-const settled = tuple ? Number(tuple.settled) : Number(raw.cumulativeSigned || 0);
-const closeRequestedAt = tuple ? Number(tuple.closeRequestedAt) : 0;
-const status = tuple ? Number(tuple.status) : (raw.status === 'active' ? 1 : 2);
-return {
-channelId: raw.channelId,
-seller: raw.seller || (tuple ? tuple.seller : ''),
-deposit,
-settled,
-reservedAt: raw.reservedAt,
-deadline: raw.deadline,
-closeRequestedAt,
-status,
+const refetch = async () => {
+await refetchChannels();
+await refetchOnChain();
 };
-}), [rawChannels, onChainReads]);
 
 const activeChannels = channels.filter(c => c.status === 1);
 const historyChannels = channels.filter(c => c.status !== 1);
@@ -229,11 +221,6 @@ const allChannels = [...activeChannels, ...historyChannels];
 const reserved = activeChannels.reduce((a, c) => a + c.deposit / 1e6, 0);
 const used = activeChannels.reduce((a, c) => a + c.settled / 1e6, 0);
 const totalSpent = allChannels.reduce((a, c) => a + c.settled / 1e6, 0);
-
-const refetch = async () => {
-await fetchChannels();
-await refetchOnChain();
-};
 
 return (
 <div className="table-container" style={{ padding: '2rem' }}>

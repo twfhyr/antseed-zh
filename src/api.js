@@ -70,3 +70,7 @@ return get('/buyer-usage');
 export async function fetchNetworkStats() {
 return get('/network-stats');
 }
+
+export async function fetchSpending(address, days = 7) {
+return get(`/deposits/spending?address=${address}&days=${days}`);
+}

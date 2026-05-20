@@ -1,69 +1,40 @@
-import React, { useState, useEffect } from 'react';
-import ClaimANTS from './components/ClaimANTS';
-import SellersList from './components/SellersList';
-import ServicesList from './components/ServicesList';
-import ANTSInfo from './components/ANTSInfo';
-import WelcomeTab from './components/WelcomeTab';
+import React, { useState, lazy, Suspense } from 'react';
 import Header from './components/Header';
 import DepositModal from './components/DepositModal';
 import WithdrawModal from './components/WithdrawModal';
-import ChannelsView from './components/ChannelsView';
+import WelcomeTab from './components/WelcomeTab';
+import SellersList from './components/SellersList';
+import ServicesList from './components/ServicesList';
 import { AuthorizedWalletProvider } from './context/AuthorizedWalletContext';
 import { useAccount } from 'wagmi';
-import { fetchStats, fetchBuyers, fetchSellers, fetchServices, fetchDepositsBalance, fetchDepositsConfig } from './api';
+import { fetchDepositsBalance } from './api';
+import { useDashboardData } from './hooks/useDashboardData';
+import { useBuyerAddress } from './hooks/useBuyerAddress';
+
+const ClaimANTS = lazy(() => import('./components/ClaimANTS'));
+const ChannelsView = lazy(() => import('./components/ChannelsView'));
+const SpendingView = lazy(() => import('./components/SpendingView'));
+const ANTSInfo = lazy(() => import('./components/ANTSInfo'));
+
+function TabLoader() {
+  return (
+    <div style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-secondary)' }}>
+      Loading...
+    </div>
+  );
+}
 
 function AppInner() {
 const { address } = useAccount();
+const { data, isLoading, error } = useDashboardData();
+const { data: buyerAddress = null } = useBuyerAddress(address);
 const [activeTab, setActiveTab] = useState('welcome');
 const [depositOpen, setDepositOpen] = useState(false);
 const [withdrawOpen, setWithdrawOpen] = useState(false);
 const [withdrawBalance, setWithdrawBalance] = useState(null);
-const [buyerAddress, setBuyerAddress] = useState(null);
-const [buyers, setBuyers] = useState([]);
-const [sellers, setSellers] = useState([]);
-const [services, setServices] = useState([]);
-const [loading, setLoading] = useState(true);
-const [error, setError] = useState(null);
-
-useEffect(() => {
-async function loadData() {
-try {
-setLoading(true);
-const [, buyersData, sellersData, servicesData] = await Promise.all([
-fetchStats(),
-fetchBuyers(),
-fetchSellers(),
-fetchServices(),
-]);
-setBuyers(buyersData);
-setSellers(sellersData);
-setServices(servicesData);
-setError(null);
-} catch (err) {
-setError(err.message);
-} finally {
-setLoading(false);
-}
-}
-
-loadData();
-}, []);
-
-useEffect(() => {
-if (!address) { setBuyerAddress(null); return; }
-let cancelled = false;
-(async () => {
-try {
-const config = await fetchDepositsConfig();
-if (!cancelled && config.evmAddress) { setBuyerAddress(config.evmAddress); return; }
-} catch {}
-try {
-const bal = await fetchDepositsBalance(address);
-if (!cancelled && bal.evmAddress) setBuyerAddress(bal.evmAddress);
-} catch {}
-})();
-return () => { cancelled = true; };
-}, [address]);
+const buyers = data?.buyers ?? [];
+const sellers = data?.sellers ?? [];
+const services = data?.services ?? [];
 
   const handleWithdrawClick = async () => {
     if (buyerAddress) {
@@ -77,7 +48,7 @@ return () => { cancelled = true; };
     setWithdrawOpen(true);
   };
 
-if (loading) {
+if (isLoading) {
 return (
 <div className="dashboard" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh' }}>
 <div className="loading">Loading...</div>
@@ -88,7 +59,7 @@ return (
 if (error) {
 return (
 <div className="dashboard" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', flexDirection: 'column', gap: '1rem' }}>
-<div className="error">Error: {error}</div>
+<div className="error">Error: {error.message}</div>
 <p style={{ color: 'var(--text-secondary)' }}>
 Make sure the API server is running on <code>http://localhost:3001</code>.
 </p>
@@ -113,12 +84,18 @@ onClick={() => setActiveTab('claim')}
 >
 Claim ANTS
 </button>
-<button
-className={`tab ${activeTab === 'channels' ? 'active' : ''}`}
-onClick={() => setActiveTab('channels')}
->
-Channels
-</button>
+          <button
+            className={`tab ${activeTab === 'spending' ? 'active' : ''}`}
+            onClick={() => setActiveTab('spending')}
+          >
+            Spending
+          </button>
+          <button
+            className={`tab ${activeTab === 'channels' ? 'active' : ''}`}
+            onClick={() => setActiveTab('channels')}
+          >
+            Channels
+          </button>
 <button
 className={`tab ${activeTab === 'sellers' ? 'active' : ''}`}
 onClick={() => setActiveTab('sellers')}
@@ -139,12 +116,13 @@ $ANTS
 </button>
 </div>
 
-{activeTab === 'claim' && <ClaimANTS />}
+{activeTab === 'claim' && <Suspense fallback={<TabLoader />}><ClaimANTS /></Suspense>}
 {activeTab === 'welcome' && <WelcomeTab />}
-{activeTab === 'channels' && <ChannelsView />}
+{activeTab === 'channels' && <Suspense fallback={<TabLoader />}><ChannelsView /></Suspense>}
+{activeTab === 'spending' && <Suspense fallback={<TabLoader />}><SpendingView buyerAddress={buyerAddress} /></Suspense>}
 {activeTab === 'sellers' && <SellersList sellers={sellers} />}
 {activeTab === 'services' && <ServicesList services={services} />}
-{activeTab === 'ants' && <ANTSInfo />}
+{activeTab === 'ants' && <Suspense fallback={<TabLoader />}><ANTSInfo /></Suspense>}
 </main>
 <DepositModal isOpen={depositOpen} onClose={() => setDepositOpen(false)} buyerAddress={buyerAddress} />
 <WithdrawModal isOpen={withdrawOpen} onClose={() => setWithdrawOpen(false)} balance={withdrawBalance} buyerAddress={buyerAddress} />

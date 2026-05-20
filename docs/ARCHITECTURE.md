@@ -1,5 +1,7 @@
 # Architecture
 
+> **For a comprehensive reference on the AntSeed protocol itself**, see [ANTSEED_PROTOCOL.md](./ANTSEED_PROTOCOL.md) — covers the 5-layer protocol stack, smart contracts, payments, reputation, identity, security, $ANTS tokenomics, CLI reference, and more.
+
 ## System Design
 
 The AntSeed Dashboard is a **single-page application (SPA)** backed by a lightweight REST API and an embedded SQLite database. It is designed to run anywhere Node.js is available with no external database dependency.
@@ -8,8 +10,9 @@ The AntSeed Dashboard is a **single-page application (SPA)** backed by a lightwe
 
 1. **Single-port serving** — Express handles both `/api/*` routes and static file serving for the built React app. This removes CORS complexity in production.
 2. **SQLite with WAL mode** — better-sqlite3 runs synchronously, requires no separate service, and WAL mode improves concurrent read/write performance.
-3. **Startup sync** — On boot, the server hits the official AntSeed network stats endpoint, wipes stale service/seller data, and repopulates the DB with live peers.
-4. **No auth layer yet** — The `/api/admin/sync` endpoint is open (add middleware if exposing publicly long-term).
+3. **Startup sync** — On boot, the server can hit the official AntSeed network stats endpoint, wipe stale service/seller data, and repopulate the DB with live peers. This is now controlled by `SYNC_ON_STARTUP`.
+4. **Admin route protection** — Admin sync routes require an `x-admin-api-key` header matching `ADMIN_API_KEY`, and can be disabled entirely with `ENABLE_ADMIN_ROUTES`.
+5. **Optional sample data seeding** — Local/demo seed data is controlled by `SEED_SAMPLE_DATA`.
 
 ---
 
@@ -202,6 +205,89 @@ const txHash2 = await client.claimSellerEmissions(signer, [1, 2, 3]);
 - **Buyer emissions**: Eligible after epoch finalization. Subject to caps and anti-abuse checks. Buyer must have deposited USDC and paid for AI services.
 - **Seller emissions**: Currently locked in a Provider Pool. The `claimSellerEmissions` function exists but emissions are routed to the locked pool while stronger validation is introduced.
 - **Anti-abuse**: Farming, fake volume, sybil behavior, spam, or value extraction may be capped, excluded, delayed, locked, or subject to future slashing.
+
+---
+
+## Spending Tracking
+
+### Overview
+
+The Spending tab shows how much USDC a buyer has spent through payment channels on AntSeed, broken down by day and by seller.
+
+### Logic
+
+Spending is derived entirely from **on-chain data** — there is no local transaction log. The flow is:
+
+```
+1. Identify buyer address
+   → Loaded from ~/.antseed/identity.key at server startup
+   → Exposed via /api/deposits/config.evmAddress
+   → Frontend passes this as the buyer address to the spending API
+
+2. Scan Reserved events on the Channels contract
+   → Query `getLogs` for `Reserved(channelId, buyer, seller, maxAmount)`
+   → Filter by buyer address (indexed topic)
+   → Scan in 50,000-block chunks (RPC rate limit)
+   → Default: last 7 days (~300k blocks on Base at ~2s/block)
+
+3. Read each channel's current state
+   → For each channelId from Reserved events, call `channels(channelId)`
+   → Returns: buyer, seller, deposit, settled, status, settledAt, closeRequestedAt
+   → `settled` is the actual amount spent (what the seller took)
+
+4. Aggregate
+   → By day: group channels by reservedAt date, sum settled amounts
+   → By seller: group channels by seller address, sum settled amounts
+   → Total spent: sum of all settled amounts
+   → Active channels: count where status == 1
+```
+
+### Key Concepts
+
+- **Reserved** = the maximum amount locked in a channel (deposit). This is NOT spending.
+- **Settled** = the amount the seller actually claimed. This IS spending.
+- When a channel is closed, the seller gets `settled` and the buyer gets `deposit - settled` back.
+- Status: `1` = Active, `2` = Settled/Closed, `0` = Closed (no spend), `3` = Timed Out
+
+### Endpoint
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/api/deposits/spending` | GET | `?address=0x...&days=7` → spending breakdown |
+
+Response:
+
+```json
+{
+  "days": 7,
+  "totalChannels": 25,
+  "activeChannels": 3,
+  "totalSpent": 75.26,
+  "totalReserved": 89.0,
+  "dailyBreakdown": [{ "date": "2026-05-16", "spent": 35.10 }],
+  "sellerBreakdown": [{ "seller": "0x...", "spent": 49.35 }],
+  "channels": [{ "channelId": "0x...", "seller": "0x...", "deposit": 1.0, "settled": 0.92, "status": 2, "reservedAt": 1778941537 }]
+}
+```
+
+### Buyer vs Operator
+
+The connected wallet is typically the **operator** (authorized to sign payment channels), not the buyer. The buyer address comes from the node's identity key. The server resolves this:
+
+```
+~/.antseed/identity.key (private key)
+  → identityFromPrivateKeyHex() (from @antseed/node)
+  → id.wallet.address (buyer EVM address)
+  → stored in buyerEvmAddress at server startup
+  → returned in /api/deposits/config.evmAddress
+```
+
+### Limitations
+
+- Scanning is limited to 14 days max (RPC block range limits on public nodes)
+- Only channels created via `Reserved` events are found — direct channel interactions bypassing the event won't appear
+- The scan is synchronous per request; for large histories it can take 10-30 seconds
+- Public RPCs (`base.publicnode.com`) rate-limit to 50k blocks per `getLogs` call
 
 ---
 

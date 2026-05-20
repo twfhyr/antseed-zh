@@ -34,6 +34,14 @@ curl -s http://localhost:3001/             # should return HTML
 - `dist/` — production frontend build (served by Express)
 - `docs/` — this documentation
 
+### Documentation Index
+
+| Document | Description |
+|----------|-------------|
+| [README.md](./README.md) | This file — quick start, data flow, tech stack |
+| [ARCHITECTURE.md](./ARCHITECTURE.md) | Dashboard architecture, contract addresses, spending tracking, lessons learned |
+| [ANTSEED_PROTOCOL.md](./ANTSEED_PROTOCOL.md) | Comprehensive AntSeed protocol reference — 5-layer stack, payments, reputation, identity, security, $ANTS tokenomics, CLI, vs OpenRouter |
+
 ---
 
 ## Architecture Overview
