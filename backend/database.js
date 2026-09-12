@@ -150,6 +150,9 @@ function seedIfEmpty() {
       emissions_rate REAL,
       emissions_genesis INTEGER,
       emissions_halving INTEGER,
+      emissions_effective_epoch INTEGER,
+      emissions_duration INTEGER,
+      allocation_json TEXT,
       usdc_deposits_balance REAL,
       usdc_channels_balance REAL,
       rpc_url TEXT

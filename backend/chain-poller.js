@@ -1,7 +1,15 @@
-import { DepositsClient, EmissionsClient, ANTSTokenClient, resolveChainConfig } from '@antseed/node';
+import {
+  DepositsClient, EmissionsClient, EmissionsGateClient, ANTSTokenClient,
+  resolveChainConfig, resolveLegacyContractAddresses, GATE_MINTERS, gateMinterId,
+} from '@antseed/node';
 import db from './database.js';
 
 let intervalId = null;
+
+// Schema additions for older databases (idempotent).
+for (const column of ['emissions_effective_epoch INTEGER', 'emissions_duration INTEGER', 'allocation_json TEXT']) {
+  try { db.prepare(`ALTER TABLE chain_metrics ADD COLUMN ${column}`).run(); } catch (_) {}
+}
 
 export function startChainPoller(seconds = 300) {
   if (intervalId) clearInterval(intervalId);
@@ -10,68 +18,90 @@ export function startChainPoller(seconds = 300) {
       await updateChainMetrics();
       console.log('[poller] Chain metrics synced via official SDK.');
     } catch (e) {
-      console.error('[poller] Failed to sync chain metrics:', e.message || e);
+      console.error('[poller] Failed to sync chain metrics:', e.shortMessage || e.message || e);
     }
   }, seconds * 1000);
   // Run once immediately
-  updateChainMetrics().catch(e => console.error('[poller] Initial sync failed:', e.message || e));
+  updateChainMetrics().catch(e => console.error('[poller] Initial sync failed:', e.shortMessage || e.message || e));
+}
+
+function baseClientConfig(cfg) {
+  return { rpcUrl: cfg.rpcUrl, fallbackRpcUrls: cfg.fallbackRpcUrls, evmChainId: cfg.evmChainId };
 }
 
 export async function updateChainMetrics() {
   const cfg = resolveChainConfig('base-mainnet');
+  const legacy = resolveLegacyContractAddresses(cfg);
 
+  const antsTokenClient = new ANTSTokenClient({ ...baseClientConfig(cfg), contractAddress: cfg.antsTokenAddress });
   const depositsClient = new DepositsClient({
-    rpcUrl: cfg.rpcUrl,
-    fallbackRpcUrls: cfg.fallbackRpcUrls,
+    ...baseClientConfig(cfg),
     contractAddress: cfg.depositsContractAddress,
     usdcAddress: cfg.usdcContractAddress,
-    evmChainId: cfg.evmChainId,
   });
+  const legacyEmissionsClient = new EmissionsClient({ ...baseClientConfig(cfg), contractAddress: legacy.legacyEmissionsContractAddress });
+  const gateClient = cfg.emissionsGateAddress ? new EmissionsGateClient({ ...baseClientConfig(cfg), contractAddress: cfg.emissionsGateAddress }) : null;
 
-  const emissionsClient = new EmissionsClient({
-    rpcUrl: cfg.rpcUrl,
-    fallbackRpcUrls: cfg.fallbackRpcUrls,
-    contractAddress: cfg.emissionsContractAddress,
-    evmChainId: cfg.evmChainId,
-  });
+  const data = { ants: {}, emissions: {}, usdc: {}, allocation: [] };
 
-  const antsTokenClient = new ANTSTokenClient({
-    rpcUrl: cfg.rpcUrl,
-    fallbackRpcUrls: cfg.fallbackRpcUrls,
-    contractAddress: cfg.antsTokenAddress,
-    evmChainId: cfg.evmChainId,
-  });
-
-  const data = {
-    ants: {},
-    emissions: {},
-    usdc: {},
-  };
-
-  // ANTS totalSupply
+  // ANTS totalSupply + maxSupply (both read from the token contract)
   try {
-    const supply = await antsTokenClient.totalSupply();
+    const [supply, maxSupply] = await Promise.all([antsTokenClient.totalSupply(), antsTokenClient.maxSupply()]);
     data.ants.totalSupply = Number(supply) / 1e18;
-    data.ants.maxSupply = 1_040_000_000;
+    data.ants.maxSupply = Number(maxSupply) / 1e18;
   } catch (e) {
     data.ants.error = e.shortMessage || e.message;
   }
 
-  // Emissions
+  // Epoch clock: the M001 emissions gate owns the schedule since epoch 22; it
+  // inherits the legacy V1/V2 clock, so both agree. Prefer the gate when the
+  // recognized-usage deployment is configured, fall back to legacy V2.
   try {
-    const epochInfo = await emissionsClient.getEpochInfo();
-    data.emissions.currentEpoch = Number(epochInfo.epoch);
-    const emission = await emissionsClient.getEpochEmission(epochInfo.epoch);
-    data.emissions.currentRate = Number(emission) / 1e18;
-    const genesis = await emissionsClient.getGenesis();
-    data.emissions.genesis = Number(genesis);
-    const halving = await emissionsClient.getHalvingInterval();
-    data.emissions.halvingInterval = Number(halving);
+    let epoch, rate, genesis, halving, duration, effectiveEpoch = null;
+    if (gateClient) {
+      [epoch, genesis, halving, duration] = await Promise.all([
+        gateClient.currentEpoch(), gateClient.genesis(), gateClient.halvingInterval(), gateClient.epochDuration(),
+      ]);
+      rate = Number(await gateClient.currentEmissionRate()) / 1e18;
+      effectiveEpoch = await gateClient.effectiveEpoch();
+    } else {
+      const epochInfo = await legacyEmissionsClient.getEpochInfo();
+      epoch = Number(epochInfo.epoch);
+      duration = epochInfo.epochDuration;
+      rate = Number(await legacyEmissionsClient.getEpochEmission(epochInfo.epoch)) / 1e18;
+      genesis = Number(await legacyEmissionsClient.getGenesis());
+      halving = Number(await legacyEmissionsClient.getHalvingInterval());
+    }
+    data.emissions.currentEpoch = epoch;
+    data.emissions.currentRate = rate;
+    data.emissions.genesis = genesis;
+    data.emissions.halvingInterval = halving;
+    data.emissions.epochDuration = duration;
+    data.emissions.effectiveEpoch = effectiveEpoch;
   } catch (e) {
     data.emissions.error = e.shortMessage || e.message;
   }
 
-  // USDC balance of Deposits contract
+  // Allocation ceilings (gate minters: seller-pools 40%, usage 20%, team 15%, reserve 15%, verification 10%)
+  if (gateClient) {
+    try {
+      const denominator = await gateClient.shareDenominator();
+      for (const minter of GATE_MINTERS) {
+        try {
+          const info = await gateClient.minter(gateMinterId(minter.id));
+          data.allocation.push({
+            name: minter.name,
+            controller: info.controller,
+            shareBps: info.shareBps,
+            sharePct: denominator > 0 ? (info.shareBps / denominator) * 100 : null,
+            editable: info.editable,
+          });
+        } catch (_) {}
+      }
+    } catch (_) {}
+  }
+
+  // USDC balance of the Deposits contract (funds held for buyers)
   try {
     const bal = await depositsClient.getUSDCBalance(cfg.depositsContractAddress);
     data.usdc.depositsBalance = Number(bal) / 1e6;
@@ -79,7 +109,7 @@ export async function updateChainMetrics() {
     data.usdc.error = e.shortMessage || e.message;
   }
 
-  // USDC balance of Channels contract
+  // USDC balance of the Channels contract (expected zero by design — channels hold no USDC)
   try {
     const bal = await depositsClient.getUSDCBalance(cfg.channelsContractAddress);
     data.usdc.channelsBalance = Number(bal) / 1e6;
@@ -87,14 +117,14 @@ export async function updateChainMetrics() {
     data.usdc.channelsBalance = 0;
   }
 
-  // Insert / update DB
   const insert = db.prepare(`
     INSERT INTO chain_metrics (
       id, fetched_at, ants_total_supply, ants_max_supply,
       emissions_epoch, emissions_rate, emissions_genesis, emissions_halving,
+      emissions_effective_epoch, emissions_duration, allocation_json,
       usdc_deposits_balance, usdc_channels_balance, rpc_url
     )
-    VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       fetched_at = excluded.fetched_at,
       ants_total_supply = excluded.ants_total_supply,
@@ -103,6 +133,9 @@ export async function updateChainMetrics() {
       emissions_rate = excluded.emissions_rate,
       emissions_genesis = excluded.emissions_genesis,
       emissions_halving = excluded.emissions_halving,
+      emissions_effective_epoch = excluded.emissions_effective_epoch,
+      emissions_duration = excluded.emissions_duration,
+      allocation_json = excluded.allocation_json,
       usdc_deposits_balance = excluded.usdc_deposits_balance,
       usdc_channels_balance = excluded.usdc_channels_balance,
       rpc_url = excluded.rpc_url
@@ -113,6 +146,8 @@ export async function updateChainMetrics() {
     data.ants.totalSupply ?? null, data.ants.maxSupply ?? null,
     data.emissions.currentEpoch ?? null, data.emissions.currentRate ?? null,
     data.emissions.genesis ?? null, data.emissions.halvingInterval ?? null,
+    data.emissions.effectiveEpoch ?? null, data.emissions.epochDuration ?? null,
+    JSON.stringify(data.allocation),
     data.usdc.depositsBalance ?? null, data.usdc.channelsBalance ?? null,
     cfg.rpcUrl
   );
@@ -120,23 +155,45 @@ export async function updateChainMetrics() {
   return data;
 }
 
+function contractMap() {
+  const cfg = resolveChainConfig('base-mainnet');
+  const legacy = resolveLegacyContractAddresses(cfg);
+  const ru = cfg.recognizedUsage?.contracts ?? {};
+  return {
+    usdc: cfg.usdcContractAddress,
+    registry: cfg.registryContractAddress,
+    deposits: cfg.depositsContractAddress,
+    channels: cfg.channelsContractAddress,
+    stats: cfg.statsContractAddress,
+    antsToken: cfg.antsTokenAddress,
+    identityRegistry: cfg.identityRegistryAddress,
+    freeUsage: cfg.freeUsageContractAddress,
+    depositRelay: cfg.depositRelayAddress,
+    legacyStaking: legacy.legacyStakingContractAddress,
+    legacyEmissionsV2: legacy.legacyEmissionsContractAddress,
+    legacyEmissionsV1: legacy.legacyEmissionsV1ContractAddress,
+    emissionsGate: cfg.emissionsGateAddress ?? ru.emissionsGate,
+    sellerPools: cfg.sellerPoolsAddress ?? ru.sellerPools,
+    sellerRegistry: cfg.sellerRegistryAddress ?? ru.sellerRegistry,
+    positionInit: cfg.positionInitAddress ?? ru.positionInit,
+    usageAccounting: cfg.usageAccountingAddress ?? ru.usageAccounting,
+    usageRewards: cfg.usageRewardsAddress ?? ru.usageRewards,
+    sellerPoolsRewards: cfg.sellerPoolsRewardsAddress ?? ru.sellerPoolsRewards,
+    washTradingRegistry: ru.washTradingRegistry,
+    pointsPolicyRegistry: ru.pointsPolicyRegistry,
+    legacyEmissionsEscrow: cfg.legacyEmissionsEscrowAddress ?? ru.legacyEmissionsEscrow,
+  };
+}
+
 export function readChainMetrics() {
   const row = db.prepare('SELECT * FROM chain_metrics WHERE id = 1').get();
   if (!row) return null;
+  let allocation = [];
+  try { allocation = row.allocation_json ? JSON.parse(row.allocation_json) : []; } catch (_) {}
   return {
     timestamp: row.fetched_at,
     rpcUrl: row.rpc_url,
-    contracts: {
-      usdc: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
-      registry: '0xf33fC901BFa97326379A369401F4490E231B69B0',
-      deposits: '0x0F7a3a8f4Da01637d1202bb5443fcF7F88F99fD2',
-      channels: '0xBA66d3b4fbCf472F6F11D6F9F96aaCE96516F09d',
-      staking: '0x3652E6B22919bd322A25723B94BB207602E5c8e6',
-      stats: '0x15649ff076BFa5e37e24EE3154a00503149954Fd',
-      emissions: '0xF13bE52c4A3afC6AE29536f073588d01A0564088',
-      antsToken: '0xa87EE81b2C0Bc659307ca2D9ffdC38514DD85263',
-      identityRegistry: '0x8004A169FB4a3325136EB29fA0ceB6D2e539a432',
-    },
+    contracts: contractMap(),
     ants: {
       totalSupply: row.ants_total_supply,
       maxSupply: row.ants_max_supply,
@@ -146,10 +203,13 @@ export function readChainMetrics() {
       currentRate: row.emissions_rate,
       genesis: row.emissions_genesis,
       halvingInterval: row.emissions_halving,
+      effectiveEpoch: row.emissions_effective_epoch,
+      epochDuration: row.emissions_duration,
     },
     usdc: {
       depositsBalance: row.usdc_deposits_balance,
       channelsBalance: row.usdc_channels_balance,
     },
+    allocation,
   };
 }

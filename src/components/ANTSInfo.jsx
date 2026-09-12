@@ -2,6 +2,47 @@ import React, { useState, useEffect } from 'react';
 import { fetchChainStats } from '../api';
 import { ShieldCheck } from 'lucide-react';
 
+const CONTRACT_LABELS = {
+  usdc: 'USDC',
+  registry: 'AntseedRegistry',
+  deposits: 'AntseedDeposits',
+  channels: 'AntseedChannels',
+  stats: 'AntseedStats',
+  antsToken: 'ANTSToken',
+  identityRegistry: 'IdentityRegistry (ERC-8004)',
+  freeUsage: 'AntseedFreeUsage',
+  depositRelay: 'AntseedDepositRelay',
+  legacyStaking: 'Legacy USDC Staking',
+  legacyEmissionsV2: 'Legacy Emissions (V2)',
+  legacyEmissionsV1: 'Legacy Emissions (V1)',
+  emissionsGate: 'AntseedEmissionsGate',
+  sellerPools: 'AntseedSellerPools',
+  sellerRegistry: 'AntseedSellerRegistry',
+  positionInit: 'AntseedPositionInit',
+  usageAccounting: 'AntseedUsageAccounting',
+  usageRewards: 'AntseedUsageRewards',
+  sellerPoolsRewards: 'AntseedSellerPoolsRewards',
+  washTradingRegistry: 'AntseedWashTradingRegistry',
+  pointsPolicyRegistry: 'AntseedPointsPolicyRegistry',
+  legacyEmissionsEscrow: 'AntseedLegacyEmissionsEscrow',
+};
+
+const FALLBACK_ALLOCATION = [
+  { name: 'seller-pools', sharePct: 40, desc: 'Staker rewards on locked ANTS (lANTS) positions in seller pools. The effective share is dynamic — it rises with active stake toward the 40% ceiling.' },
+  { name: 'usage', sharePct: 20, desc: 'Buyer and seller/operator usage rewards from recognized service volume. Dynamic shares rise with recognized USDC volume per epoch.' },
+  { name: 'team', sharePct: 15, desc: 'Core contributors, vested and aligned with long-term network health.' },
+  { name: 'reserve', sharePct: 15, desc: 'Emissions reserve — receives regular allocation plus excess from remainder settlement.' },
+  { name: 'verification', sharePct: 10, desc: 'Verification allocation (initially an editable controller wallet).' },
+];
+
+const ALLOCATION_DESCRIPTIONS = {
+  'seller-pools': FALLBACK_ALLOCATION[0].desc,
+  'usage': FALLBACK_ALLOCATION[1].desc,
+  'team': FALLBACK_ALLOCATION[2].desc,
+  'reserve': FALLBACK_ALLOCATION[3].desc,
+  'verification': FALLBACK_ALLOCATION[4].desc,
+};
+
 function ANTSInfo() {
   const [chainData, setChainData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -50,10 +91,15 @@ function ANTSInfo() {
   const cd = chainData || {};
   const ants = cd.ants || {};
   const emissions = cd.emissions || {};
-  const stats = cd.stats || {};
-  const deposits = cd.deposits || {};
-  const staking = cd.staking || {};
   const usdc = cd.usdc || {};
+  const allocation = (cd.allocation && cd.allocation.length > 0)
+    ? cd.allocation.map((a) => ({
+        name: a.name,
+        pct: a.sharePct != null ? `${a.sharePct.toFixed(a.sharePct % 1 ? 1 : 0)}%` : '—',
+        desc: ALLOCATION_DESCRIPTIONS[a.name] || '',
+      }))
+    : FALLBACK_ALLOCATION.map((a) => ({ name: a.name, pct: `${a.sharePct}%`, desc: a.desc }));
+  const eraActive = emissions.effectiveEpoch != null && emissions.effectiveEpoch !== undefined;
 
   return (
     <div className="table-container" style={{ padding: '2rem' }}>
@@ -69,191 +115,200 @@ function ANTSInfo() {
           <span><b>Verified on-chain</b> — directly read from Base mainnet smart contracts</span>
         </div>
 
+        {/* Recognized usage era banner */}
+        {eraActive && (
+          <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: '12px', padding: '1rem 1.25rem', marginBottom: '1.5rem', fontSize: '0.875rem', lineHeight: 1.6 }}>
+            <div style={{ fontWeight: 700, marginBottom: '0.25rem', color: 'var(--accent)' }}>
+              Recognized usage era — active since epoch {emissions.effectiveEpoch}
+            </div>
+            <div style={{ color: 'var(--text-secondary)' }}>
+              ANTS rewards connect to paid service delivery and seller-pool stake: usage points are earned
+              through settled USDC volume, and stakers earn pool rewards on locked ANTS (lANTS) positions.
+              Epochs 0–{emissions.effectiveEpoch - 1} remain claimable as legacy emissions.
+            </div>
+          </div>
+        )}
+
         {/* Key metrics */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: '1rem', marginBottom: '2rem' }}>
           <StatCard label="Current Supply" value={formatNum(ants.totalSupply)} sub="ANTS" verified={ants.totalSupply !== undefined} />
-          <StatCard label="Max Supply" value={formatNum(ants.maxSupply)} sub="Hard cap" verified={false} />
-          <StatCard label="Current Epoch" value={emissions.currentEpoch !== undefined ? emissions.currentEpoch : '—'} sub="Emissions" verified={emissions.currentEpoch !== undefined} />
+          <StatCard label="Max Supply" value={formatNum(ants.maxSupply)} sub="Hard cap" verified={ants.maxSupply !== undefined} />
+          <StatCard label="Current Epoch" value={emissions.currentEpoch !== undefined ? emissions.currentEpoch : '—'} sub="Weekly epochs" verified={emissions.currentEpoch !== undefined} />
           <StatCard label="Epoch Emission" value={formatNum(emissions.currentRate)} sub="ANTS / epoch" verified={emissions.currentRate !== undefined} />
-          <StatCard label="Genesis Block" value={formatNum(emissions.genesis)} sub="Emissions start" verified={emissions.genesis !== undefined} />
+          <StatCard label="Recognized Since" value={emissions.effectiveEpoch !== undefined ? `Epoch ${emissions.effectiveEpoch}` : '—'} sub="Usage era" verified={emissions.effectiveEpoch !== undefined} />
           <StatCard label="Halving Interval" value={formatNum(emissions.halvingInterval)} sub="Epochs" verified={emissions.halvingInterval !== undefined} />
           <StatCard label="USDC in Deposits" value={formatNum(usdc.depositsBalance)} sub="Contract balance" verified={usdc.depositsBalance !== undefined} />
-          <StatCard label="USDC in Channels" value={formatNum(usdc.channelsBalance)} sub="Locked" verified={usdc.channelsBalance !== undefined} />
+          <StatCard label="USDC in Channels" value={formatNum(usdc.channelsBalance)} sub="Zero by design" verified={usdc.channelsBalance !== undefined} />
         </div>
 
         {/* Contract addresses */}
         <h3 style={{ fontSize: '1.125rem', fontWeight: 600, marginBottom: '1rem' }}>Contract Addresses (Base)</h3>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginBottom: '2rem' }}>
           {cd.contracts && Object.entries(cd.contracts).map(([key, addr]) => (
-            <ContractRow key={key} name={key} address={addr} />
+            addr ? <ContractRow key={key} name={CONTRACT_LABELS[key] || key} address={addr} /> : null
           ))}
         </div>
 
- {/* Emission allocation */}
- <h3 style={{ fontSize: '1.125rem', fontWeight: 600, marginBottom: '1rem' }}>Emission Allocation</h3>
- <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginBottom: '2rem' }}>
- {[
- { pct: '50%', label: 'Sellers', desc: 'Routed to a locked Provider Pool by default. Unlockable via seller unlock policy.' },
- { pct: '20%', label: 'Buyers', desc: 'Proportional to spend. Capped at maxBuyerSharePct (5%) per buyer per epoch — excess goes to reserve.' },
- { pct: '15%', label: 'Protocol Reserve', desc: 'Supports long-term network sustainability and alignment.' },
- { pct: '15%', label: 'Team', desc: 'Vested to core contributors. Aligned with long-term health.' },
- ].map(item => (
- <div key={item.label} style={{ display: 'flex', alignItems: 'flex-start', gap: '1rem', background: 'var(--bg-secondary)', padding: '1rem', borderRadius: '10px' }}>
- <div style={{ minWidth: '60px', fontSize: '1.125rem', fontWeight: 700, color: 'var(--accent)' }}>{item.pct}</div>
- <div>
- <div style={{ fontWeight: 600 }}>{item.label}</div>
- <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', marginTop: '0.25rem' }}>{item.desc}</div>
- </div>
- </div>
- ))}
- </div>
+        {/* Emission allocation (recognized-usage era ceilings, read live from the gate) */}
+        <h3 style={{ fontSize: '1.125rem', fontWeight: 600, marginBottom: '1rem' }}>
+          Emission Allocation {eraActive ? `(epoch ${emissions.effectiveEpoch}+)` : ''}
+        </h3>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginBottom: '2rem' }}>
+          {allocation.map((item) => (
+            <div key={item.name} style={{ display: 'flex', alignItems: 'flex-start', gap: '1rem', background: 'var(--bg-secondary)', padding: '1rem', borderRadius: '10px' }}>
+              <div style={{ minWidth: '60px', fontSize: '1.125rem', fontWeight: 700, color: 'var(--accent)' }}>{item.pct}</div>
+              <div>
+                <div style={{ fontWeight: 600 }}>{item.name}</div>
+                <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', marginTop: '0.25rem' }}>{item.desc}</div>
+              </div>
+            </div>
+          ))}
+        </div>
 
- {/* How Points Are Calculated */}
- <h3 style={{ fontSize: '1.125rem', fontWeight: 600, marginBottom: '1rem' }}>How Points Are Calculated</h3>
- <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', marginBottom: '2rem' }}>
- <div style={{ background: 'var(--bg-secondary)', padding: '1rem 1.25rem', borderRadius: '12px', borderLeft: '3px solid var(--accent)' }}>
- <div style={{ fontSize: '0.875rem', lineHeight: 1.6 }}>
- <span style={{ fontWeight: 600 }}>Source:</span>{' '}
- <span style={{ color: 'var(--text-secondary)' }}>
- When <code style={{ background: 'var(--bg-primary)', padding: '0.125rem 0.375rem', borderRadius: '3px', fontSize: '0.8125rem' }}>AntseedChannels.settle()</code> or{' '}
- <code style={{ background: 'var(--bg-primary)', padding: '0.125rem 0.375rem', borderRadius: '3px', fontSize: '0.8125rem' }}>close()</code>{' '}
- is called, the <em>settlement delta</em> (the new USDC amount being charged in that settlement, before the 4% platform fee) is passed to the Emissions contract:
- </span>
- </div>
- <div style={{ marginTop: '0.75rem', padding: '0.625rem 0.875rem', background: 'var(--bg-primary)', borderRadius: '8px', fontFamily: 'monospace', fontSize: '0.8125rem', lineHeight: 1.8, whiteSpace: 'pre-wrap' }}>
- <span style={{ color: 'var(--text-secondary)' }}>// Inside AntseedChannels._settleSpend()</span>{'\n'}
- <span style={{ color: '#c084fc' }}>uint128</span> delta = cumulativeAmount - channel.settled;{'\n'}
- <span style={{ color: '#c084fc' }}>uint256</span> platformFee = (delta × <span style={{ color: '#f59e0b' }}>400</span>) / 10000;  <span style={{ color: 'var(--text-secondary)' }}>// 4%</span>{'\n'}
- <span style={{ color: 'var(--text-secondary)' }}>// Points use the FULL delta, before fee deduction</span>{'\n'}
- emissions.<span style={{ color: 'var(--warning)' }}>accrueSellerPoints</span>(seller, delta);{'\n'}
- emissions.<span style={{ color: 'var(--info)' }}>accrueBuyerPoints</span>(buyer, delta);{'\n'}
- <span style={{ color: 'var(--text-secondary)' }}>// Fee is only applied when USDC actually moves:</span>{'\n'}
- deposits.chargeAndCreditPayouts(buyer, seller, delta, platformFee);
- </div>
- <div style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)', marginTop: '0.5rem' }}>
- The delta is in USDC raw units (6 decimals). A $10 settlement = 10,000,000 points for both buyer and seller. Points are based on the full delta before the 4% platform fee is deducted from the actual USDC transfer.
- </div>
- </div>
+        {/* Dynamic shares */}
+        <h3 style={{ fontSize: '1.125rem', fontWeight: 600, marginBottom: '1rem' }}>Dynamic Reward Shares</h3>
+        <div style={{ background: 'var(--bg-secondary)', padding: '1.25rem', borderRadius: '12px', marginBottom: '2rem' }}>
+          <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', lineHeight: 1.7, marginBottom: '0.75rem' }}>
+            The seller-pool and usage ceilings are not fixed payouts — their effective shares scale smoothly
+            with network participation. Each share follows:
+          </div>
+          <div style={{ padding: '0.625rem 0.875rem', background: 'var(--bg-primary)', borderRadius: '8px', fontFamily: 'monospace', fontSize: '0.8125rem', marginBottom: '0.75rem' }}>
+            share = minimum + (maximum − minimum) × input / (input + target)
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '0.375rem 1rem', fontSize: '0.8125rem' }}>
+            <span style={{ color: 'var(--accent)', fontWeight: 500 }}>Staker share</span>
+            <span>2% baseline → 40% ceiling. Input: active staked ANTS, target 400M (scales with scheduled emissions). At target the share is 21%.</span>
+            <span style={{ color: 'var(--info)', fontWeight: 500 }}>Buyer share</span>
+            <span>5% baseline → 10% ceiling. Input: recognized USDC volume per epoch, network-wide target 1M USDC. At target the share is 7.5%.</span>
+            <span style={{ color: 'var(--warning)', fontWeight: 500 }}>Seller/operator share</span>
+            <span>5% baseline → 10% ceiling. Same recognized-volume input as the buyer share.</span>
+            <span style={{ fontWeight: 500 }}>Unallocated remainder</span>
+            <span>Burned first (up to 30% of the epoch's scheduled emissions), the rest goes to the emissions reserve.</span>
+          </div>
+          <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.75rem', lineHeight: 1.5 }}>
+            A zero input gives a zero share. These are allocation shares, not guaranteed payments — reward
+            eligibility, pool power, and utilization determine the actual distribution.
+          </div>
+        </div>
 
- <PointsSection
- title="Buyer Points"
- color="var(--info)"
- formula="buyerPoints += delta  (each settlement)"
- steps={[
- { label: 'Channel is settled', desc: 'When a seller calls settle() or close(), the settlement delta is credited as buyer points to the buyer address for the current epoch.' },
- { label: 'Points accumulate per epoch', desc: 'All deltas from every settlement where the buyer paid USDC are summed into userBuyerPoints[buyer][epoch] and epochTotalBuyerPoints[epoch].' },
- { label: 'Claiming buyer emissions', desc: 'After epoch ends: reward = (userPoints / totalPoints) × budget. Budget = epochEmission × 20%. Capped at budget × maxBuyerSharePct (5%). Excess above cap goes to reserve.' },
- ]}
- notes={[
- 'Points are tracked under the buyer address (the wallet that deposited USDC), not the operator/signer address.',
- 'Only settled USDC generates points — deposited but unspent USDC does not earn points.',
- 'A 4% platform fee is deducted from the USDC transfer, but points are based on the pre-fee delta.',
- 'Buyer rewards are capped per-epoch (maxBuyerSharePct = 5% of buyer budget). Any excess above the cap is redirected to the protocol reserve.',
- ]}
- />
- <PointsSection
- title="Seller Points"
- color="var(--warning)"
- formula="sellerPoints += delta  (each settlement)"
- steps={[
- { label: 'Channel is settled', desc: 'The same settlement delta is credited as seller points to the seller address for the current epoch. Buyer and seller receive equal points.' },
- { label: 'Points accumulate per epoch', desc: 'All deltas from every settlement where the seller served requests are summed into userSellerPoints[seller][epoch] and epochTotalSellerPoints[epoch].' },
- { label: 'Claiming seller emissions', desc: 'After epoch ends: reward = (userPoints / totalPoints) × budget. Budget = epochEmission × 50%. By default, rewards are minted to the locked Provider Pool, not to the seller directly.' },
- ]}
- notes={[
- 'Buyer and seller receive the same points delta per settlement — points are symmetric.',
- 'Seller rewards go to a locked Provider Pool unless a seller unlock policy allows direct claims.',
- 'If a pointsPolicy contract is set (via accruePoints), it can return weighted points instead of raw delta — but the deployed Channels currently uses the legacy accrue functions.',
- 'Seller rewards are also capped per-epoch (maxSellerSharePct = 50% of seller budget). Excess goes to reserve.',
- ]}
- />
- <div style={{ background: 'var(--bg-secondary)', padding: '1.25rem', borderRadius: '12px' }}>
- <div style={{ fontWeight: 600, marginBottom: '0.75rem' }}>Emission Formula</div>
- <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', lineHeight: 1.7 }}>
- <div style={{ marginBottom: '0.5rem' }}>
- <code style={{ background: 'var(--bg-primary)', padding: '0.125rem 0.5rem', borderRadius: '4px', fontSize: '0.8125rem' }}>
- budget = epochEmission × sharePct / 100
- </code>
- </div>
- <div style={{ marginBottom: '0.5rem' }}>
- <code style={{ background: 'var(--bg-primary)', padding: '0.125rem 0.5rem', borderRadius: '4px', fontSize: '0.8125rem' }}>
- reward = (userPoints / epochTotalPoints) × budget
- </code>
- </div>
- <div style={{ marginBottom: '0.75rem' }}>
- <code style={{ background: 'var(--bg-primary)', padding: '0.125rem 0.5rem', borderRadius: '4px', fontSize: '0.8125rem' }}>
- if reward &gt; budget × maxSharePct / 100 → excess goes to reserve
- </code>
- </div>
- <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '0.375rem 1rem', fontSize: '0.8125rem' }}>
- <span style={{ color: 'var(--text-primary)', fontWeight: 500 }}>epochEmission</span>
- <span>INITIAL_EMISSION halving every halvingInterval epochs</span>
- <span style={{ color: 'var(--info)', fontWeight: 500 }}>Buyer budget</span>
- <span>20% of epochEmission, capped at 5% per buyer</span>
- <span style={{ color: 'var(--warning)', fontWeight: 500 }}>Seller budget</span>
- <span>50% of epochEmission, capped at 50% per seller</span>
- <span style={{ fontWeight: 500 }}>Reserve</span>
- <span>15% of epochEmission + excess from buyer/seller caps</span>
- <span style={{ fontWeight: 500 }}>Team</span>
- <span>15% of epochEmission</span>
- </div>
- </div>
- </div>
- </div>
+        {/* How rewards are earned */}
+        <h3 style={{ fontSize: '1.125rem', fontWeight: 600, marginBottom: '1rem' }}>How Rewards Are Earned</h3>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', marginBottom: '2rem' }}>
+          <PointsSection
+            title="Seller Usage Rewards"
+            color="var(--warning)"
+            formula="seller points (recognized USDC volume) × pool power → agent share of the seller/operator budget"
+            steps={[
+              { label: 'Eligible seller pool', desc: 'Recognized usage requires a registered seller with an eligible pool and sufficient epoch power. Staking power activates the epoch after the stake.' },
+              { label: 'Points accrue on settlement', desc: 'When channels settle, AntseedUsageAccounting applies the registered points policies and records seller points per epoch (scaled by 1e6).' },
+              { label: 'Claim via UsageAccounting', desc: 'After the epoch ends, pending seller emissions are claimed with claimSellerEmissions(epochs). The Claim ANTS tab tracks each epoch.' },
+            ]}
+            notes={[
+              'A missing or filtered pool still settles USDC but earns no new usage points for that record.',
+              'The historical wash-trading policy zeros both buyer and seller points when a seller’s proven wash volume reaches 25% of its authenticated historical total.',
+              'Legacy USDC staking remains an eligibility fallback until explicitly disabled.',
+            ]}
+          />
+          <PointsSection
+            title="Buyer Usage Rewards"
+            color="var(--info)"
+            formula="buyer points (recognized USDC volume) → buyer share of the usage budget"
+            steps={[
+              { label: 'Points accrue on settlement', desc: 'Each settlement credits buyer points for the recognized USDC volume paid, after points policies, into UsageAccounting.' },
+              { label: 'Rewards accrue per epoch', desc: 'After finalization, UsageRewards tracks pendingBuyerReward(buyer, epoch) — one record per epoch.' },
+              { label: 'Claimed by the deposits operator', desc: 'Buyer usage rewards are paid to the wallet operating the buyer’s Deposits account: claimBuyerReward(buyer, epoch).' },
+            ]}
+            notes={[
+              'Only settled USDC generates points — deposited but unspent USDC does not earn rewards.',
+              'If the deposits operator differs from the buyer wallet, claim from the operator wallet (the dashboard shows the recipient).',
+            ]}
+          />
+          <PointsSection
+            title="Staker (Seller Pool) Rewards"
+            color="var(--accent)"
+            formula="position power / pool power → share of the pool’s seller-pool reward budget"
+            steps={[
+              { label: 'Lock ANTS into a pool', desc: 'AntseedSellerPools holds locked ANTS positions represented by lANTS NFTs. Staking power activates in the following epoch.' },
+              { label: 'Pool rewards accrue', desc: 'SellerPoolsRewards indexes each pool’s emissions per epoch; rewards accrue on open (and recently closed) positions.' },
+              { label: 'Claim or restake', desc: 'Pending rewards are previewed per position and claimed with claimStakerRewardsBatch(positionIds, recipient) — the Claim ANTS tab runs the full index-then-claim flow.' },
+            ]}
+            notes={[
+              'Moving stake preserves the principal, lock, and accrued rewards; early withdrawal slashes 5–50% of principal (linear in remaining lock), burned to 0x…dEaD.',
+              'Rewards on positions closed by split/merge/move remain claimable under the old position ID.',
+            ]}
+          />
+          <PointsSection
+            title="Legacy Emissions (epochs 0–21)"
+            color="var(--text-secondary)"
+            formula="reward = (userPoints / epochTotalPoints) × epoch budget"
+            steps={[
+              { label: 'Historical points', desc: 'Before the recognized-usage era, channels accrued raw settlement-delta points for buyers and sellers on the legacy Emissions contracts (V1 for epochs < 4, V2 for later epochs).' },
+              { label: 'Unchanged and claimable', desc: 'Legacy-era points and claims remain available on the legacy contracts; nothing about the migration erased them.' },
+              { label: 'Claim on the Claim ANTS tab', desc: 'The Legacy Epoch Breakdown table shows per-epoch points, rewards, and claim buttons — V1 for epochs < 4, V2 for later epochs.' },
+            ]}
+            notes={[
+              'The locked legacy seller rewards pool (M002) additionally releases 10% of cumulative locked legacy ANTS per claim.',
+            ]}
+          />
+        </div>
 
- {/* How to Earn */}
- <h3 style={{ fontSize: '1.125rem', fontWeight: 600, marginBottom: '1rem' }}>How to Earn</h3>
- <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1rem' }}>
- <div style={{ background: 'var(--bg-secondary)', padding: '1.25rem', borderRadius: '12px' }}>
- <div style={{ fontWeight: 600, marginBottom: '0.5rem' }}>As a Seller</div>
- <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>Serve real requests and settle on-chain. Emissions are tracked but currently routed into a locked Provider Pool.</div>
- </div>
- <div style={{ background: 'var(--bg-secondary)', padding: '1.25rem', borderRadius: '12px' }}>
- <div style={{ fontWeight: 600, marginBottom: '0.5rem' }}>As a Buyer</div>
- <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>Deposit USDC, use the network, and pay for AI services. Eligible buyer emissions may be claimable after epoch finalization.</div>
- </div>
- <div style={{ background: 'var(--bg-secondary)', padding: '1.25rem', borderRadius: '12px' }}>
- <div style={{ fontWeight: 600, marginBottom: '0.5rem' }}>Protocol Reserve</div>
- <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>Network fees (4% of settlements) flow to the reserve — not to a company — to strengthen the ecosystem.</div>
- </div>
- </div>
+        {/* How to Earn */}
+        <h3 style={{ fontSize: '1.125rem', fontWeight: 600, marginBottom: '1rem' }}>How to Earn</h3>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1rem' }}>
+          <div style={{ background: 'var(--bg-secondary)', padding: '1.25rem', borderRadius: '12px' }}>
+            <div style={{ fontWeight: 600, marginBottom: '0.5rem' }}>As a Seller</div>
+            <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>Register your seller agent, keep an eligible pool with epoch power, and serve settled requests to earn seller usage rewards.</div>
+          </div>
+          <div style={{ background: 'var(--bg-secondary)', padding: '1.25rem', borderRadius: '12px' }}>
+            <div style={{ fontWeight: 600, marginBottom: '0.5rem' }}>As a Buyer</div>
+            <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>Deposit USDC and pay for AI services through the network. Settled volume earns buyer points — rewards are claimed by your deposits operator.</div>
+          </div>
+          <div style={{ background: 'var(--bg-secondary)', padding: '1.25rem', borderRadius: '12px' }}>
+            <div style={{ fontWeight: 600, marginBottom: '0.5rem' }}>As a Staker</div>
+            <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>Lock ANTS into a seller pool to earn staker rewards on your lANTS position. Power activates the next epoch.</div>
+          </div>
+          <div style={{ background: 'var(--bg-secondary)', padding: '1.25rem', borderRadius: '12px' }}>
+            <div style={{ fontWeight: 600, marginBottom: '0.5rem' }}>Protocol Reserve</div>
+            <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>Network fees (4% of settlements) flow to the reserve — not to a company — to strengthen the ecosystem.</div>
+          </div>
+        </div>
       </div>
     </div>
   );
 }
 
 function PointsSection({ title, color, formula, steps, notes }) {
- return (
- <div style={{ background: 'var(--bg-secondary)', padding: '1.25rem', borderRadius: '12px' }}>
- <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.75rem' }}>
- <div style={{ width: '4px', height: '20px', borderRadius: '2px', background: color }} />
- <span style={{ fontWeight: 600 }}>{title}</span>
- </div>
- <div style={{ marginBottom: '0.75rem', padding: '0.5rem 0.75rem', background: 'var(--bg-primary)', borderRadius: '8px', fontFamily: 'monospace', fontSize: '0.8125rem', color: color }}>
- {formula}
- </div>
- <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginBottom: '0.75rem' }}>
- {steps.map((step, i) => (
- <div key={i} style={{ display: 'flex', gap: '0.625rem', fontSize: '0.8125rem', lineHeight: 1.5 }}>
- <span style={{ flexShrink: 0, width: '20px', height: '20px', borderRadius: '50%', background: 'var(--bg-primary)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.6875rem', fontWeight: 600, color: color }}>{i + 1}</span>
- <div>
- <span style={{ fontWeight: 500, color: 'var(--text-primary)' }}>{step.label}</span>
- <span style={{ color: 'var(--text-secondary)' }}> — {step.desc}</span>
- </div>
- </div>
- ))}
- </div>
- {notes.length > 0 && (
- <div style={{ borderTop: '1px solid var(--border)', paddingTop: '0.625rem', display: 'flex', flexDirection: 'column', gap: '0.375rem' }}>
- {notes.map((note, i) => (
- <div key={i} style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', lineHeight: 1.5, paddingLeft: '0.5rem', borderLeft: '2px solid var(--border)' }}>
- {note}
- </div>
- ))}
- </div>
- )}
- </div>
- );
+  return (
+    <div style={{ background: 'var(--bg-secondary)', padding: '1.25rem', borderRadius: '12px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.75rem' }}>
+        <div style={{ width: '4px', height: '20px', borderRadius: '2px', background: color }} />
+        <span style={{ fontWeight: 600 }}>{title}</span>
+      </div>
+      <div style={{ marginBottom: '0.75rem', padding: '0.5rem 0.75rem', background: 'var(--bg-primary)', borderRadius: '8px', fontFamily: 'monospace', fontSize: '0.8125rem', color: color }}>
+        {formula}
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginBottom: '0.75rem' }}>
+        {steps.map((step, i) => (
+          <div key={i} style={{ display: 'flex', gap: '0.625rem', fontSize: '0.8125rem', lineHeight: 1.5 }}>
+            <span style={{ flexShrink: 0, width: '20px', height: '20px', borderRadius: '50%', background: 'var(--bg-primary)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.6875rem', fontWeight: 600, color: color }}>{i + 1}</span>
+            <div>
+              <span style={{ fontWeight: 500, color: 'var(--text-primary)' }}>{step.label}</span>
+              <span style={{ color: 'var(--text-secondary)' }}> — {step.desc}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+      {notes.length > 0 && (
+        <div style={{ borderTop: '1px solid var(--border)', paddingTop: '0.625rem', display: 'flex', flexDirection: 'column', gap: '0.375rem' }}>
+          {notes.map((note, i) => (
+            <div key={i} style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', lineHeight: 1.5, paddingLeft: '0.5rem', borderLeft: '2px solid var(--border)' }}>
+              {note}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function StatCard({ label, value, sub, verified }) {
@@ -277,7 +332,7 @@ function StatCard({ label, value, sub, verified }) {
 function ContractRow({ name, address }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', background: 'var(--bg-secondary)', padding: '0.75rem 1rem', borderRadius: '8px' }}>
-      <span style={{ fontSize: '0.75rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-secondary)', minWidth: '140px' }}>{name}</span>
+      <span style={{ fontSize: '0.75rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-secondary)', minWidth: '200px' }}>{name}</span>
       <code style={{ fontSize: '0.8rem', color: 'var(--text-primary)', fontFamily: 'monospace' }}>{address}</code>
     </div>
   );

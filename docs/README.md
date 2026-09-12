@@ -71,8 +71,9 @@ Express Server (PORT 3001)
 
 | Path | What it does |
 |---|---|
-| backend/server.js | Express app: routes, static file serving, start-up sync |
+| backend/server.js | Express app: routes, static file serving, start-up sync, rewards endpoints |
 | backend/database.js | SQLite schema + seed (buyers, sellers, services, stats) |
+| backend/chain-poller.js | On-chain metrics poller (supply, epoch clock, gate allocation, USDC balances) |
 | backend/sync-official.js | Fetches live AntSeed network data and writes to DB |
 | src/App.jsx | Root component: fetches data, manages tabs |
 | src/api.js | Thin fetch wrapper for /api/* endpoints |
@@ -80,6 +81,8 @@ Express Server (PORT 3001)
 | src/components/BuyersList.jsx | Searchable buyers table |
 | src/components/SellersList.jsx | Searchable sellers table |
 | src/components/ServicesList.jsx | Searchable/filterable services table |
+| src/components/ClaimANTS.jsx | Five-bucket rewards view + wallet claim flows |
+| src/components/ANTSInfo.jsx | On-chain ANTS data, contracts, allocation, reward mechanics |
 | vite.config.js | Vite config with host: true for public access |
 | package.json | dev script uses concurrently to run both servers |
 
@@ -95,7 +98,7 @@ No .env file is required out of the box.
 
 ---
 
-## Emissions Contract Migration
+## Emissions Contract Migration (legacy era)
 
 The emissions contract was migrated during epoch 4. Points must be read from **both** contracts:
 
@@ -109,6 +112,43 @@ The emissions contract was migrated during epoch 4. Points must be read from **b
 - For epoch 5+: only the V2 contract has points. Claim from V2.
 
 The backend (`/api/emissions/pending`) merges both contracts automatically. The frontend (`ClaimANTS.jsx`) routes claim transactions to the correct contract based on epoch.
+
+---
+
+## Recognized Usage Era (epoch 22+, since September 10, 2026)
+
+Since epoch 22 the protocol connects ANTS rewards to paid service delivery and
+seller-pool stake (the "recognized usage" M001 deployment). Rewards now come in
+**five buckets**, all viewable on the Claim ANTS tab via `GET /api/rewards?address=0x…`:
+
+| Bucket | Earned via | Read from | Claimed via |
+|---|---|---|---|
+| Staker | Locked ANTS (lANTS) positions in seller pools | `AntseedSellerPools` + `AntseedSellerPoolsRewards` | `indexPoolRewards` (prep) then `claimStakerRewardsBatch(positionIds, recipient)` |
+| Seller usage | Recognized seller points × pool power | `AntseedUsageAccounting`, `AntseedUsageRewards` | `UsageAccounting.claimSellerEmissions(epochs)` |
+| Buyer usage | Recognized buyer points (settled USDC volume) | `AntseedUsageRewards` | `UsageRewards.claimBuyerReward(buyer, epoch)` — paid to the deposits operator |
+| Legacy | Pre-epoch-22 buyer/seller emissions | Legacy Emissions V1/V2 | `claimSellerEmissions(epochs)` / `claimBuyerEmissions(buyer, epochs)` (V1 for epochs < 4) |
+| Locked (M002) | 10% releases of cumulative locked legacy seller ANTS | `SellerRewardsPool` (resolved from legacy Emissions) | `claim(recipient)` |
+
+Key facts:
+
+- **Epoch clock**: weekly epochs, 104-epoch halving, gate genesis April 9, 2026.
+- **Allocation ceilings** (live from the gate via `/api/chain-stats` `allocation`):
+  40% seller-pools / 20% usage / 15% team / 15% reserve / 10% verification —
+  the seller-pool and usage shares are dynamic (scale with active stake and
+  recognized volume).
+- **Max supply**: 1.04B ANTS, read live from the token contract
+  (`ANTSToken.maxSupply()`), no longer hardcoded.
+- Legacy endpoints (`/api/emissions/pending`, `/api/emissions/claimed`) still
+  serve the legacy epoch breakdown table (epochs 0–21 in the recognized era).
+  Epoch 4 has partial points in both the V1 and V2 contracts; the pending
+  response includes a per-contract breakdown, and claims are routed to each
+  contract that still has pending.
+
+Core M001 contracts (Base mainnet): EmissionsGate `0xe60a31e6cd2f8455503ca0b3f6545dd3ddf543bd`,
+SellerPools `0x8bf4d39aa13f3cb03f87d9500767fbc4d0940652`, SellerRegistry `0x99c533bcc6ca646e543dba835fdbb9c2ee02cb60`,
+UsageAccounting `0xadd2d85316153d7bfaf7921ee9bf1bb6c7a1cbc9`, UsageRewards `0x78330bf154172f1137219bb559d4f3a270b3201f`,
+SellerPoolsRewards `0x83cc5b9aa0c8cb8683f35462c385a5baaa755ee5`. The full list
+(including legacy contracts) is served by `/api/chain-stats` → `contracts`.
 
 ---
 

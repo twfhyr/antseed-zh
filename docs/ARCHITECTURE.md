@@ -72,7 +72,9 @@ App.jsx (useEffect → fetch)
   ├─ StatsCards ← stats object
   ├─ BuyersList ← buyers array + search
   ├─ SellersList ← sellers array + search
-  └─ ServicesList ← services array + search + category filter
+  ├─ ServicesList ← services array + search + category filter
+  ├─ ANTSInfo ← /api/chain-stats (supply, epoch clock, allocation, contract map)
+  └─ ClaimANTS ← /api/rewards (five buckets) + wagmi wallet claims
 ```
 
 ---
@@ -81,127 +83,127 @@ App.jsx (useEffect → fetch)
 
 ### Overview
 
-The Claim tab lets users connect their EVM wallet (MetaMask, Coinbase Wallet, etc.) on Base mainnet and claim accumulated ANTS emissions from past epochs.
+The Claim tab lets users connect their EVM wallet (MetaMask, Coinbase Wallet, etc.) on Base mainnet and claim ANTS rewards. Since the recognized-usage era (epoch 22, September 10, 2026) rewards come in **five buckets**: staker (seller-pool positions), seller usage, buyer usage, legacy emissions, and the locked M002 pool. A "Claim All" button runs every bucket in sequence, mirroring the official ANTS dashboard flow.
 
-### Smart Contract
+### Reward Buckets & Contracts
 
-The **Emissions contract** (`0xF13bE52c4A3afC6AE29536f073588d01A0564088` on Base) handles all claim logic.
+| Bucket | Contract(s) | Claim function |
+|---|---|---|
+| Staker | `AntseedSellerPools` `0x8bf4d39aa13f3cb03f87d9500767fbc4d0940652`, `AntseedSellerPoolsRewards` `0x83cc5b9aa0c8cb8683f35462c385a5baaa755ee5` | `indexPoolRewards(agentId, maxEpochs)` loop (brings each pool's reward index up to date), then `claimStakerRewardsBatch(positionIds, recipient)` in batches of 32 |
+| Seller usage | `AntseedUsageAccounting` `0xadd2d85316153d7bfaf7921ee9bf1bb6c7a1cbc9`, `AntseedUsageRewards` `0x78330bf154172f1137219bb559d4f3a270b3201f` | `claimSellerEmissions(epochs)` |
+| Buyer usage | `AntseedUsageRewards` | `claimBuyerReward(buyer, epoch)` — per epoch; paid to the deposits operator |
+| Legacy (epochs 0–21) | Emissions V2 `0xF13bE52c4A3afC6AE29536f073588d01A0564088`, V1 `0x36877fBa8Fa333aa46a1c57b66D132E4995C86b5` (epochs < 4) | `claimSellerEmissions(epochs)` / `claimBuyerEmissions(buyer, epochs)` |
+| Locked (M002) | `SellerRewardsPool` (resolved from legacy Emissions `sellerRewardsPool()`) | `claim(recipient)` |
 
-#### Key Functions (from ABI)
+Backend reads come from `@antseed/node` clients; `resolveLegacyContractAddresses(cfg)` is used for the legacy trio so the code works regardless of whether the published SDK points `emissionsContractAddress` at the legacy V2 or the new UsageAccounting.
 
-**Write (claim):**
-- `claimSellerEmissions(uint256[] epochs)` — Seller claims their ANTS for given epochs
-- `claimBuyerEmissions(address buyer, uint256[] epochs)` — Claim buyer ANTS for given epochs
-
-**Read (eligibility):**
-- `pendingEmissions(address account, uint256[] epochs)` → `(uint256 seller, uint256 buyer)` — Pending ANTS for an address across epochs
-- `sellerEpochClaimed(address account, uint256 epoch)` → `bool` — Whether seller already claimed an epoch
-- `buyerEpochClaimed(address account, uint256 epoch)` → `bool` — Whether buyer already claimed an epoch
-- `userSellerPoints(address account, uint256 epoch)` → `uint256` — Seller points earned in an epoch
-- `userBuyerPoints(address account, uint256 epoch)` → `uint256` — Buyer points earned in an epoch
-- `currentEpoch()` → `uint256` — Current epoch number
-- `EPOCH_DURATION()` → `uint256` — Seconds per epoch (604,800 = 1 week)
-- `INITIAL_EMISSION()` → `uint256` — First epoch budget (5,000,000 ANTS)
-- `HALVING_INTERVAL()` → `uint256` — Epochs between halvings (104)
-- `SELLER_SHARE_PCT()` → `uint256` — Seller share (50)
-- `BUYER_SHARE_PCT()` → `uint256` — Buyer share (20)
-- `RESERVE_SHARE_PCT()` → `uint256` — Reserve share (15)
-- `TEAM_SHARE_PCT()` → `uint256` — Team share (15)
-
-### Emission Schedule
+### Emission Schedule (recognized-usage era)
 
 | Parameter | Value |
 |---|---|
-| Max supply | 1,040,000,000 ANTS |
+| Max supply | 1,040,000,000 ANTS (read live from `ANTSToken.maxSupply()`) |
 | Epoch duration | 1 week (604,800 seconds) |
-| First epoch budget | 5,000,000 ANTS |
-| Halving interval | Every 104 epochs (~2 years) |
-| Seller share | 50% (currently locked in Provider Pool) |
-| Buyer share | 20% (eligible for claiming) |
-| Reserve share | 15% |
-| Team share | 15% (vested) |
+| Halving interval | 104 epochs (~2 years), gate genesis April 9, 2026 |
+| Recognized-usage start | Epoch 22 (September 10, 2026) |
+| Allocation ceilings | 40% seller-pools / 20% usage / 15% team / 15% reserve / 10% verification (read live from the gate minters) |
+
+The seller-pool and usage shares are **dynamic**: the staker share scales from a 2% baseline toward its 40% ceiling with active stake (target 400M ANTS), and buyer/seller-operator usage shares each scale from 5% toward 10% with recognized USDC volume (target 1M USDC/epoch). Unallocated remainder is burned (up to 30% of epoch emissions) with the rest going to the reserve.
 
 ### Claim Flow (Frontend)
 
 ```
-1. User clicks "Connect Wallet"
-   → window.ethereum.request({ method: 'eth_requestAccounts' })
-   → Get connected address
+1. User connects wallet (wagmi) or searches any address (read-only view)
 
-2. Fetch epoch info from backend
-   → GET /api/emissions/epoch-info
-   → Returns currentEpoch, epochDuration, genesis, halvingInterval
+2. Load the five-bucket rewards view
+   → GET /api/rewards?address=0x...
+   → { staker, sellerUsage, buyerUsage, legacy, locked, total, contracts, phase }
 
-3. Fetch user's pending emissions
-   → GET /api/emissions/pending?address=0x...&epochs=0,1,2,...,currentEpoch-1
-   → Returns { sellerPending, buyerPending } per epoch + totals
+3. Legacy epoch table (epochs 0–boundary-1)
+   → GET /api/emissions/pending?address=...&epochs=0,...,boundary-1
+   → per-epoch points/rewards/claimed (V1+V2 merged)
 
-4. Filter to unclaimed epochs only
-   → GET /api/emissions/claimed?address=0x...&epochs=0,1,2,...
-   → Filters out epochs where sellerEpochClaimed/buyerEpochClaimed is true
+4. Claim a bucket (browser sends the tx directly via wagmi + wallet):
+   - Staker: read currentEpoch + poolRewardIndexNextEpoch via publicClient,
+     indexPoolRewards until the cursor reaches each position's target epoch,
+     then claimStakerRewardsBatch
+   - Seller usage: claimSellerEmissions(epochs)
+   - Buyer usage: claimBuyerReward(buyer, epoch) per epoch (requires the wallet
+     to be the deposits operator)
+   - Legacy: epochs 0–3 claim from V1, epoch 5+ from V2; epoch 4 has partial
+     points in BOTH contracts, so it claims from each contract that still has
+     pending (per-contract breakdown from /api/emissions/pending)
+   - Locked: claim(recipient)
 
-5. User clicks "Claim"
-   → Direct contract interaction from browser via ethers.js + window.ethereum
-   → claimBuyerEmissions(address, [unclaimedEpochs]) or claimSellerEmissions([unclaimedEpochs])
-   → Wait for tx receipt, show success
-
-6. Refresh pending emissions after claim
+5. Refresh rewards view with &bust=1 after claims
 ```
 
 ### Backend Endpoints (read-only, proxy to chain)
 
 | Endpoint | Method | Description |
 |---|---|---|
-| `/api/emissions/epoch-info` | GET | Current epoch, emission rate, epoch duration |
-| `/api/emissions/pending` | GET | `?address=0x...&epochs=0,1,2` → pending seller/buyer ANTS |
-| `/api/emissions/claimed` | GET | `?address=0x...&epochs=0,1,2` → which epochs already claimed |
-| `/api/emissions/points` | GET | `?address=0x...&epochs=0,1,2` → user points per epoch |
+| `/api/rewards` | GET | `?address=0x...&bust=1` → all five buckets + contracts + epoch info (90s cache) |
+| `/api/emissions/epoch-info` | GET | Current epoch, emission rate, effective epoch, phase, legacy shares + gate allocation |
+| `/api/emissions/pending` | GET | `?address=...&epochs=` → legacy-era pending seller/buyer ANTS per epoch (V1+V2 merged; epoch rows ≤ 4 include a per-contract `sellerRewardV1/V2`, `buyerRewardV1/V2` breakdown) |
+| `/api/emissions/claimed` | GET | `?address=...&epochs=` → which legacy epochs already claimed |
+| `/api/chain-stats` | GET | Supply, max supply, epoch clock, allocation, USDC balances, contract map |
 
-Claims are **not** proxied through the backend — the user's browser sends the transaction directly to Base mainnet via their wallet provider. This keeps private keys in the wallet and avoids the server needing any signing capability.
+Claims are **not** proxied through the backend — the user's browser sends transactions directly to Base mainnet via their wallet provider. This keeps private keys in the wallet and avoids the server needing any signing capability.
 
 ### SDK Usage (@antseed/node)
 
 ```javascript
-import { EmissionsClient, resolveChainConfig } from '@antseed/node';
+import {
+  EmissionsClient, EmissionsGateClient, UsageAccountingClient, UsageRewardsClient,
+  SellerPoolsClient, SellerPoolsRewardsClient, SellerRegistryClient, SellerRewardsPoolClient,
+  RegistryClient, StakingClient, ANTSTokenClient, DepositsClient,
+  resolveChainConfig, resolveLegacyContractAddresses,
+  previewPoolRewards, pendingEpochRewards, GATE_MINTERS, gateMinterId,
+} from '@antseed/node';
 
 const cfg = resolveChainConfig('base-mainnet');
+const legacy = resolveLegacyContractAddresses(cfg); // legacy V2/V1 + staking addresses
 
-const client = new EmissionsClient({
-  rpcUrl: cfg.rpcUrl,
-  fallbackRpcUrls: cfg.fallbackRpcUrls,
-  contractAddress: cfg.emissionsContractAddress, // 0xF13bE52c4A3afC6AE29536f073588d01A0564088
-  evmChainId: cfg.evmChainId,                    // 8453
-});
+// Five-bucket view (read-only, no signer)
+const pending = await new UsageAccountingClient({ ...opts(cfg), contractAddress: cfg.usageAccountingAddress })
+  .pendingEmissions(address, epochs); // → { seller, buyer }
+const positions = await previewPoolRewards(poolsClient, poolsRewardsClient, address); // staker bucket
+const agentId = await new SellerRegistryClient({ ...opts(cfg), contractAddress: cfg.sellerRegistryAddress })
+  .getAgentId(address); // falls back to legacy StakingClient.getAgentId
 
-// Read pending emissions (no signer needed)
-const { seller, buyer } = await client.pendingEmissions(address, [1, 2, 3]);
-
-// Check if claimed
-const claimed = await client.buyerEpochClaimed(address, 1);
-
-// Claim (requires ethers Signer from browser wallet)
-const txHash = await client.claimBuyerEmissions(signer, address, [1, 2, 3]);
-const txHash2 = await client.claimSellerEmissions(signer, [1, 2, 3]);
+// Epoch clock + allocation from the gate
+const gate = new EmissionsGateClient({ ...opts(cfg), contractAddress: cfg.emissionsGateAddress });
+const [epoch, effectiveEpoch] = await Promise.all([gate.currentEpoch(), gate.effectiveEpoch()]);
 ```
 
 ### Contract Addresses (Base Mainnet, Chain ID 8453)
 
+Full live map served by `/api/chain-stats` → `contracts`. Core entries:
+
 | Contract | Address |
 |---|---|
 | ANTS Token | `0xa87EE81b2C0Bc659307ca2D9ffdC38514DD85263` |
-| Emissions | `0xF13bE52c4A3afC6AE29536f073588d01A0564088` |
+| Emissions Gate | `0xe60a31e6cd2f8455503ca0b3f6545dd3ddf543bd` |
+| Usage Accounting | `0xadd2d85316153d7bfaf7921ee9bf1bb6c7a1cbc9` |
+| Usage Rewards | `0x78330bf154172f1137219bb559d4f3a270b3201f` |
+| Seller Pools | `0x8bf4d39aa13f3cb03f87d9500767fbc4d0940652` |
+| Seller Pools Rewards | `0x83cc5b9aa0c8cb8683f35462c385a5baaa755ee5` |
+| Seller Registry | `0x99c533bcc6ca646e543dba835fdbb9c2ee02cb60` |
+| Legacy Emissions (V2) | `0xF13bE52c4A3afC6AE29536f073588d01A0564088` |
+| Legacy Emissions (V1) | `0x36877fBa8Fa333aa46a1c57b66D132E4995C86b5` |
+| Legacy Staking | `0x3652E6B22919bd322A25723B94BB207602E5c8e6` |
 | Deposits | `0x0F7a3a8f4Da01637d1202bb5443fcF7F88F99fD2` |
 | Channels | `0xBA66d3b4fbCf472F6F11D6F9F96aaCE96516F09d` |
-| Staking | `0x3652E6B22919bd322A25723B94BB207602E5c8e6` |
 | Stats | `0x15649ff076BFa5e37e24EE3154a00503149954Fd` |
 | Identity Registry | `0x8004A169FB4a3325136EB29fA0ceB6D2e539a432` |
 | USDC | `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` |
 
 ### Eligibility Notes
 
-- **Buyer emissions**: Eligible after epoch finalization. Subject to caps and anti-abuse checks. Buyer must have deposited USDC and paid for AI services.
-- **Seller emissions**: Currently locked in a Provider Pool. The `claimSellerEmissions` function exists but emissions are routed to the locked pool while stronger validation is introduced.
-- **Anti-abuse**: Farming, fake volume, sybil behavior, spam, or value extraction may be capped, excluded, delayed, locked, or subject to future slashing.
+- **Seller usage rewards**: require a registered seller agent (`SellerRegistry.getAgentId`) with an eligible pool and sufficient epoch power. A missing or filtered pool still settles USDC but earns no new usage points.
+- **Buyer usage rewards**: paid to the deposits operator wallet; if the operator differs from the buyer, claims must come from the operator wallet.
+- **Staker rewards**: power activates the epoch after staking; rewards on positions closed by split/merge/move remain claimable under the old position ID.
+- **Legacy emissions**: frozen at epochs 0–21; V1 for epochs < 4, V2 for later epochs. The locked M002 pool releases 10% of cumulative locked legacy seller ANTS per claim.
+- **Anti-abuse**: the registered points policies (e.g. the historical wash-trading filter) can zero points for flagged volume; farming/fake volume may be capped or excluded.
 
 ---
 
@@ -253,7 +255,9 @@ User Browser
   |-- HTTP GET /assets/*.js       → static JS bundle
   |-- HTTP GET /api/stats         → SQLite stats row
   |-- HTTP GET /api/services      → all services from SQLite
-  |-- HTTP GET /api/emissions/*   → read emissions data from Base mainnet
+  |-- HTTP GET /api/emissions/*   → legacy-era emissions data from Base mainnet
+  |-- HTTP GET /api/rewards       → five-bucket rewards view (staker/usage/legacy/locked)
   |-- HTTP POST /api/admin/sync   → triggers live network re-sync
   |-- Direct wallet tx            → claimSellerEmissions / claimBuyerEmissions on Base
+  |-- Direct wallet tx            → indexPoolRewards + claimStakerRewardsBatch / claimBuyerReward
 ```

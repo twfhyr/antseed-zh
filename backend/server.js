@@ -5,7 +5,13 @@ import { fileURLToPath } from 'url';
 import db from './database.js';
 import { syncFromOfficialNetwork } from './sync-official.js';
 import { readChainMetrics, updateChainMetrics, startChainPoller } from './chain-poller.js';
-import { EmissionsClient, ANTSTokenClient, DepositsClient, resolveChainConfig } from '@antseed/node';
+import {
+  EmissionsClient, ANTSTokenClient, DepositsClient, RegistryClient, EmissionsGateClient,
+  UsageAccountingClient, UsageRewardsClient, SellerPoolsClient, SellerPoolsRewardsClient,
+  SellerRegistryClient, SellerRewardsPoolClient, StakingClient,
+  resolveChainConfig, resolveLegacyContractAddresses, GATE_MINTERS, gateMinterId,
+  previewPoolRewards, pendingEpochRewards,
+} from '@antseed/node';
 
 const PROVIDER_BASE = process.env.PROVIDER_BASE_URL || 'http://localhost:8377/v1';
 
@@ -298,10 +304,12 @@ app.post('/api/admin/sync', async (_req, res) => {
   }
 });
 
-const EMISSIONS_V1_ADDRESS = '0x36877fBa8Fa333aa46a1c57b66D132E4995C86b5';
+const EMISSIONS_V1_FALLBACK = '0x36877fBa8Fa333aa46a1c57b66D132E4995C86b5';
 const MIGRATION_EPOCH = 4;
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 
 const emissionsCfg = resolveChainConfig('base-mainnet');
+const legacyAddresses = resolveLegacyContractAddresses(emissionsCfg);
 
 let buyerEvmAddress = null;
 try {
@@ -314,35 +322,133 @@ const id = identityFromPrivateKeyHex(identityHex);
 buyerEvmAddress = id.wallet.address;
 console.log(`Buyer EVM address (from identity): ${buyerEvmAddress}`);
 } catch (e) {
-console.warn('Could not load buyer identity:', e.message);
+  console.warn('Could not load buyer identity:', e.message);
 }
-const emissionsClient = new EmissionsClient({
-  rpcUrl: emissionsCfg.rpcUrl,
-  fallbackRpcUrls: emissionsCfg.fallbackRpcUrls,
-  contractAddress: emissionsCfg.emissionsContractAddress,
-  evmChainId: emissionsCfg.evmChainId,
-});
 
-const emissionsV1Client = new EmissionsClient({
-  rpcUrl: emissionsCfg.rpcUrl,
-  fallbackRpcUrls: emissionsCfg.fallbackRpcUrls,
-  contractAddress: EMISSIONS_V1_ADDRESS,
-  evmChainId: emissionsCfg.evmChainId,
-});
+function evmClientConfig(contractAddress) {
+  return {
+    rpcUrl: emissionsCfg.rpcUrl,
+    fallbackRpcUrls: emissionsCfg.fallbackRpcUrls,
+    contractAddress,
+    evmChainId: emissionsCfg.evmChainId,
+  };
+}
 
-const antsTokenClient = new ANTSTokenClient({
-rpcUrl: emissionsCfg.rpcUrl,
-fallbackRpcUrls: emissionsCfg.fallbackRpcUrls,
-contractAddress: emissionsCfg.antsTokenAddress,
-evmChainId: emissionsCfg.evmChainId,
-});
+function sameAddress(a, b) {
+  return !!a && !!b && a.toLowerCase() === b.toLowerCase();
+}
+
+// Legacy emissions V2 — pre-migration points, claims, and epoch clock (epochs 0–21).
+const emissionsClient = new EmissionsClient(evmClientConfig(legacyAddresses.legacyEmissionsContractAddress));
+
+// Legacy emissions V1 — historical points for epochs before the V1→V2 migration.
+const emissionsV1Client = new EmissionsClient(evmClientConfig(legacyAddresses.legacyEmissionsV1ContractAddress || EMISSIONS_V1_FALLBACK));
+
+// Legacy USDC staking — seller eligibility fallback.
+const legacyStakingClient = new StakingClient(evmClientConfig(legacyAddresses.legacyStakingContractAddress));
+
+const antsTokenClient = new ANTSTokenClient(evmClientConfig(emissionsCfg.antsTokenAddress));
 
 const depositsClient = new DepositsClient({
-rpcUrl: emissionsCfg.rpcUrl,
-fallbackRpcUrls: emissionsCfg.fallbackRpcUrls,
-contractAddress: emissionsCfg.depositsContractAddress,
-evmChainId: emissionsCfg.evmChainId,
+  rpcUrl: emissionsCfg.rpcUrl,
+  fallbackRpcUrls: emissionsCfg.fallbackRpcUrls,
+  contractAddress: emissionsCfg.depositsContractAddress,
+  evmChainId: emissionsCfg.evmChainId,
 });
+
+const registryClient = new RegistryClient(evmClientConfig(emissionsCfg.registryContractAddress));
+
+const recognizedUsage = emissionsCfg.recognizedUsage?.contracts ?? {};
+const recognizedDeployed = !!(emissionsCfg.usageAccountingAddress && emissionsCfg.sellerRegistryAddress);
+
+const emissionsGateClient = emissionsCfg.emissionsGateAddress
+  ? new EmissionsGateClient(evmClientConfig(emissionsCfg.emissionsGateAddress))
+  : null;
+const usageAccountingClient = emissionsCfg.usageAccountingAddress
+  ? new UsageAccountingClient(evmClientConfig(emissionsCfg.usageAccountingAddress))
+  : null;
+const usageRewardsClient = emissionsCfg.usageRewardsAddress
+  ? new UsageRewardsClient(evmClientConfig(emissionsCfg.usageRewardsAddress))
+  : null;
+const sellerPoolsClient = emissionsCfg.sellerPoolsAddress
+  ? new SellerPoolsClient(evmClientConfig(emissionsCfg.sellerPoolsAddress))
+  : null;
+const sellerPoolsRewardsClient = emissionsCfg.sellerPoolsRewardsAddress
+  ? new SellerPoolsRewardsClient(evmClientConfig(emissionsCfg.sellerPoolsRewardsAddress))
+  : null;
+const sellerRegistryClient = emissionsCfg.sellerRegistryAddress
+  ? new SellerRegistryClient(evmClientConfig(emissionsCfg.sellerRegistryAddress))
+  : null;
+
+// ─── Protocol phase + epoch ranges (recognized-usage era since epoch 22) ───
+const STACK_TTL_MS = 60_000;
+let stackCache = null;
+
+async function safe(read, fallback) {
+  try { return await read(); } catch { return fallback; }
+}
+
+async function resolveStack() {
+  if (stackCache && Date.now() - stackCache.resolvedAt < STACK_TTL_MS) return stackCache;
+
+  const [registryEmissions, registryStaking] = await Promise.all([
+    safe(() => registryClient.emissions(), null),
+    safe(() => registryClient.staking(), null),
+  ]);
+  const active = recognizedDeployed
+    && sameAddress(registryEmissions, emissionsCfg.usageAccountingAddress)
+    && sameAddress(registryStaking, emissionsCfg.sellerRegistryAddress);
+  const phase = active ? 'active' : recognizedDeployed ? 'deployed' : 'legacy';
+
+  let currentEpoch = null;
+  let effectiveEpoch = null;
+  let genesis = null;
+  let epochDuration = null;
+  if (emissionsGateClient) {
+    [currentEpoch, effectiveEpoch, genesis, epochDuration] = await Promise.all([
+      safe(() => emissionsGateClient.currentEpoch(), null),
+      active ? safe(() => emissionsGateClient.effectiveEpoch(), null) : Promise.resolve(null),
+      safe(() => emissionsGateClient.genesis(), null),
+      safe(() => emissionsGateClient.epochDuration(), null),
+    ]);
+  }
+  if (currentEpoch === null) {
+    const info = await safe(() => emissionsClient.getEpochInfo(), null);
+    if (info) {
+      currentEpoch = Number(info.epoch);
+      epochDuration = info.epochDuration;
+      genesis = await safe(() => emissionsClient.getGenesis(), null);
+    }
+  }
+
+  const boundary = active && effectiveEpoch !== null ? Math.min(currentEpoch, effectiveEpoch) : currentEpoch;
+  const legacyEpochs = boundary !== null ? Array.from({ length: Math.max(0, boundary) }, (_, epoch) => epoch) : [];
+  const recognizedEpochs = active && effectiveEpoch !== null && currentEpoch !== null
+    ? Array.from({ length: Math.max(0, currentEpoch - effectiveEpoch) }, (_, i) => effectiveEpoch + i)
+    : [];
+
+  const lockedRewardsPool = await safe(async () => {
+    const pool = await emissionsClient.sellerRewardsPool();
+    return sameAddress(pool, ZERO_ADDRESS) ? null : pool;
+  }, null);
+  const lockedPoolClient = lockedRewardsPool ? new SellerRewardsPoolClient(evmClientConfig(lockedRewardsPool)) : null;
+
+  stackCache = {
+    phase, currentEpoch, effectiveEpoch, genesis, epochDuration,
+    legacyEpochs, recognizedEpochs,
+    lockedRewardsPool, lockedPoolClient,
+    resolvedAt: Date.now(),
+  };
+  return stackCache;
+}
+
+async function agentIdOf(address) {
+  if (sellerRegistryClient) {
+    const fromRegistry = await safe(() => sellerRegistryClient.getAgentId(address), 0);
+    if (fromRegistry) return fromRegistry;
+  }
+  return safe(() => legacyStakingClient.getAgentId(address), 0);
+}
 
 app.get('/api/deposits/config', (_req, res) => {
 res.json({
@@ -352,8 +458,15 @@ rpcUrl: emissionsCfg.rpcUrl,
 depositsContractAddress: emissionsCfg.depositsContractAddress,
 channelsContractAddress: emissionsCfg.channelsContractAddress,
 usdcContractAddress: emissionsCfg.usdcContractAddress,
-emissionsContractAddress: emissionsCfg.emissionsContractAddress,
 antsTokenAddress: emissionsCfg.antsTokenAddress,
+legacyEmissionsContractAddress: legacyAddresses.legacyEmissionsContractAddress,
+legacyStakingContractAddress: legacyAddresses.legacyStakingContractAddress,
+emissionsGateAddress: emissionsCfg.emissionsGateAddress,
+usageAccountingAddress: emissionsCfg.usageAccountingAddress,
+usageRewardsAddress: emissionsCfg.usageRewardsAddress,
+sellerPoolsAddress: emissionsCfg.sellerPoolsAddress,
+sellerPoolsRewardsAddress: emissionsCfg.sellerPoolsRewardsAddress,
+sellerRegistryAddress: emissionsCfg.sellerRegistryAddress,
 evmAddress: buyerEvmAddress,
 });
 });
@@ -462,15 +575,35 @@ res.status(500).json({ error: e.message });
 
 app.get('/api/emissions/epoch-info', async (_req, res) => {
   try {
+    const stack = await resolveStack();
     const [epochInfo, shares] = await Promise.all([
       emissionsClient.getEpochInfo(),
-      emissionsClient.getShares(),
+      emissionsClient.getShares().catch(() => null),
     ]);
+    const allocation = [];
+    if (emissionsGateClient) {
+      const denominator = await emissionsGateClient.shareDenominator().catch(() => 0);
+      for (const minter of GATE_MINTERS) {
+        const info = await emissionsGateClient.minter(gateMinterId(minter.id)).catch(() => null);
+        if (info) {
+          allocation.push({
+            name: minter.name,
+            controller: info.controller,
+            shareBps: info.shareBps,
+            sharePct: denominator > 0 ? (info.shareBps / denominator) * 100 : null,
+          });
+        }
+      }
+    }
     res.json({
-      currentEpoch: epochInfo.epoch,
+      currentEpoch: stack.currentEpoch ?? Number(epochInfo.epoch),
       currentEmission: Number(epochInfo.emission) / 1e18,
       epochDuration: epochInfo.epochDuration,
-      shares,
+      genesis: stack.genesis,
+      effectiveEpoch: stack.effectiveEpoch,
+      phase: stack.phase,
+      shares, // legacy-era shares (pre-epoch-22)
+      allocation, // recognized-usage era ceilings (epoch 22+)
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -506,8 +639,12 @@ app.get('/api/emissions/pending', async (req, res) => {
  const isCurrent = epoch >= currentEpoch;
  let epochSellerPts = 0;
  let epochBuyerPts = 0;
- let epochSellerReward = 0;
- let epochBuyerReward = 0;
+  let epochSellerReward = 0;
+  let epochBuyerReward = 0;
+  let epochSellerRewardV1 = 0;
+  let epochBuyerRewardV1 = 0;
+  let epochSellerRewardV2 = 0;
+  let epochBuyerRewardV2 = 0;
  let epochSellerClaimed = false;
  let epochBuyerClaimed = false;
 
@@ -561,12 +698,20 @@ app.get('/api/emissions/pending', async (req, res) => {
               epochBuyerReward += totalBuyerPts > 0 ? (userBuyerPts / totalBuyerPts) * emission * 0.2 : 0;
             } else {
               const pending = await emissionsClient.pendingEmissions(addr, [epoch]);
-              epochSellerReward += Number(pending.seller) / 1e18;
-              epochBuyerReward += Number(pending.buyer) / 1e18;
+              const v2SellerReward = Number(pending.seller) / 1e18;
+              const v2BuyerReward = Number(pending.buyer) / 1e18;
+              epochSellerRewardV2 += v2SellerReward;
+              epochBuyerRewardV2 += v2BuyerReward;
+              epochSellerReward += v2SellerReward;
+              epochBuyerReward += v2BuyerReward;
               if (epoch <= MIGRATION_EPOCH) {
                 const v1Pending = await emissionsV1Client.pendingEmissions(addr, [epoch]);
-                epochSellerReward += Number(v1Pending.seller) / 1e18;
-                epochBuyerReward += Number(v1Pending.buyer) / 1e18;
+                const v1SellerReward = Number(v1Pending.seller) / 1e18;
+                const v1BuyerReward = Number(v1Pending.buyer) / 1e18;
+                epochSellerRewardV1 += v1SellerReward;
+                epochBuyerRewardV1 += v1BuyerReward;
+                epochSellerReward += v1SellerReward;
+                epochBuyerReward += v1BuyerReward;
               }
             }
           }
@@ -583,6 +728,12 @@ app.get('/api/emissions/pending', async (req, res) => {
  sellerClaimed: epochSellerClaimed,
  buyerClaimed: epochBuyerClaimed,
  isCurrentEpoch: isCurrent,
+ ...(epoch <= MIGRATION_EPOCH && !isCurrent ? {
+   sellerRewardV1: epochSellerRewardV1,
+   buyerRewardV1: epochBuyerRewardV1,
+   sellerRewardV2: epochSellerRewardV2,
+   buyerRewardV2: epochBuyerRewardV2,
+ } : {}),
  });
  }
 
@@ -714,6 +865,160 @@ app.get('/api/emissions/balance', async (req, res) => {
     );
 
     res.json({ ants });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ─── Rewards view (recognized-usage era: 5 buckets) ───
+// Mirrors the official ANTS dashboard: staker (seller-pool lANTS positions),
+// seller usage rewards, buyer usage rewards, legacy emissions, locked M002 pool.
+app.get('/api/rewards', async (req, res) => {
+  try {
+    const address = req.query.address;
+    if (!address || !/^0x[a-fA-F0-9]{40}$/.test(address)) {
+      return res.status(400).json({ error: 'valid address query param required' });
+    }
+    const bustCache = req.query.bust === '1';
+    const cacheKey = `rewards:${address.toLowerCase()}`;
+    if (!bustCache) {
+      const cached = db.prepare('SELECT data, fetched_at FROM address_emissions WHERE address = ?').get(cacheKey);
+      if (cached && Date.now() - cached.fetched_at < 90_000) return res.json(JSON.parse(cached.data));
+    }
+
+    const stack = await resolveStack();
+    const agentId = await agentIdOf(address);
+
+    // Staker: pending rewards on open pool positions (lANTS NFTs)
+    const stakerPositions = sellerPoolsClient && sellerPoolsRewardsClient
+      ? await safe(() => previewPoolRewards(sellerPoolsClient, sellerPoolsRewardsClient, address), [])
+      : [];
+    const stakerPending = stakerPositions.filter((p) => p.amount > 0n);
+
+    // Seller usage rewards (recognized epochs) — claimed via UsageAccounting.claimSellerEmissions
+    let sellerTotal = 0n;
+    const sellerEpochs = [];
+    if (stack.phase === 'active' && usageAccountingClient && usageRewardsClient && stack.recognizedEpochs.length > 0) {
+      sellerTotal = await safe(() => pendingEpochRewards(stack.recognizedEpochs, async (batch) => (await usageAccountingClient.pendingEmissions(address, batch)).seller), 0n);
+      for (const epoch of stack.recognizedEpochs) {
+        const [sellerClaimed, sellerPoints] = await Promise.all([
+          agentId ? safe(() => usageRewardsClient.agentEpochClaimed(agentId, epoch), false) : Promise.resolve(false),
+          safe(() => usageAccountingClient.sellerPointsByEpoch(epoch, address), 0n),
+        ]);
+        const sellerAmount = agentId && !sellerClaimed
+          ? await safe(() => usageRewardsClient.pendingAgentReward(agentId, epoch), 0n)
+          : 0n;
+        sellerEpochs.push({
+          epoch,
+          points: Number(sellerPoints) / 1e6,
+          amount: Number(sellerAmount) / 1e18,
+          claimed: sellerClaimed,
+        });
+      }
+    }
+
+    // Buyer usage rewards (recognized epochs) — claimed via UsageRewards.claimBuyerReward by the deposits operator
+    let buyerTotal = 0n;
+    const buyerEpochs = [];
+    if (stack.phase === 'active' && usageRewardsClient && stack.recognizedEpochs.length > 0) {
+      for (const epoch of stack.recognizedEpochs) {
+        const [buyerClaimed, buyerPoints] = await Promise.all([
+          safe(() => usageRewardsClient.buyerEpochClaimed(address, epoch), false),
+          usageAccountingClient ? safe(() => usageAccountingClient.buyerPointsByEpoch(epoch, address), 0n) : Promise.resolve(0n),
+        ]);
+        const buyerAmount = buyerClaimed ? 0n : await safe(() => usageRewardsClient.pendingBuyerReward(address, epoch), 0n);
+        buyerTotal += buyerAmount;
+        buyerEpochs.push({
+          epoch,
+          points: Number(buyerPoints) / 1e6,
+          amount: Number(buyerAmount) / 1e18,
+          claimed: buyerClaimed,
+        });
+      }
+    }
+    const operator = await safe(() => depositsClient.getOperator(address), ZERO_ADDRESS);
+    const isOperator = sameAddress(operator, address);
+
+    // Legacy emissions (epochs before the recognized-usage start), merged V2 + V1 (epochs �� 4)
+    let legacySeller = 0;
+    let legacyBuyer = 0;
+    if (stack.legacyEpochs.length > 0) {
+      const pending = await safe(() => emissionsClient.pendingEmissions(address, stack.legacyEpochs), { seller: 0n, buyer: 0n });
+      legacySeller = Number(pending.seller) / 1e18;
+      legacyBuyer = Number(pending.buyer) / 1e18;
+      const v1Epochs = stack.legacyEpochs.filter((e) => e <= MIGRATION_EPOCH);
+      if (v1Epochs.length > 0) {
+        const v1Pending = await safe(() => emissionsV1Client.pendingEmissions(address, v1Epochs), { seller: 0n, buyer: 0n });
+        legacySeller += Number(v1Pending.seller) / 1e18;
+        legacyBuyer += Number(v1Pending.buyer) / 1e18;
+      }
+    }
+
+    // Locked legacy seller rewards (M002: releases 10% of cumulative locked legacy ANTS)
+    const locked = stack.lockedPoolClient
+      ? await safe(() => stack.lockedPoolClient.claimable(address), { locked: 0n, claimable: 0n, policy: ZERO_ADDRESS })
+      : { locked: 0n, claimable: 0n, policy: ZERO_ADDRESS };
+
+    const stakerTotalAnts = stakerPending.reduce((sum, p) => sum + p.amount, 0n);
+    const total = Number(stakerTotalAnts) / 1e18 + Number(sellerTotal) / 1e18 + Number(buyerTotal) / 1e18
+      + legacySeller + legacyBuyer + Number(locked.claimable) / 1e18;
+
+    const data = {
+      currentEpoch: stack.currentEpoch,
+      effectiveEpoch: stack.effectiveEpoch,
+      phase: stack.phase,
+      agentId,
+      operator: sameAddress(operator, ZERO_ADDRESS) ? null : operator,
+      staker: {
+        total: Number(stakerTotalAnts) / 1e18,
+        positions: stakerPending.map((p) => ({
+          id: p.id,
+          agentId: p.agentId,
+          amount: Number(p.amount) / 1e18,
+          closedAtEpoch: p.closedAtEpoch,
+        })),
+      },
+      sellerUsage: {
+        total: Number(sellerTotal) / 1e18,
+        claimable: stack.phase === 'active' && agentId !== 0,
+        epochs: sellerEpochs,
+      },
+      buyerUsage: {
+        total: Number(buyerTotal) / 1e18,
+        claimable: stack.phase === 'active' && isOperator,
+        recipient: sameAddress(operator, ZERO_ADDRESS) ? null : operator,
+        epochs: buyerEpochs,
+      },
+      legacy: {
+        seller: legacySeller,
+        buyer: legacyBuyer,
+        epochs: stack.legacyEpochs,
+        contract: legacyAddresses.legacyEmissionsContractAddress,
+      },
+      locked: {
+        locked: Number(locked.locked) / 1e18,
+        claimable: Number(locked.claimable) / 1e18,
+        pool: stack.lockedRewardsPool,
+        policy: sameAddress(locked.policy, ZERO_ADDRESS) ? null : locked.policy,
+      },
+      total,
+      contracts: {
+        usageAccounting: emissionsCfg.usageAccountingAddress,
+        usageRewards: emissionsCfg.usageRewardsAddress,
+        sellerPoolsRewards: emissionsCfg.sellerPoolsRewardsAddress,
+        sellerPools: emissionsCfg.sellerPoolsAddress,
+        legacyEmissions: legacyAddresses.legacyEmissionsContractAddress,
+        legacyEmissionsV1: legacyAddresses.legacyEmissionsV1ContractAddress || EMISSIONS_V1_FALLBACK,
+        lockedPool: stack.lockedRewardsPool,
+      },
+    };
+
+    db.prepare('INSERT OR REPLACE INTO address_emissions (address, data, fetched_at) VALUES (?, ?, ?)').run(
+      cacheKey,
+      JSON.stringify(data),
+      Date.now()
+    );
+    res.json(data);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

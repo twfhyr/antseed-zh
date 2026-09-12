@@ -19,7 +19,7 @@ The app `antseed-zh` is the dedicated dashboard for a specific seller node (Peer
 1. **Node Showcase**: Display available models, pricing, status, and connection instructions for the `antseed-zh` node
 2. **Network Browser**: Provide search, filter, and comparison capabilities for all seller nodes and AI services across the network
 3. **Token Economy**: Display the on-chain economic model, issuance data, and contract information for the $ANTS token
-4. **Reward Claims**: Support wallet connection to query and claim $ANTS buyer/seller epoch emissions
+4. **Reward Claims**: Support wallet connection to query and claim $ANTS rewards across all five buckets — staker (seller pools), seller usage, buyer usage, legacy epoch emissions, and the locked M002 pool
 
 ---
 
@@ -112,11 +112,11 @@ antseed buyer connection set --peer 412282c48584073c5aee6a79945f105a7777e194
 
 **FR-016** After wallet connection, display the following statistics:
 - Current $ANTS balance
-- Total buyer pending rewards
-- Total seller pending rewards
-- Current Epoch
+- Claimable rewards per bucket: Staker / Seller Usage / Buyer Usage / Legacy / Locked
+- Total claimable across all buckets
+- Current Epoch + recognized-usage effective epoch
 
-**FR-017** Provide a **Buyer Emissions / Seller Emissions** toggle.
+**FR-017** Provide **five reward bucket cards** (Staker / Seller Usage / Buyer Usage / Legacy / Locked), each with its own "Claim" button, plus a **Claim All** button that runs every bucket in sequence and aborts on the first failure.
 
 **FR-018** Display a **historical epoch detail table** containing:
 - Epoch number
@@ -124,7 +124,9 @@ antseed buyer connection set --peer 412282c48584073c5aee6a79945f105a7777e194
 - Corresponding $ANTS reward
 - Claimed / Unclaimed status
 
-**FR-019** Support **claiming by individual epoch** and **one-click claiming for all unclaimed epochs**.
+In the recognized-usage era this table splits into two: the recognized table (epochs ≥ 22, points from `AntseedUsageAccounting`/`AntseedUsageRewards`) and the legacy table (epochs 0–21, V1+V2 merged).
+
+**FR-019** Support **claiming by individual epoch** and **one-click claiming for all unclaimed rewards**. Claim transactions follow the official flows: staker claims index pools first (`indexPoolRewards`) then batch-claim positions; buyer usage claims per epoch and pays the deposits operator; legacy claims route epochs 0–3 to V1, epochs 5+ to V2, and epoch 4 to both contracts (per-contract pending breakdown).
 
 **FR-020** The claim operation must send the on-chain transaction directly from the frontend via wagmi's `useWriteContract`, without proxying through the backend.
 
@@ -142,7 +144,7 @@ antseed buyer connection set --peer 412282c48584073c5aee6a79945f105a7777e194
 
 **FR-024** Display all relevant smart contract addresses with Basescan links.
 
-**FR-025** Display emission allocation breakdown: Seller 50% / Buyer 20% / Reserve 15% / Team 15%.
+**FR-025** Display the emission allocation breakdown read **live from the Emissions Gate minters** (baseline 40% seller-pools / 20% usage / 15% team / 15% reserve / 10% verification), including the dynamic share formula for staker and buyer/seller usage shares.
 
 **FR-026** Provide a "How to Earn" guide explaining how sellers, buyers, and protocol reserve earn rewards.
 
@@ -203,8 +205,8 @@ antseed buyer connection set --peer 412282c48584073c5aee6a79945f105a7777e194
 | Data Source | Purpose | Update Frequency |
 |-------------|---------|------------------|
 | `https://network.antseed.com/stats` | Network-wide seller/service/pricing data | On startup + manual trigger |
-| Base mainnet RPC (publicnode) | ANTS supply, emissions, USDC balances | Every 5 minutes |
-| `@antseed/node` SDK | Wrapped on-chain reads | Every 5 minutes |
+| Base mainnet RPC (rotating public endpoints) | ANTS supply/max supply, epoch clock, gate allocation, USDC balances | Every 5 minutes |
+| `@antseed/node` SDK | Wrapped on-chain reads (rewards, pools, usage accounting) | On demand (90s cache) |
 
 ### 5.2 Internal Data Model
 
@@ -213,8 +215,8 @@ Core SQLite tables:
 - `sellers` — Seller node information (from official API)
 - `services` — AI service information (from official API, globally deduplicated)
 - `stats` — Aggregated statistics (single row)
-- `chain_metrics` — Cached on-chain metrics (single row)
-- `address_emissions` — Per-address emission data cache
+- `chain_metrics` — Cached on-chain metrics (single row; includes epoch clock, gate allocation, max supply)
+- `address_emissions` — Per-address emission data cache (legacy pending + 90s-TTL `rewards:<addr>` five-bucket view)
 - `address_balances` — Per-address ANTS balance cache
 
 ---
@@ -225,25 +227,35 @@ Core SQLite tables:
 - **Frontend**: React 19, Vite 6, Lucide React, plain CSS
 - **Backend**: Express 5, better-sqlite3, CORS
 - **Web3**: wagmi v2, viem v2, RainbowKit v2, @tanstack/react-query v5
-- **On-chain SDK**: @antseed/node v0.2.84
+- **On-chain SDK**: @antseed/node v0.2.118+
 - **Network**: Fixed to Base mainnet
 
 ### 6.2 Determined Contract Addresses
 
+Core contracts (full live map served by `/api/chain-stats` → `contracts`):
+
 | Contract | Base Mainnet Address |
 |----------|----------------------|
 | ANTS Token | `0xa87EE81b2C0Bc659307ca2D9ffdC38514DD85263` |
-| Emissions | `0xF13bE52c4A3afC6AE29536f073588d01A0584088` |
+| Emissions Gate | `0xe60a31e6cd2f8455503ca0b3f6545dd3ddf543bd` |
+| Usage Accounting | `0xadd2d85316153d7bfaf7921ee9bf1bb6c7a1cbc9` |
+| Usage Rewards | `0x78330bf154172f1137219bb559d4f3a270b3201f` |
+| Seller Pools | `0x8bf4d39aa13f3cb03f87d9500767fbc4d0940652` |
+| Seller Pools Rewards | `0x83cc5b9aa0c8cb8683f35462c385a5baaa755ee5` |
+| Seller Registry | `0x99c533bcc6ca646e543dba835fdbb9c2ee02cb60` |
+| Legacy Emissions (V2) | `0xF13bE52c4A3afC6AE29536f073588d01A0564088` |
+| Legacy Emissions (V1) | `0x36877fBa8Fa333aa46a1c57b66D132E4995C86b5` |
+| Legacy Staking | `0x3652E6B22919bd322A25723B94BB207602E5c8e6` |
 | Deposits | `0x0F7a3a8f4Da01637d1202bb5443fcF7F88F99fD2` |
 | Channels | `0xBA66d3b4fbCf472F6F11D6F9F96aaCE96516F09d` |
-| Staking | `0x3652E6B22919bd322A25723B94BB207602E5c8e6` |
 | Stats | `0x15649ff076BFa5e37e24EE3154a00503149954Fd` |
 | Identity Registry | `0x8004A169FB4a3325136EB29fA0ceB6D2e539a432` |
 | USDC | `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` |
 
 ### 6.3 Known Limitations
-- Seller emissions are currently locked in the Provider Pool; they can be claimed but not transferred
-- Buyer emissions are eligible for claiming only after epoch finalization, subject to anti-abuse and cap rules
+- Seller usage rewards require a registered seller agent with an eligible pool; a missing/filtered pool still settles USDC but earns no usage points
+- Buyer usage rewards are paid to the deposits operator; if the operator differs from the buyer, claims must come from the operator wallet
+- Legacy emissions are frozen at epochs 0–21; the locked M002 pool releases 10% of cumulative locked legacy seller ANTS per claim
 - Seller/service data depends on the availability of the official API; falls back to local cache if network fails
 
 ---
@@ -258,9 +270,9 @@ Core SQLite tables:
 | AC-002 | Seller search | Can search and highlight antseed-zh node; data matches official API |
 | AC-003 | Service filter | Supports multi-select category filtering; pricing and load display correctly |
 | AC-004 | Wallet connect | RainbowKit modal works; can connect MetaMask and switch to Base mainnet |
-| AC-005 | Emission query | Can query buyer/seller emission details for connected address; epoch table is complete |
-| AC-006 | Emission claim | Can successfully submit claim transaction and get on-chain confirmation; status feedback is correct |
-| AC-007 | ANTS info | On-chain supply, epoch, contract addresses match the chain |
+| AC-005 | Rewards query | Can query all five reward buckets for a connected or searched address; epoch tables (recognized + legacy) are complete |
+| AC-006 | Rewards claim | Can successfully submit claim transactions per bucket (or Claim All) and get on-chain confirmation; status feedback is correct |
+| AC-007 | ANTS info | On-chain supply/max supply, epoch clock, gate allocation, and contract addresses match the chain |
 | AC-008 | Data sync | Seller/service data auto-updates on server restart; on-chain metrics refresh within 5 minutes |
 
 ### 7.2 Non-Functional Acceptance
@@ -280,11 +292,14 @@ Core SQLite tables:
 | Term | Definition |
 |------|------------|
 | Epoch | $ANTS emission cycle, 1 epoch = 1 week (604,800 seconds) |
+| Recognized usage era | Reward era starting epoch 22 (Sept 10, 2026) where rewards come from recognized paid usage + seller-pool stake |
+| Emissions Gate | Contract that schedules epoch emissions and holds the per-bucket allocation |
+| lANTS | NFT position representing locked ANTS stake in a seller pool |
 | Peer ID | Unique identifier for a node in the AntSeed network |
 | Provider | Entity offering specific AI model inference services,隶属于某个 Peer |
 | Buyer | User who deposits USDC and pays for inference services |
 | Seller | Node operator who provides GPU compute and model services |
-| Provider Pool | Locked pool for seller emission rewards; currently non-transferable |
+| Provider Pool / Seller Rewards Pool | Locked pool holding seller legacy emissions; releases 10% per M002 claim |
 
 ### 8.2 Reference Links
 

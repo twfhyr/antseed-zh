@@ -48,6 +48,11 @@ export async function fetchEmissionsBalance(address) {
 return get(`/emissions/balance?address=${address}`);
 }
 
+export async function fetchRewards(address, bustCache = false) {
+const bust = bustCache ? '&bust=1' : '';
+return get(`/rewards?address=${address}${bust}`);
+}
+
 export async function fetchDepositsConfig() {
 return get('/deposits/config');
 }
