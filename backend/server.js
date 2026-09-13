@@ -382,10 +382,50 @@ const sellerRegistryClient = emissionsCfg.sellerRegistryAddress
 
 // ─── Protocol phase + epoch ranges (recognized-usage era since epoch 22) ───
 const STACK_TTL_MS = 60_000;
+const PENDING_TTL_MS = 90_000;
+// Concurrent epoch workers for the epoch fan-outs. Each worker makes its RPC
+// calls sequentially, so total in-flight requests ≈ this number. Measured on
+// the base-mainnet tenderly gateway: sustained bursts beyond ~30-40 in-flight
+// get queued and start dying with request timeouts; 12 is comfortably safe.
+const EPOCH_CONCURRENCY = 12;
 let stackCache = null;
 
+// RPC calls wrapped in safe() degrade to a fallback on failure. A transient
+// gateway throttle (burst rate limiting) must not silently zero out reward
+// numbers, so timeout-class errors get one retry before the fallback applies.
+function isTransientRpcError(e) {
+  return !e || typeof e !== 'object' ? false
+    : e.code === 'TIMEOUT' || e.code === 'CALL_EXCEPTION' || e.code === 'SERVER_ERROR'
+      || /timeout|rate limit|429|too many requests/i.test(e.message || '');
+}
+
 async function safe(read, fallback) {
-  try { return await read(); } catch { return fallback; }
+  try {
+    return await read();
+  } catch (e) {
+    if (isTransientRpcError(e)) {
+      try {
+        await new Promise((r) => setTimeout(r, 500));
+        return await read();
+      } catch { return fallback; }
+    }
+    return fallback;
+  }
+}
+
+// strict() retries transient RPC failures once, then rethrows. Used for calls
+// where a fallback would silently fabricate reward data — better to fail the
+// request with a real error than display zeros that look legitimate.
+async function strict(read) {
+  try {
+    return await read();
+  } catch (e) {
+    if (isTransientRpcError(e)) {
+      await new Promise((r) => setTimeout(r, 750));
+      return await read();
+    }
+    throw e;
+  }
 }
 
 async function resolveStack() {
@@ -442,12 +482,76 @@ async function resolveStack() {
   return stackCache;
 }
 
+// Process items with a bounded number of concurrent workers.
+async function mapWithConcurrency(items, limit, fn) {
+  const results = new Array(items.length);
+  let next = 0;
+  const workerCount = Math.max(1, Math.min(limit, items.length));
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (true) {
+      const index = next++;
+      if (index >= items.length) return;
+      results[index] = await fn(items[index], index);
+    }
+  }));
+  return results;
+}
+
+// agentId binding is permanent once registered, so cache positive lookups in
+// memory. Unregistered addresses keep resolving live so a later registration
+// is picked up without a server restart.
+const agentIdCache = new Map();
 async function agentIdOf(address) {
+  const key = address.toLowerCase();
+  const cached = agentIdCache.get(key);
+  if (cached !== undefined) return cached;
+  let agentId = 0;
   if (sellerRegistryClient) {
-    const fromRegistry = await safe(() => sellerRegistryClient.getAgentId(address), 0);
-    if (fromRegistry) return fromRegistry;
+    agentId = await safe(() => sellerRegistryClient.getAgentId(address), 0);
   }
-  return safe(() => legacyStakingClient.getAgentId(address), 0);
+  if (!agentId) {
+    agentId = await safe(() => legacyStakingClient.getAgentId(address), 0);
+  }
+  if (agentId) agentIdCache.set(key, agentId);
+  return agentId;
+}
+
+// Epoch-level totals (total points + emission) are address-independent: one
+// closed epoch's numbers are identical for every lookup. Persist them in
+// epoch_history and share across requests and addresses. Closed epochs are
+// frozen on-chain (long TTL); the current epoch still accrues (short TTL, and
+// anything cached while the epoch was current is dropped once it rolls over).
+const EPOCH_TOTALS_KEY = '__epoch_totals__';
+const EPOCH_TOTALS_CLOSED_TTL_MS = 6 * 60 * 60 * 1000;
+const EPOCH_TOTALS_CURRENT_TTL_MS = 60 * 1000;
+const epochTotalsGet = db.prepare('SELECT data FROM epoch_history WHERE address = ? AND epoch = ?');
+const epochTotalsPut = db.prepare('INSERT OR REPLACE INTO epoch_history (address, epoch, data) VALUES (?, ?, ?)');
+
+async function loadEpochTotals(epoch, currentEpoch) {
+  const cached = epochTotalsGet.get(EPOCH_TOTALS_KEY, epoch);
+  if (cached) {
+    try {
+      const parsed = JSON.parse(cached.data);
+      const age = Date.now() - parsed.fetchedAt;
+      if (parsed.wasCurrent) {
+        if (epoch >= currentEpoch && age < EPOCH_TOTALS_CURRENT_TTL_MS) return parsed;
+      } else if (epoch < currentEpoch && age < EPOCH_TOTALS_CLOSED_TTL_MS) {
+        return parsed;
+      }
+    } catch { /* corrupt row — refetch below */ }
+  }
+  const esp = await strict(() => emissionsClient.epochTotalSellerPoints(epoch));
+  const ebp = await strict(() => emissionsClient.epochTotalBuyerPoints(epoch));
+  const emission = await strict(() => emissionsClient.getEpochEmission(epoch));
+  const entry = {
+    fetchedAt: Date.now(),
+    wasCurrent: epoch >= currentEpoch,
+    totalSellerPts: esp.toString(),
+    totalBuyerPts: ebp.toString(),
+    emission: emission.toString(),
+  };
+  epochTotalsPut.run(EPOCH_TOTALS_KEY, epoch, JSON.stringify(entry));
+  return entry;
 }
 
 app.get('/api/deposits/config', (_req, res) => {
@@ -619,107 +723,135 @@ app.get('/api/emissions/pending', async (req, res) => {
  if (epochs.length === 0) return res.json({ seller: '0', buyer: '0', epochs: [] });
 
  const bustCache = req.query.bust === '1';
- const cacheKey = rawAddress.toLowerCase() + (extraAddresses.length ? ':' + extraAddresses.join(',') : '');
- const cached = bustCache ? null : db.prepare('SELECT data FROM address_emissions WHERE address = ?').get(cacheKey);
- if (cached) {
- return res.json(JSON.parse(cached.data));
+ // The cache key must include the epoch list — a row cached for one epoch set
+ // used to be served for a different set. The 90s TTL bounds staleness after
+ // claims made outside this dashboard (frontend reloads pass bust=1).
+ const cacheKey = rawAddress.toLowerCase() + (extraAddresses.length ? ':' + extraAddresses.join(',') : '') + ':e=' + epochs.join(',');
+ if (!bustCache) {
+ const cached = db.prepare('SELECT data, fetched_at FROM address_emissions WHERE address = ?').get(cacheKey);
+ if (cached && Date.now() - cached.fetched_at < PENDING_TTL_MS) return res.json(JSON.parse(cached.data));
  }
 
  const dbBuyers = db.prepare('SELECT buyer FROM operator_buyers WHERE operator = ?').all(rawAddress.toLowerCase());
  const dbBuyerAddresses = dbBuyers.map(r => r.buyer);
  const allAddresses = [rawAddress, ...extraAddresses, ...dbBuyerAddresses.filter(a => !extraAddresses.includes(a) && a !== rawAddress)];
  const uniqueAddresses = [...new Set(allAddresses.map(a => a.toLowerCase()))];
- const epochInfo = await emissionsClient.getEpochInfo();
- const currentEpoch = Number(epochInfo.epoch);
- const epochDetails = [];
+ // Reuse the cached protocol stack's epoch (60s TTL) instead of a fresh RPC;
+ // fall back to the legacy emissions clock if the stack failed to resolve.
+ const stack = await resolveStack();
+ const currentEpoch = stack.currentEpoch ?? Number((await emissionsClient.getEpochInfo()).epoch);
  let sellerTotal = 0;
  let buyerTotal = 0;
 
- for (const epoch of epochs) {
+ // Epochs in parallel with a bounded worker pool; per epoch, all addresses and
+ // both emissions contracts are fetched concurrently.
+ const epochDetails = await mapWithConcurrency(epochs, EPOCH_CONCURRENCY, async (epoch) => {
  const isCurrent = epoch >= currentEpoch;
+
+ // Epoch-level totals are shared across addresses (and cached in epoch_history).
+ const totals = await loadEpochTotals(epoch, currentEpoch);
+ const totalSellerPts = Number(totals.totalSellerPts);
+ const totalBuyerPts = Number(totals.totalBuyerPts);
+ const emissionAmount = Number(totals.emission) / 1e18;
+
+ // Pass 1: per address — points + claim status. Calls are sequential within a
+ // worker so the total in-flight request count stays ≈ EPOCH_CONCURRENCY; the
+ // gateway queues bursts far beyond that and queued calls die with timeouts.
+ const addrPoints = [];
+ for (const addr of uniqueAddresses) {
+   const sp = Number(await strict(() => emissionsClient.userSellerPoints(addr, epoch)));
+   const bp = Number(await strict(() => emissionsClient.userBuyerPoints(addr, epoch)));
+   const sc = await strict(() => emissionsClient.sellerEpochClaimed(addr, epoch));
+   const bc = await strict(() => emissionsClient.buyerEpochClaimed(addr, epoch));
+   let v1sp = 0;
+   let v1bp = 0;
+   let v1sc = false;
+   let v1bc = false;
+   if (epoch <= MIGRATION_EPOCH) {
+     v1sp = Number(await strict(() => emissionsV1Client.userSellerPoints(addr, epoch)));
+     v1bp = Number(await strict(() => emissionsV1Client.userBuyerPoints(addr, epoch)));
+     if (epoch < MIGRATION_EPOCH) {
+       v1sc = await strict(() => emissionsV1Client.sellerEpochClaimed(addr, epoch));
+       v1bc = await strict(() => emissionsV1Client.buyerEpochClaimed(addr, epoch));
+     }
+   }
+   addrPoints.push({ addr, sp, bp, sc, bc, v1sp, v1bp, v1sc, v1bc });
+ }
+
+ // Pass 2: pendingEmissions per address (only for non-current epochs), also
+ // sequential within the worker for the same reason.
+ const pendingResults = isCurrent ? null : [];
+ if (!isCurrent) {
+   for (const a of addrPoints) {
+     if (a.sp === 0 && a.bp === 0 && a.v1sp === 0 && a.v1bp === 0) {
+       pendingResults.push({ v2: null, v1: null });
+       continue;
+     }
+     const v2 = await strict(() => emissionsClient.pendingEmissions(a.addr, [epoch]));
+     let v1 = null;
+     if (epoch <= MIGRATION_EPOCH) {
+       const p = await strict(() => emissionsV1Client.pendingEmissions(a.addr, [epoch]));
+       v1 = { seller: Number(p.seller) / 1e18, buyer: Number(p.buyer) / 1e18 };
+     }
+     pendingResults.push({
+       v2: { seller: Number(v2.seller) / 1e18, buyer: Number(v2.buyer) / 1e18 },
+       v1,
+     });
+   }
+ }
+
  let epochSellerPts = 0;
  let epochBuyerPts = 0;
-  let epochSellerReward = 0;
-  let epochBuyerReward = 0;
-  let epochSellerRewardV1 = 0;
-  let epochBuyerRewardV1 = 0;
-  let epochSellerRewardV2 = 0;
-  let epochBuyerRewardV2 = 0;
+ let epochSellerReward = 0;
+ let epochBuyerReward = 0;
+ let epochSellerRewardV1 = 0;
+ let epochBuyerRewardV1 = 0;
+ let epochSellerRewardV2 = 0;
+ let epochBuyerRewardV2 = 0;
  let epochSellerClaimed = false;
  let epochBuyerClaimed = false;
 
-        for (const addr of uniqueAddresses) {
-          const [sp, bp, esp, ebp, sc, bc, epochEmission] = await Promise.all([
-            emissionsClient.userSellerPoints(addr, epoch),
-            emissionsClient.userBuyerPoints(addr, epoch),
-            emissionsClient.epochTotalSellerPoints(epoch),
-            emissionsClient.epochTotalBuyerPoints(epoch),
-            emissionsClient.sellerEpochClaimed(addr, epoch),
-            emissionsClient.buyerEpochClaimed(addr, epoch),
-            emissionsClient.getEpochEmission(epoch),
-          ]);
+ for (let i = 0; i < addrPoints.length; i++) {
+   const { addr, sp, bp, sc, bc, v1sp, v1bp, v1sc, v1bc } = addrPoints[i];
+   const userSellerPts = sp + v1sp;
+   const userBuyerPts = bp + v1bp;
 
-          let v1SellerPts = 0;
-          let v1BuyerPts = 0;
-          let v1TotalSellerPts = 0;
-          let v1TotalBuyerPts = 0;
-          if (epoch <= MIGRATION_EPOCH) {
-            const [v1sp, v1bp, v1esp, v1ebp] = await Promise.all([
-              emissionsV1Client.userSellerPoints(addr, epoch),
-              emissionsV1Client.userBuyerPoints(addr, epoch),
-              emissionsV1Client.epochTotalSellerPoints(epoch),
-              emissionsV1Client.epochTotalBuyerPoints(epoch),
-            ]);
-            v1SellerPts = Number(v1sp);
-            v1BuyerPts = Number(v1bp);
-            v1TotalSellerPts = Number(v1esp);
-            v1TotalBuyerPts = Number(v1ebp);
+   if (userSellerPts > 0 || userBuyerPts > 0) {
+     epochSellerPts += userSellerPts;
+     epochBuyerPts += userBuyerPts;
 
-            if (epoch < MIGRATION_EPOCH) {
-              const v1sc = await emissionsV1Client.sellerEpochClaimed(addr, epoch);
-              const v1bc = await emissionsV1Client.buyerEpochClaimed(addr, epoch);
-              if (v1sc) epochSellerClaimed = true;
-              if (v1bc) epochBuyerClaimed = true;
-            }
-          }
+     if (!isCurrent) {
+       const p = pendingResults[i];
+       if (p) {
+         if (p.v2) {
+           epochSellerRewardV2 += p.v2.seller;
+           epochBuyerRewardV2 += p.v2.buyer;
+           epochSellerReward += p.v2.seller;
+           epochBuyerReward += p.v2.buyer;
+         }
+         if (p.v1) {
+           epochSellerRewardV1 += p.v1.seller;
+           epochBuyerRewardV1 += p.v1.buyer;
+           epochSellerReward += p.v1.seller;
+           epochBuyerReward += p.v1.buyer;
+         }
+       }
+     }
+   }
+   if (sc || v1sc) epochSellerClaimed = true;
+   if (bc || v1bc) epochBuyerClaimed = true;
+ }
 
-          const userSellerPts = Number(sp) + v1SellerPts;
-          const userBuyerPts = Number(bp) + v1BuyerPts;
-          const totalSellerPts = Number(esp) + v1TotalSellerPts;
-          const totalBuyerPts = Number(ebp) + v1TotalBuyerPts;
-          const emission = Number(epochEmission) / 1e18;
+ if (isCurrent) {
+   for (const { sp, bp, v1sp, v1bp } of addrPoints) {
+     const userSellerPts = sp + v1sp;
+     const userBuyerPts = bp + v1bp;
+     if (userSellerPts > 0) epochSellerReward += totalSellerPts > 0 ? (userSellerPts / totalSellerPts) * emissionAmount * 0.5 : 0;
+     if (userBuyerPts > 0) epochBuyerReward += totalBuyerPts > 0 ? (userBuyerPts / totalBuyerPts) * emissionAmount * 0.2 : 0;
+   }
+ }
 
-          if (userSellerPts > 0 || userBuyerPts > 0) {
-            epochSellerPts += userSellerPts;
-            epochBuyerPts += userBuyerPts;
-
-            if (isCurrent) {
-              epochSellerReward += totalSellerPts > 0 ? (userSellerPts / totalSellerPts) * emission * 0.5 : 0;
-              epochBuyerReward += totalBuyerPts > 0 ? (userBuyerPts / totalBuyerPts) * emission * 0.2 : 0;
-            } else {
-              const pending = await emissionsClient.pendingEmissions(addr, [epoch]);
-              const v2SellerReward = Number(pending.seller) / 1e18;
-              const v2BuyerReward = Number(pending.buyer) / 1e18;
-              epochSellerRewardV2 += v2SellerReward;
-              epochBuyerRewardV2 += v2BuyerReward;
-              epochSellerReward += v2SellerReward;
-              epochBuyerReward += v2BuyerReward;
-              if (epoch <= MIGRATION_EPOCH) {
-                const v1Pending = await emissionsV1Client.pendingEmissions(addr, [epoch]);
-                const v1SellerReward = Number(v1Pending.seller) / 1e18;
-                const v1BuyerReward = Number(v1Pending.buyer) / 1e18;
-                epochSellerRewardV1 += v1SellerReward;
-                epochBuyerRewardV1 += v1BuyerReward;
-                epochSellerReward += v1SellerReward;
-                epochBuyerReward += v1BuyerReward;
-              }
-            }
-          }
-          if (sc) epochSellerClaimed = true;
-          if (bc) epochBuyerClaimed = true;
-        }
-
- epochDetails.push({
+ return {
  epoch,
  sellerPoints: epochSellerPts,
  buyerPoints: epochBuyerPts,
@@ -734,20 +866,24 @@ app.get('/api/emissions/pending', async (req, res) => {
    sellerRewardV2: epochSellerRewardV2,
    buyerRewardV2: epochBuyerRewardV2,
  } : {}),
+ };
  });
- }
-
-      for (const addr of uniqueAddresses) {
-        const pending = await emissionsClient.pendingEmissions(addr, epochs);
-        sellerTotal += Number(pending.seller) / 1e18;
-        buyerTotal += Number(pending.buyer) / 1e18;
-        const v1Epochs = epochs.filter(e => e <= MIGRATION_EPOCH);
-        if (v1Epochs.length > 0) {
-          const v1Pending = await emissionsV1Client.pendingEmissions(addr, v1Epochs);
-          sellerTotal += Number(v1Pending.seller) / 1e18;
-          buyerTotal += Number(v1Pending.buyer) / 1e18;
-        }
-      }
+       // Parallel total accumulation
+       const totalsResult = await Promise.all(uniqueAddresses.map(addr =>
+         Promise.all([
+           addr,
+           emissionsClient.pendingEmissions(addr, epochs),
+           epochs.some(e => e <= MIGRATION_EPOCH)
+             ? emissionsV1Client.pendingEmissions(addr, epochs.filter(e => e <= MIGRATION_EPOCH))
+             : Promise.resolve({ seller: 0n, buyer: 0n }),
+         ])
+       ));
+       for (const [, pending, v1Pending] of totalsResult) {
+         sellerTotal += Number(pending.seller) / 1e18;
+         buyerTotal += Number(pending.buyer) / 1e18;
+         sellerTotal += Number(v1Pending.seller) / 1e18;
+         buyerTotal += Number(v1Pending.buyer) / 1e18;
+       }
 
  const data = {
  seller: sellerTotal.toFixed(6),
@@ -873,6 +1009,72 @@ app.get('/api/emissions/balance', async (req, res) => {
 // ─── Rewards view (recognized-usage era: 5 buckets) ───
 // Mirrors the official ANTS dashboard: staker (seller-pool lANTS positions),
 // seller usage rewards, buyer usage rewards, legacy emissions, locked M002 pool.
+// ─── /api/rewards bucket loaders (the five buckets run concurrently) ───
+
+async function loadSellerUsageRewards(address, stack, agentIdPromise) {
+  if (stack.phase !== 'active' || !usageAccountingClient || !usageRewardsClient || stack.recognizedEpochs.length === 0) {
+    return { total: 0n, epochs: [] };
+  }
+  const agentId = await agentIdPromise;
+  // The batched pending total and the per-epoch rows are independent — issue
+  // them together. pendingAgentReward is fetched unconditionally and gated by
+  // the claimed flag afterwards (safe() absorbs reverts on claimed epochs).
+  const [total, rows] = await Promise.all([
+    safe(() => pendingEpochRewards(stack.recognizedEpochs, async (batch) => (await usageAccountingClient.pendingEmissions(address, batch)).seller), 0n),
+    mapWithConcurrency(stack.recognizedEpochs, EPOCH_CONCURRENCY, async (epoch) => {
+      // Sequential within the worker so total in-flight RPCs stay bounded;
+      // safe() retries transient gateway throttles once before its fallback.
+      const sellerClaimed = agentId ? await safe(() => usageRewardsClient.agentEpochClaimed(agentId, epoch), false) : false;
+      const sellerPoints = await safe(() => usageAccountingClient.sellerPointsByEpoch(epoch, address), 0n);
+      const sellerAmount = agentId ? await safe(() => usageRewardsClient.pendingAgentReward(agentId, epoch), 0n) : 0n;
+      return {
+        epoch,
+        points: Number(sellerPoints) / 1e6,
+        amount: sellerClaimed ? 0 : Number(sellerAmount) / 1e18,
+        claimed: sellerClaimed,
+      };
+    }),
+  ]);
+  return { total, epochs: rows };
+}
+
+async function loadBuyerUsageRewards(address, stack) {
+  if (stack.phase !== 'active' || !usageRewardsClient || stack.recognizedEpochs.length === 0) {
+    return { total: 0n, epochs: [] };
+  }
+  const rows = await mapWithConcurrency(stack.recognizedEpochs, EPOCH_CONCURRENCY, async (epoch) => {
+    const buyerClaimed = await safe(() => usageRewardsClient.buyerEpochClaimed(address, epoch), false);
+    const buyerPoints = usageAccountingClient ? await safe(() => usageAccountingClient.buyerPointsByEpoch(epoch, address), 0n) : 0n;
+    const buyerAmount = await safe(() => usageRewardsClient.pendingBuyerReward(address, epoch), 0n);
+    return { epoch, buyerClaimed, buyerPoints, buyerAmount };
+  });
+  const total = rows.reduce((sum, r) => sum + (r.buyerClaimed ? 0n : r.buyerAmount), 0n);
+  return {
+    total,
+    epochs: rows.map((r) => ({
+      epoch: r.epoch,
+      points: Number(r.buyerPoints) / 1e6,
+      amount: r.buyerClaimed ? 0 : Number(r.buyerAmount) / 1e18,
+      claimed: r.buyerClaimed,
+    })),
+  };
+}
+
+async function loadLegacyRewards(address, stack) {
+  if (stack.legacyEpochs.length === 0) return { seller: 0, buyer: 0 };
+  const v1Epochs = stack.legacyEpochs.filter((e) => e <= MIGRATION_EPOCH);
+  const [pending, v1Pending] = await Promise.all([
+    safe(() => emissionsClient.pendingEmissions(address, stack.legacyEpochs), { seller: 0n, buyer: 0n }),
+    v1Epochs.length > 0
+      ? safe(() => emissionsV1Client.pendingEmissions(address, v1Epochs), { seller: 0n, buyer: 0n })
+      : Promise.resolve({ seller: 0n, buyer: 0n }),
+  ]);
+  return {
+    seller: Number(pending.seller) / 1e18 + Number(v1Pending.seller) / 1e18,
+    buyer: Number(pending.buyer) / 1e18 + Number(v1Pending.buyer) / 1e18,
+  };
+}
+
 app.get('/api/rewards', async (req, res) => {
   try {
     const address = req.query.address;
@@ -887,81 +1089,37 @@ app.get('/api/rewards', async (req, res) => {
     }
 
     const stack = await resolveStack();
-    const agentId = await agentIdOf(address);
 
-    // Staker: pending rewards on open pool positions (lANTS NFTs)
-    const stakerPositions = sellerPoolsClient && sellerPoolsRewardsClient
-      ? await safe(() => previewPoolRewards(sellerPoolsClient, sellerPoolsRewardsClient, address), [])
-      : [];
+    // The five reward buckets are independent — fetch them all concurrently so
+    // cold-path latency is the slowest bucket, not the sum of all buckets.
+    const agentIdPromise = agentIdOf(address).catch(() => 0);
+    const [
+      agentId,
+      stakerPositions,
+      sellerUsage,
+      buyerUsage,
+      operator,
+      legacy,
+      locked,
+    ] = await Promise.all([
+      agentIdPromise,
+      sellerPoolsClient && sellerPoolsRewardsClient
+        ? safe(() => previewPoolRewards(sellerPoolsClient, sellerPoolsRewardsClient, address), [])
+        : Promise.resolve([]),
+      loadSellerUsageRewards(address, stack, agentIdPromise),
+      loadBuyerUsageRewards(address, stack),
+      safe(() => depositsClient.getOperator(address), ZERO_ADDRESS),
+      loadLegacyRewards(address, stack),
+      stack.lockedPoolClient
+        ? safe(() => stack.lockedPoolClient.claimable(address), { locked: 0n, claimable: 0n, policy: ZERO_ADDRESS })
+        : Promise.resolve({ locked: 0n, claimable: 0n, policy: ZERO_ADDRESS }),
+    ]);
+
     const stakerPending = stakerPositions.filter((p) => p.amount > 0n);
-
-    // Seller usage rewards (recognized epochs) — claimed via UsageAccounting.claimSellerEmissions
-    let sellerTotal = 0n;
-    const sellerEpochs = [];
-    if (stack.phase === 'active' && usageAccountingClient && usageRewardsClient && stack.recognizedEpochs.length > 0) {
-      sellerTotal = await safe(() => pendingEpochRewards(stack.recognizedEpochs, async (batch) => (await usageAccountingClient.pendingEmissions(address, batch)).seller), 0n);
-      for (const epoch of stack.recognizedEpochs) {
-        const [sellerClaimed, sellerPoints] = await Promise.all([
-          agentId ? safe(() => usageRewardsClient.agentEpochClaimed(agentId, epoch), false) : Promise.resolve(false),
-          safe(() => usageAccountingClient.sellerPointsByEpoch(epoch, address), 0n),
-        ]);
-        const sellerAmount = agentId && !sellerClaimed
-          ? await safe(() => usageRewardsClient.pendingAgentReward(agentId, epoch), 0n)
-          : 0n;
-        sellerEpochs.push({
-          epoch,
-          points: Number(sellerPoints) / 1e6,
-          amount: Number(sellerAmount) / 1e18,
-          claimed: sellerClaimed,
-        });
-      }
-    }
-
-    // Buyer usage rewards (recognized epochs) — claimed via UsageRewards.claimBuyerReward by the deposits operator
-    let buyerTotal = 0n;
-    const buyerEpochs = [];
-    if (stack.phase === 'active' && usageRewardsClient && stack.recognizedEpochs.length > 0) {
-      for (const epoch of stack.recognizedEpochs) {
-        const [buyerClaimed, buyerPoints] = await Promise.all([
-          safe(() => usageRewardsClient.buyerEpochClaimed(address, epoch), false),
-          usageAccountingClient ? safe(() => usageAccountingClient.buyerPointsByEpoch(epoch, address), 0n) : Promise.resolve(0n),
-        ]);
-        const buyerAmount = buyerClaimed ? 0n : await safe(() => usageRewardsClient.pendingBuyerReward(address, epoch), 0n);
-        buyerTotal += buyerAmount;
-        buyerEpochs.push({
-          epoch,
-          points: Number(buyerPoints) / 1e6,
-          amount: Number(buyerAmount) / 1e18,
-          claimed: buyerClaimed,
-        });
-      }
-    }
-    const operator = await safe(() => depositsClient.getOperator(address), ZERO_ADDRESS);
-    const isOperator = sameAddress(operator, address);
-
-    // Legacy emissions (epochs before the recognized-usage start), merged V2 + V1 (epochs �� 4)
-    let legacySeller = 0;
-    let legacyBuyer = 0;
-    if (stack.legacyEpochs.length > 0) {
-      const pending = await safe(() => emissionsClient.pendingEmissions(address, stack.legacyEpochs), { seller: 0n, buyer: 0n });
-      legacySeller = Number(pending.seller) / 1e18;
-      legacyBuyer = Number(pending.buyer) / 1e18;
-      const v1Epochs = stack.legacyEpochs.filter((e) => e <= MIGRATION_EPOCH);
-      if (v1Epochs.length > 0) {
-        const v1Pending = await safe(() => emissionsV1Client.pendingEmissions(address, v1Epochs), { seller: 0n, buyer: 0n });
-        legacySeller += Number(v1Pending.seller) / 1e18;
-        legacyBuyer += Number(v1Pending.buyer) / 1e18;
-      }
-    }
-
-    // Locked legacy seller rewards (M002: releases 10% of cumulative locked legacy ANTS)
-    const locked = stack.lockedPoolClient
-      ? await safe(() => stack.lockedPoolClient.claimable(address), { locked: 0n, claimable: 0n, policy: ZERO_ADDRESS })
-      : { locked: 0n, claimable: 0n, policy: ZERO_ADDRESS };
-
     const stakerTotalAnts = stakerPending.reduce((sum, p) => sum + p.amount, 0n);
-    const total = Number(stakerTotalAnts) / 1e18 + Number(sellerTotal) / 1e18 + Number(buyerTotal) / 1e18
-      + legacySeller + legacyBuyer + Number(locked.claimable) / 1e18;
+    const isOperator = sameAddress(operator, address);
+    const total = Number(stakerTotalAnts) / 1e18 + Number(sellerUsage.total) / 1e18 + Number(buyerUsage.total) / 1e18
+      + legacy.seller + legacy.buyer + Number(locked.claimable) / 1e18;
 
     const data = {
       currentEpoch: stack.currentEpoch,
@@ -979,19 +1137,19 @@ app.get('/api/rewards', async (req, res) => {
         })),
       },
       sellerUsage: {
-        total: Number(sellerTotal) / 1e18,
+        total: Number(sellerUsage.total) / 1e18,
         claimable: stack.phase === 'active' && agentId !== 0,
-        epochs: sellerEpochs,
+        epochs: sellerUsage.epochs,
       },
       buyerUsage: {
-        total: Number(buyerTotal) / 1e18,
+        total: Number(buyerUsage.total) / 1e18,
         claimable: stack.phase === 'active' && isOperator,
         recipient: sameAddress(operator, ZERO_ADDRESS) ? null : operator,
-        epochs: buyerEpochs,
+        epochs: buyerUsage.epochs,
       },
       legacy: {
-        seller: legacySeller,
-        buyer: legacyBuyer,
+        seller: legacy.seller,
+        buyer: legacy.buyer,
         epochs: stack.legacyEpochs,
         contract: legacyAddresses.legacyEmissionsContractAddress,
       },

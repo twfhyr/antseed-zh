@@ -1,4 +1,4 @@
-const API_BASE = '/api';
+const API_BASE = '/zh/api';
 
 async function get(endpoint) {
   const res = await fetch(`${API_BASE}${endpoint}`);

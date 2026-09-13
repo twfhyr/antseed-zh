@@ -168,6 +168,15 @@ fetched_at INTEGER NOT NULL
 `);
 
 db.exec(`
+CREATE TABLE IF NOT EXISTS epoch_history (
+  address TEXT NOT NULL,
+  epoch INTEGER NOT NULL,
+  data TEXT NOT NULL,
+  PRIMARY KEY (address, epoch)
+);
+`);
+
+db.exec(`
 CREATE TABLE IF NOT EXISTS address_balances (
 address TEXT PRIMARY KEY,
 ants REAL,
