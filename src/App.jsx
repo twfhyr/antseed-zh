@@ -1,20 +1,29 @@
 import React, { useState, useEffect } from 'react';
-import ClaimANTS from './components/ClaimANTS';
 import SellersList from './components/SellersList';
 import ServicesList from './components/ServicesList';
+import BuyersList from './components/BuyersList';
+import TokenomicsTab from './components/TokenomicsTab';
 import ANTSInfo from './components/ANTSInfo';
-import WelcomeTab from './components/WelcomeTab';
+import ClaimANTS from './components/ClaimANTS';
+import ChannelsView from './components/ChannelsView';
+import Overview from './components/Overview';
+import About from './components/About';
 import Header from './components/Header';
 import DepositModal from './components/DepositModal';
 import WithdrawModal from './components/WithdrawModal';
-import ChannelsView from './components/ChannelsView';
 import { AuthorizedWalletProvider } from './context/AuthorizedWalletContext';
 import { useAccount } from 'wagmi';
+import { useI18n } from './i18n/index.jsx';
+import { useTabRouter, tabHref } from './hooks/useTabRouter';
 import { fetchStats, fetchBuyers, fetchSellers, fetchServices, fetchDepositsBalance, fetchDepositsConfig } from './api';
 
 function AppInner() {
 const { address } = useAccount();
-const [activeTab, setActiveTab] = useState('welcome');
+const { t } = useI18n();
+// URL-driven instead of plain useState: gives every tab a shareable,
+// bookmarkable link (e.g. antseed-zh.com/buyers) and makes browser
+// back/forward switch tabs. See src/hooks/useTabRouter.js.
+const [activeTab, setActiveTab] = useTabRouter();
 const [depositOpen, setDepositOpen] = useState(false);
 const [withdrawOpen, setWithdrawOpen] = useState(false);
 const [withdrawBalance, setWithdrawBalance] = useState(null);
@@ -97,59 +106,91 @@ Make sure the API server is running on <code>http://localhost:3001</code>.
 }
 
 return (
-<div className="dashboard">
-<Header onDepositClick={() => setDepositOpen(true)} onWithdrawClick={handleWithdrawClick} buyerAddress={buyerAddress} />
-<main className="container" style={{ paddingTop: '1.5rem' }}>
-<div className="tabs">
-<button
-className={`tab ${activeTab === 'welcome' ? 'active' : ''}`}
-onClick={() => setActiveTab('welcome')}
->
-Home
-</button>
-<button
-className={`tab ${activeTab === 'claim' ? 'active' : ''}`}
-onClick={() => setActiveTab('claim')}
->
-Claim ANTS
-</button>
-<button
-className={`tab ${activeTab === 'channels' ? 'active' : ''}`}
-onClick={() => setActiveTab('channels')}
->
-Channels
-</button>
-<button
-className={`tab ${activeTab === 'sellers' ? 'active' : ''}`}
-onClick={() => setActiveTab('sellers')}
->
-Sellers ({sellers.length})
-</button>
-<button
-className={`tab ${activeTab === 'services' ? 'active' : ''}`}
-onClick={() => setActiveTab('services')}
->
-Services ({services.length})
-</button>
-<button
-className={`tab ${activeTab === 'ants' ? 'active' : ''}`}
-onClick={() => setActiveTab('ants')}
->
-$ANTS
-</button>
-</div>
+    <div className="dashboard">
+      <Header />
+      <main className="container" style={{ paddingTop: '1.5rem' }}>
+        {/* Single flat nav — all sections at the same level, per the
+            approved rewrite plan (curation over completeness). */}
+        <div className="tabs">
+          <a
+            href={tabHref('overview')}
+            className={`tab ${activeTab === 'overview' ? 'active' : ''}`}
+            onClick={(e) => { e.preventDefault(); setActiveTab('overview'); }}
+          >
+            {t('nav.overview')}
+          </a>
+          <a
+            href={tabHref('buyers')}
+            className={`tab ${activeTab === 'buyers' ? 'active' : ''}`}
+            onClick={(e) => { e.preventDefault(); setActiveTab('buyers'); }}
+          >
+            {t('nav.buyers')}
+          </a>
+          <a
+            href={tabHref('sellers')}
+            className={`tab ${activeTab === 'sellers' ? 'active' : ''}`}
+            onClick={(e) => { e.preventDefault(); setActiveTab('sellers'); }}
+          >
+            {t('nav.sellers')}
+          </a>
+          <a
+            href={tabHref('services')}
+            className={`tab ${activeTab === 'services' ? 'active' : ''}`}
+            onClick={(e) => { e.preventDefault(); setActiveTab('services'); }}
+          >
+            {t('nav.services')}
+          </a>
+          <a
+            href={tabHref('tokenomics')}
+            className={`tab ${activeTab === 'tokenomics' ? 'active' : ''}`}
+            onClick={(e) => { e.preventDefault(); setActiveTab('tokenomics'); }}
+          >
+            {t('nav.tokenomics')}
+          </a>
+          <a
+            href={tabHref('ants-info')}
+            className={`tab ${activeTab === 'ants-info' ? 'active' : ''}`}
+            onClick={(e) => { e.preventDefault(); setActiveTab('ants-info'); }}
+          >
+            {t('nav.antsInfo')}
+          </a>
+          <a
+            href={tabHref('claim')}
+            className={`tab ${activeTab === 'claim' ? 'active' : ''}`}
+            onClick={(e) => { e.preventDefault(); setActiveTab('claim'); }}
+          >
+            {t('nav.claim')}
+          </a>
+          <a
+            href={tabHref('channels')}
+            className={`tab ${activeTab === 'channels' ? 'active' : ''}`}
+            onClick={(e) => { e.preventDefault(); setActiveTab('channels'); }}
+          >
+            {t('nav.channels')}
+          </a>
+          <a
+            href={tabHref('about')}
+            className={`tab ${activeTab === 'about' ? 'active' : ''}`}
+            onClick={(e) => { e.preventDefault(); setActiveTab('about'); }}
+          >
+            {t('nav.about')}
+          </a>
+        </div>
 
-{activeTab === 'claim' && <ClaimANTS />}
-{activeTab === 'welcome' && <WelcomeTab />}
-{activeTab === 'channels' && <ChannelsView />}
-{activeTab === 'sellers' && <SellersList sellers={sellers} />}
-{activeTab === 'services' && <ServicesList services={services} />}
-{activeTab === 'ants' && <ANTSInfo />}
-</main>
-<DepositModal isOpen={depositOpen} onClose={() => setDepositOpen(false)} buyerAddress={buyerAddress} />
-<WithdrawModal isOpen={withdrawOpen} onClose={() => setWithdrawOpen(false)} balance={withdrawBalance} buyerAddress={buyerAddress} />
-</div>
-);
+        {activeTab === 'overview' && <Overview />}
+        {activeTab === 'buyers' && <BuyersList />}
+        {activeTab === 'sellers' && <SellersList sellers={sellers} />}
+        {activeTab === 'services' && <ServicesList services={services} />}
+        {activeTab === 'tokenomics' && <TokenomicsTab />}
+        {activeTab === 'ants-info' && <ANTSInfo />}
+        {activeTab === 'claim' && <ClaimANTS />}
+        {activeTab === 'channels' && <ChannelsView />}
+        {activeTab === 'about' && <About />}
+      </main>
+      <DepositModal isOpen={depositOpen} onClose={() => setDepositOpen(false)} buyerAddress={buyerAddress} />
+      <WithdrawModal isOpen={withdrawOpen} onClose={() => setWithdrawOpen(false)} balance={withdrawBalance} buyerAddress={buyerAddress} />
+    </div>
+  );
 }
 
 function App() {

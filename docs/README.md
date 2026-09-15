@@ -1,5 +1,11 @@
 # AntSeed Dashboard — Implementation Docs
 
+> **Start with the root [`README.md`](../README.md)** for quick start, the
+> architecture overview, and the full "how every number is calculated"
+> reference. This file is the deeper implementation-detail companion to
+> it — sync lifecycle, every backend endpoint, and the claim-flow contract
+> calls in full.
+
 A peer-to-peer AI inference marketplace dashboard that displays real live network data from the AntSeed protocol.
 
 ## Quick Start
@@ -72,29 +78,33 @@ Express Server (PORT 3001)
 | Path | What it does |
 |---|---|
 | backend/server.js | Express app: routes, static file serving, start-up sync, rewards endpoints |
-| backend/database.js | SQLite schema + seed (buyers, sellers, services, stats) |
+| backend/database.js | SQLite schema + idempotent migrations (buyers, sellers, services, stats, history tables) |
 | backend/chain-poller.js | On-chain metrics poller (supply, epoch clock, gate allocation, USDC balances) |
-| backend/sync-official.js | Fetches live AntSeed network data and writes to DB |
-| src/App.jsx | Root component: fetches data, manages tabs |
-| src/api.js | Thin fetch wrapper for /api/* endpoints |
-| src/components/StatsCards.jsx | Overview stat cards with growth rates |
-| src/components/BuyersList.jsx | Searchable buyers table |
-| src/components/SellersList.jsx | Searchable sellers table |
+| backend/sync-official.js | Fetches live AntSeed network data (DHT snapshot) and writes to DB |
+| backend/antscan.js | Antscan GraphQL client — real settled on-chain volume/requests/tokens |
+| backend/sync-history.js | Orchestrates Antscan sync into network_snapshots/buyers_onchain/sellers_onchain/daily_metrics/epoch_metrics |
+| src/App.jsx | Root component: URL-driven tab routing (see hooks/useTabRouter.js), top-level data fetch |
+| src/api.js | Thin fetch wrapper for /api/* endpoints, base-path-aware |
+| src/components/Overview.jsx | Landing tab: stat cards + daily/epoch history charts |
+| src/components/StatsCards.jsx | Overview stat cards (buyers/sellers/services/volume) |
+| src/components/BuyersList.jsx | Searchable, paginated on-chain buyers table |
+| src/components/SellersList.jsx | Searchable sellers table (live DHT + on-chain earned) |
 | src/components/ServicesList.jsx | Searchable/filterable services table |
+| src/components/TokenomicsTab.jsx | Supply, allocation pie charts, dynamic staker/usage shares |
 | src/components/ClaimANTS.jsx | Five-bucket rewards view + wallet claim flows |
-| src/components/ANTSInfo.jsx | On-chain ANTS data, contracts, allocation, reward mechanics |
-| vite.config.js | Vite config with host: true for public access |
+| src/components/ChannelsView.jsx | Payment channels: list, requestClose, withdraw |
+| src/components/ANTSInfo.jsx | On-chain ANTS data, contract addresses, reward-mechanics explainer |
+| src/components/About.jsx | Node showcase (this seller's peer info, connection guide) |
+| vite.config.js | Vite config; `BUILD_TARGET=root` switches base path + outDir (see README Deployment) |
 | package.json | dev script uses concurrently to run both servers |
 
 ---
 
 ## Environment Variables
 
-| Variable | Default | Purpose |
-|---|---|---|
-| PORT | 3001 | Express server port |
-
-No .env file is required out of the box.
+See the root [`README.md`](../README.md#environment-variables) for the full
+list (`PORT`, `PROVIDER_BASE_URL`, `ADMIN_SYNC_TOKEN`, `ANTSEED_IDENTITY_HEX`,
+`BUILD_TARGET`). No `.env` file is required out of the box.
 
 ---
 

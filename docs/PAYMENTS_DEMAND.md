@@ -3,6 +3,12 @@
 > **Feature**: Integrate the AntSeed Payments web UI into the antseed-zh dashboard
 > **Reference**: `ref/antseed/apps/payments/` (official AntSeed monorepo)
 > **Date**: 2026-05-17
+> **Status**: P0 items (Withdraw, Channels, Authorize Wallet, buyer balance)
+> are implemented and, as of the 2026-09 dashboard rewrite, live as nav
+> tabs (Claim ANTS / Channels) with a global wallet-connect entry point in
+> the header. P1 items (DIEM Staking Rewards, dedicated Wallet Drawer) are
+> not built — see [`notes/dev-plan.md`](../notes/dev-plan.md) for current
+> status of each.
 
 ---
 

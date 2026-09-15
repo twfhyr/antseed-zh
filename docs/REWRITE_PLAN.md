@@ -1,6 +1,11 @@
 # antseed-zh Rewrite Plan — AntSeed Network Dashboard v2
 
-Status: **DRAFT — awaiting review, no implementation yet**
+Status: **Largely implemented** (design tokens, i18n, data-accuracy fixes,
+Antscan-backed real numbers, and curated IA are all in place as of this
+writing). Kept here as the historical record of *why* the current
+architecture looks the way it does. For what's still open or newly found,
+see [`notes/dev-plan.md`](../notes/dev-plan.md) instead — that file is the
+live backlog; this one is not.
 
 Scope decided with the user:
 - Data dashboard only (no marketing homepage, no docs/blog port)

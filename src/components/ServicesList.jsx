@@ -6,7 +6,14 @@ function ServicesList({ services }) {
   const [filterCategory, setFilterCategory] = useState('all');
   const [showLoadTip, setShowLoadTip] = useState(false);
 
-  const categories = ['all', ...Array.from(new Set(services.flatMap(s => s.categories)))].filter(c => c && c !== 'all');
+  // The .filter() used to be applied to the whole array *including* the
+  // leading 'all', which stripped it again — so the "All" button never
+  // rendered and there was no way to clear a category filter short of
+  // reloading the page. Filter the network-supplied categories only.
+  const categories = [
+    'all',
+    ...Array.from(new Set(services.flatMap(s => s.categories ?? []))).filter(c => c && c !== 'all'),
+  ];
 
   const filtered = services.filter(s => {
     const matchesSearch =
@@ -55,9 +62,16 @@ function ServicesList({ services }) {
   };
 
   const formatPrice = (val) => {
-    if (val === undefined || val === null) return '$0';
-    if (val < 0.01) return '<$0.01';
-    return '$' + val;
+    // Was: null -> '$0' (fabricates a price we don't know), 0 -> '<$0.01'
+    // (a genuinely free service shown as costing something), and otherwise
+    // raw string concat, which rendered unrounded floats straight from the
+    // network like "$0.4751238243109613" and blew out the column.
+    if (val === undefined || val === null) return '—';
+    const n = Number(val);
+    if (!Number.isFinite(n)) return '—';
+    if (n === 0) return '$0';
+    if (n < 0.01) return '<$0.01';
+    return '$' + n.toLocaleString(undefined, { maximumFractionDigits: 4 });
   };
 
   const loadBarColor = (load, max) => {

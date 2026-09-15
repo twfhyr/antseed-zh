@@ -62,20 +62,39 @@ Deduplication is global across the whole sync: the same provider on a single pee
 
 - `App.jsx` fetches stats + buyers + sellers + services on mount via `useEffect`
 - Loading and error states are handled in `App.jsx`
-- Tabs (Buyers / Sellers / Services) conditionally render child list components
+- Tab state is URL-driven (`src/hooks/useTabRouter.js`), not plain `useState`,
+  so every section is a shareable/bookmarkable/reload-safe link
+  (`antseed-zh.com/buyers`, `.../zh/tokenomics`, etc.) — the server's SPA
+  catch-all serves `index.html` for any of these on a fresh load
 - No state management library; plain React `useState` is sufficient for this scope
+- `Header.jsx` renders a RainbowKit `<ConnectButton>` globally (compact —
+  no balance shown) because the Claim ANTS and Payment Channels tabs are
+  wallet-gated; the rest of the dashboard works fully read-only without
+  connecting
 
 ### Data Binding
 
 ```
-App.jsx (useEffect → fetch)
-  ├─ StatsCards ← stats object
-  ├─ BuyersList ← buyers array + search
-  ├─ SellersList ← sellers array + search
+App.jsx (useTabRouter → one tab active at a time)
+  ├─ Overview     ← StatsCards (/api/stats) + HistoryCharts (/api/history/daily, /epochs)
+  ├─ BuyersList   ← /api/history/buyers (paginated, on-chain)
+  ├─ SellersList  ← sellers array (live DHT + on-chain earned)
   ├─ ServicesList ← services array + search + category filter
-  ├─ ANTSInfo ← /api/chain-stats (supply, epoch clock, allocation, contract map)
-  └─ ClaimANTS ← /api/rewards (five buckets) + wagmi wallet claims
+  ├─ TokenomicsTab ← /api/tokenomics (supply, allocation pies, dynamic shares)
+  ├─ ANTSInfo     ← /api/chain-stats (supply, epoch clock, allocation, contract map, reward-mechanics explainer)
+  ├─ ClaimANTS    ← /api/rewards (five buckets) + wagmi wallet claims
+  ├─ ChannelsView ← /api/channels (buyer proxy) + live channels() reads via
+  │                 the address from /api/deposits/config (never hardcoded —
+  │                 AntseedChannels is swappable and does get redeployed)
+  └─ About        ← this node's own peer info + connection guide
 ```
+
+`TokenomicsTab` and `ANTSInfo` both read chain-level ANTS data and overlap
+somewhat (supply/allocation appear in both, styled differently — pie charts
+vs. a flat list); `ANTSInfo` additionally has the full contract-address list
+and the "how rewards are earned" / "how to earn" explainers that
+`TokenomicsTab` doesn't. Left as two tabs for now — see `notes/dev-plan.md`
+for the consolidation question.
 
 ---
 
@@ -253,11 +272,17 @@ User Browser
   |
   |-- HTTP GET /                  → index.html (Vite production build)
   |-- HTTP GET /assets/*.js       → static JS bundle
-  |-- HTTP GET /api/stats         → SQLite stats row
-  |-- HTTP GET /api/services      → all services from SQLite
+  |-- HTTP GET /api/stats         → SQLite stats row (Antscan-sourced volume/buyers)
+  |-- HTTP GET /api/services      → all services from SQLite (live DHT snapshot)
+  |-- HTTP GET /api/history/*     → daily/epoch/buyers/sellers time series (Antscan, cached)
+  |-- HTTP GET /api/chain-stats   → live Base mainnet reads (supply, epoch, allocation)
+  |-- HTTP GET /api/tokenomics    → cached (5min TTL) allocation + dynamic-share computation
   |-- HTTP GET /api/emissions/*   → legacy-era emissions data from Base mainnet
   |-- HTTP GET /api/rewards       → five-bucket rewards view (staker/usage/legacy/locked)
-  |-- HTTP POST /api/admin/sync   → triggers live network re-sync
+  |-- HTTP GET /api/deposits/config → live contract addresses (source of truth for wagmi calls)
+  |-- HTTP GET /api/channels      → proxies the local buyer proxy's channel list
+  |-- HTTP POST /api/admin/sync   → triggers live network re-sync (token-gated, see README)
   |-- Direct wallet tx            → claimSellerEmissions / claimBuyerEmissions on Base
   |-- Direct wallet tx            → indexPoolRewards + claimStakerRewardsBatch / claimBuyerReward
+  |-- Direct wallet tx            → AntseedChannels.requestClose / .withdraw
 ```

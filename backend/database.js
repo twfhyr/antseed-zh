@@ -5,6 +5,17 @@ const db = new Database('./backend/database.sqlite');
 // Enable WAL mode for better concurrency
 db.pragma('journal_mode = WAL');
 
+// Idempotent schema additions for pre-existing database files (older
+// deployments won't have these columns from CREATE TABLE IF NOT EXISTS alone).
+for (const stmt of [
+  'ALTER TABLE sellers ADD COLUMN agent_id TEXT',
+  'ALTER TABLE sellers ADD COLUMN unique_buyers INTEGER',
+  'ALTER TABLE sellers ADD COLUMN first_seen_at INTEGER',
+  'ALTER TABLE sellers ADD COLUMN total_requests TEXT',
+]) {
+  try { db.prepare(stmt).run(); } catch (_) { /* column already exists */ }
+}
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS buyers (
     id TEXT PRIMARY KEY,
@@ -24,7 +35,11 @@ db.exec(`
     capacity TEXT NOT NULL,
     uptime REAL DEFAULT 0,
     models INTEGER DEFAULT 0,
-    joined TEXT NOT NULL
+    joined TEXT NOT NULL,
+    agent_id TEXT,
+    unique_buyers INTEGER,
+    first_seen_at INTEGER,
+    total_requests TEXT
   );
 
   CREATE TABLE IF NOT EXISTS services (
@@ -59,83 +74,35 @@ db.exec(`
 `);
 
 function seedIfEmpty() {
-  const buyerCount = db.prepare('SELECT COUNT(*) as count FROM buyers').get().count;
-  if (buyerCount === 0) {
-    const insertBuyer = db.prepare(`
-      INSERT INTO buyers (id, name, status, total_spent, requests, avg_latency, joined)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `);
-    const buyers = [
-      ['buyer_001', 'TechCorp AI', 'online', 12450.00, 8921, 45, '2024-03-15'],
-      ['buyer_002', 'DevStudio Pro', 'online', 8320.50, 5643, 52, '2024-04-02'],
-      ['buyer_003', 'DataFlow Inc', 'busy', 15680.75, 12340, 38, '2024-02-20'],
-      ['buyer_004', 'CloudMind Labs', 'offline', 4560.25, 3210, 61, '2024-05-10'],
-      ['buyer_005', 'NeuralSystems', 'online', 22100.00, 18760, 41, '2024-01-08'],
-      ['buyer_006', 'ByteBridge', 'online', 6780.00, 4890, 49, '2024-04-18'],
-      ['buyer_007', 'Synapse AI', 'busy', 18900.50, 14560, 35, '2024-02-28'],
-      ['buyer_008', 'QuantumSoft', 'online', 9450.25, 7230, 47, '2024-03-22'],
-    ];
-    const buyersTx = db.transaction(() => {
-      for (const b of buyers) insertBuyer.run(...b);
-    });
-    buyersTx();
-  }
+  // NOTE: this function used to seed 8 invented buyers ("TechCorp AI",
+  // "DataFlow Inc", ...), 8 invented sellers, 14 invented services and a
+  // fabricated stats row (156 buyers / $458,900.50 volume / 18.7% growth).
+  // That violated the project's core rule: never present fabricated data as
+  // real network data. The `sellers`/`services` tables are wiped and
+  // repopulated from the live DHT by sync-official.js, but `buyers` was
+  // never touched by any sync, so those 8 fake rows were being served
+  // verbatim by GET /api/buyers, and the fake stats row's `service_growth`
+  // (18.7) survived every sync because sync-official.js does not update
+  // that column.
+  //
+  // Real data sources now used instead:
+  //   buyers   -> buyers_onchain      (Antscan, via sync-history.js)
+  //   sellers  -> sellers_onchain     (Antscan) + sellers (live DHT)
+  //   services -> services            (live DHT, sync-official.js)
+  //   stats    -> network_snapshots   (Antscan) via sync-official.js
+  //
+  // Purge any fake rows left over in existing deployments' database files.
+  db.prepare("DELETE FROM buyers WHERE id LIKE 'buyer_00%'").run();
 
-  const sellerCount = db.prepare('SELECT COUNT(*) as count FROM sellers').get().count;
-  if (sellerCount === 0) {
-    const insertSeller = db.prepare(`
-      INSERT INTO sellers (id, name, status, total_earned, capacity, uptime, models, joined)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    const sellers = [
-      ['seller_001', 'NodeRunner Alpha', 'online', 18500.00, '32 GB / 8 GPU', 99.8, 4, '2024-01-15'],
-      ['seller_002', 'GPU Farm East', 'online', 24300.75, '128 GB / 32 GPU', 99.5, 8, '2023-12-01'],
-      ['seller_003', 'DeepCompute Hub', 'busy', 31200.00, '64 GB / 16 GPU', 98.9, 6, '2024-02-10'],
-      ['seller_004', 'EdgeNode West', 'online', 12800.50, '16 GB / 4 GPU', 99.2, 2, '2024-04-05'],
-      ['seller_005', 'CryptoMine AI', 'offline', 8900.25, '48 GB / 12 GPU', 95.4, 3, '2024-03-01'],
-      ['seller_006', 'RenderFarm Pro', 'online', 27600.00, '256 GB / 64 GPU', 99.9, 12, '2023-11-20'],
-      ['seller_007', 'LocalHost Max', 'busy', 15400.75, '24 GB / 6 GPU', 97.8, 3, '2024-05-01'],
-      ['seller_008', 'CloudNode One', 'online', 19800.00, '96 GB / 24 GPU', 99.6, 7, '2024-01-25'],
-    ];
-    const sellersTx = db.transaction(() => {
-      for (const s of sellers) insertSeller.run(...s);
-    });
-    sellersTx();
-  }
-
-  const serviceCount = db.prepare('SELECT COUNT(*) as count FROM services').get().count;
-  if (serviceCount === 0) {
-    const insertService = db.prepare(`
-      INSERT INTO services (id, name, provider, seller_id, seller_name, categories, protocols, pricing_input, pricing_cached_input, pricing_output, max_concurrency, current_load, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    const services = [
-      ['svc_001', 'claude-sonnet-4-6', 'anthropic', 'seller_001', 'NodeRunner Alpha', JSON.stringify(['coding','privacy']), JSON.stringify(['anthropic-messages']), 3, 0.3, 15, 5, 2, 'online'],
-      ['svc_002', 'claude-haiku-4-5', 'anthropic', 'seller_001', 'NodeRunner Alpha', JSON.stringify(['privacy']), JSON.stringify(['anthropic-messages']), 1, 0.1, 5, 10, 3, 'online'],
-      ['svc_003', 'kimi-k2.5', 'antseed', 'seller_002', 'GPU Farm East', JSON.stringify(['coding','finance']), JSON.stringify(['openai-compatible']), 2, 0.2, 8, 20, 12, 'online'],
-      ['svc_004', 'kimi-k2.6', 'antseed', 'seller_002', 'GPU Farm East', JSON.stringify(['coding','legal']), JSON.stringify(['openai-compatible']), 2.5, 0.25, 10, 16, 14, 'busy'],
-      ['svc_005', 'gpt-4o', 'openai', 'seller_003', 'DeepCompute Hub', JSON.stringify(['coding','uncensored']), JSON.stringify(['openai-chat']), 5, 1.25, 15, 8, 6, 'busy'],
-      ['svc_006', 'gpt-4o-mini', 'openai', 'seller_003', 'DeepCompute Hub', JSON.stringify(['coding']), JSON.stringify(['openai-chat']), 0.15, 0.075, 0.6, 15, 4, 'online'],
-      ['svc_007', 'llama-3.3-70b', 'meta', 'seller_004', 'EdgeNode West', JSON.stringify(['privacy','uncensored']), JSON.stringify(['openai-compatible']), 0.9, 0.09, 0.9, 4, 1, 'online'],
-      ['svc_008', 'llama-3.3-8b', 'meta', 'seller_004', 'EdgeNode West', JSON.stringify(['privacy']), JSON.stringify(['openai-compatible']), 0.2, 0.02, 0.2, 6, 2, 'online'],
-      ['svc_009', 'deepseek-chat', 'deepseek', 'seller_005', 'CryptoMine AI', JSON.stringify(['coding','finance']), JSON.stringify(['openai-compatible']), 0.5, 0.05, 2, 8, 0, 'offline'],
-      ['svc_010', 'gemini-1.5-pro', 'google', 'seller_006', 'RenderFarm Pro', JSON.stringify(['coding','legal']), JSON.stringify(['google-generative']), 3.5, 0.875, 10.5, 30, 18, 'online'],
-      ['svc_011', 'gemini-1.5-flash', 'google', 'seller_006', 'RenderFarm Pro', JSON.stringify(['coding']), JSON.stringify(['google-generative']), 0.35, 0.0875, 1.05, 40, 22, 'online'],
-      ['svc_012', 'mistral-large', 'mistral', 'seller_007', 'LocalHost Max', JSON.stringify(['coding','finance','legal']), JSON.stringify(['openai-compatible']), 2, 0.5, 6, 6, 5, 'busy'],
-      ['svc_013', 'qwen-2.5-72b', 'alibaba', 'seller_008', 'CloudNode One', JSON.stringify(['coding','tee']), JSON.stringify(['openai-compatible']), 1.2, 0.12, 3.6, 12, 7, 'online'],
-      ['svc_014', 'qwen-2.5-32b', 'alibaba', 'seller_008', 'CloudNode One', JSON.stringify(['coding']), JSON.stringify(['openai-compatible']), 0.6, 0.06, 1.8, 14, 6, 'online'],
-    ];
-    const servicesTx = db.transaction(() => {
-      for (const s of services) insertService.run(...s);
-    });
-    servicesTx();
-  }
-
+  // The stats row must exist (sync-official.js only ever UPDATEs it), but it
+  // starts as all-NULL so the UI renders "—" until a real sync populates it,
+  // rather than showing invented numbers.
   const statsCount = db.prepare('SELECT COUNT(*) as count FROM stats').get().count;
   if (statsCount === 0) {
     db.prepare(`
-      INSERT INTO stats (id, total_buyers, total_sellers, total_services, total_volume, active_transactions, buyer_growth, seller_growth, service_growth, volume_growth, transaction_growth)
-      VALUES (1, 156, 89, 47, 458900.50, 1234, 12.5, 8.3, 18.7, 23.7, 15.2)
+      INSERT INTO stats (id, total_buyers, total_sellers, total_services, total_volume,
+        active_transactions, buyer_growth, seller_growth, service_growth, volume_growth, transaction_growth)
+      VALUES (1, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)
     `).run();
   }
 
@@ -207,6 +174,113 @@ db.prepare('INSERT INTO operator_buyers (operator, buyer) VALUES (?, ?)').run(
 '0x8e0abd6c6cfec9e643c205e7804e259ebff585c1'
 );
 }
+
+// ─── Real historical/network data (Antscan-sourced) ───
+// Replaces fabricated per-seller earnings/uptime and the requests*0.1 volume
+// heuristic. Historical daily rows are immutable once the UTC day has fully
+// elapsed — we never overwrite a closed day, only append/refresh "today" and
+// any days we haven't stored yet, so history doesn't churn on every sync.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS network_snapshots (
+    fetched_at INTEGER PRIMARY KEY,
+    total_volume_usdc TEXT,
+    total_platform_fees_usdc TEXT,
+    total_deposited_usdc TEXT,
+    total_withdrawn_usdc TEXT,
+    total_staked_usdc TEXT,
+    total_requests TEXT,
+    total_input_tokens TEXT,
+    total_output_tokens TEXT,
+    channel_count INTEGER,
+    active_channel_count INTEGER,
+    settled_channel_count INTEGER,
+    buyer_count INTEGER,
+    seller_count INTEGER,
+    last_event_at INTEGER
+  );
+
+  CREATE TABLE IF NOT EXISTS buyers_onchain (
+    address TEXT PRIMARY KEY,
+    spent_usdc TEXT,
+    deposited_usdc TEXT,
+    withdrawn_usdc TEXT,
+    request_count TEXT,
+    input_tokens TEXT,
+    output_tokens TEXT,
+    channel_count INTEGER,
+    unique_sellers INTEGER,
+    first_seen_at INTEGER,
+    last_seen_at INTEGER,
+    fetched_at INTEGER
+  );
+
+  CREATE TABLE IF NOT EXISTS sellers_onchain (
+    address TEXT PRIMARY KEY,
+    agent_id TEXT,
+    stake_usdc TEXT,
+    earned_usdc TEXT,
+    request_count TEXT,
+    input_tokens TEXT,
+    output_tokens TEXT,
+    unique_buyers INTEGER,
+    channel_count INTEGER,
+    first_seen_at INTEGER,
+    last_seen_at INTEGER,
+    fetched_at INTEGER
+  );
+
+  CREATE TABLE IF NOT EXISTS daily_metrics (
+    day TEXT PRIMARY KEY,
+    day_start INTEGER NOT NULL,
+    volume_usdc TEXT,
+    platform_fees_usdc TEXT,
+    deposits_usdc TEXT,
+    withdrawals_usdc TEXT,
+    requests TEXT,
+    input_tokens TEXT,
+    output_tokens TEXT,
+    opened_channels INTEGER,
+    settled_events INTEGER,
+    closed_channels INTEGER,
+    active_buyers INTEGER,
+    active_sellers INTEGER,
+    is_closed INTEGER NOT NULL DEFAULT 0,
+    fetched_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS sync_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT,
+    updated_at INTEGER
+  );
+
+  -- Per-epoch breakdown (buyers/sellers/volume/requests), used for the
+  -- Overview tab's "by epoch" charts. Epoch 22 is the only currently-open
+  -- epoch (recognized-usage era); everything before it is immutable, and is
+  -- never re-fetched once stored, same rule as daily_metrics.
+  CREATE TABLE IF NOT EXISTS epoch_metrics (
+    epoch INTEGER PRIMARY KEY,
+    volume_usdc TEXT,
+    requests TEXT,
+    input_tokens TEXT,
+    output_tokens TEXT,
+    active_buyers INTEGER,
+    active_sellers INTEGER,
+    is_closed INTEGER NOT NULL DEFAULT 0,
+    fetched_at INTEGER NOT NULL
+  );
+
+  -- Durable cache for computed payloads that are expensive to rebuild from
+  -- chain (notably /api/tokenomics, ~42s cold). The in-memory cache alone
+  -- meant the first visitor after every restart paid the full cost; this
+  -- survives restarts so the page can render immediately from the last known
+  -- good snapshot while a refresh runs in the background.
+  CREATE TABLE IF NOT EXISTS payload_cache (
+    key TEXT PRIMARY KEY,
+    data TEXT NOT NULL,
+    fetched_at INTEGER NOT NULL
+  );
+`);
 }
 
 seedIfEmpty();

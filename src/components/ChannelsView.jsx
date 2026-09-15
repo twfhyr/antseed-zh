@@ -11,8 +11,7 @@ AlertCircle,
 ExternalLink,
 RefreshCw,
 } from 'lucide-react';
-
-const CHANNELS_ADDRESS = '0x4d9bB6e20A0a2842CB1C4C22c4b3bEB2f03776E9';
+import { fetchChannels as apiFetchChannels, fetchDepositsConfig } from '../api';
 
 const CHANNELS_ABI = [
 {
@@ -88,7 +87,7 @@ function truncateAddress(addr) {
 return addr ? `${addr.slice(0, 6)}...${addr.slice(-4)}` : '';
 }
 
-function ChannelRow({ session, onAction }) {
+function ChannelRow({ session, onAction, channelsAddress }) {
 const { address, isConnected } = useAccount();
 const status = getStatus(session);
 const style = STATUS_STYLE[status];
@@ -101,7 +100,7 @@ const { isLoading: withdrawConfirming, isSuccess: withdrawConfirmed } = useWaitF
 
 const handleClose = () => {
 writeRequestClose({
-address: CHANNELS_ADDRESS,
+address: channelsAddress,
 abi: CHANNELS_ABI,
 functionName: 'requestClose',
 args: [session.channelId],
@@ -110,7 +109,7 @@ args: [session.channelId],
 
 const handleWithdraw = () => {
 writeWithdraw({
-address: CHANNELS_ADDRESS,
+address: channelsAddress,
 abi: CHANNELS_ABI,
 functionName: 'withdraw',
 args: [session.channelId],
@@ -148,7 +147,7 @@ color: style.color,
 <button className="btn-link" onClick={onAction} style={{ fontSize: '0.8rem', background: 'none', border: 'none', color: 'var(--info)', cursor: 'pointer' }}>
 Refresh
 </button>
-) : status === 'active' && isConnected ? (
+) : status === 'active' && isConnected && channelsAddress ? (
 <button onClick={handleClose} disabled={closeConfirming} style={{
 padding: '0.25rem 0.625rem', borderRadius: '6px', border: '1px solid var(--border)',
 background: 'transparent', color: 'var(--text-primary)', cursor: 'pointer', fontSize: '0.75rem',
@@ -157,7 +156,7 @@ background: 'transparent', color: 'var(--text-primary)', cursor: 'pointer', font
 </button>
 ) : status === 'closing' ? (
 <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Waiting...</span>
-) : status === 'withdrawable' && isConnected ? (
+) : status === 'withdrawable' && isConnected && channelsAddress ? (
 <button onClick={handleWithdraw} disabled={withdrawConfirming} style={{
 padding: '0.25rem 0.625rem', borderRadius: '6px', border: 'none',
 background: 'var(--accent)', color: 'white', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 600,
@@ -175,12 +174,26 @@ background: 'var(--accent)', color: 'white', cursor: 'pointer', fontSize: '0.75r
 function ChannelsView() {
 const [rawChannels, setRawChannels] = useState([]);
 const [loading, setLoading] = useState(true);
+// Read live from /api/deposits/config (backed by @antseed/node's
+// resolveChainConfig) instead of a hardcoded address: AntseedChannels is
+// the one "swappable" contract in the protocol (see CLAUDE.md) and gets
+// redeployed by re-pointing the stable contracts, so a hardcoded address
+// here goes stale silently — this happened once already (the previous
+// constant pointed at a since-abandoned deployment).
+const [channelsAddress, setChannelsAddress] = useState(null);
+
+useEffect(() => {
+let cancelled = false;
+fetchDepositsConfig()
+.then((cfg) => { if (!cancelled) setChannelsAddress(cfg.channelsContractAddress || null); })
+.catch(() => {});
+return () => { cancelled = true; };
+}, []);
 
 const fetchChannels = useCallback(async () => {
 setLoading(true);
 try {
-const resp = await fetch('/api/channels');
-const data = await resp.json();
+const data = await apiFetchChannels();
 setRawChannels(data.channels || []);
 } catch (e) {
 setRawChannels([]);
@@ -191,12 +204,12 @@ setLoading(false);
 
 useEffect(() => { fetchChannels(); }, [fetchChannels]);
 
-const contracts = useMemo(() => rawChannels.map(c => ({
-address: CHANNELS_ADDRESS,
+const contracts = useMemo(() => (channelsAddress ? rawChannels.map(c => ({
+address: channelsAddress,
 abi: CHANNELS_ABI,
 functionName: 'channels',
 args: [c.channelId],
-})), [rawChannels]);
+})) : []), [rawChannels, channelsAddress]);
 
 const { data: onChainReads, refetch: refetchOnChain, isFetching: onChainFetching } = useReadContracts({
 contracts,
@@ -299,7 +312,7 @@ No channels yet
 </thead>
 <tbody>
 {allChannels.map(session => (
-<ChannelRow key={session.channelId} session={session} onAction={refetch} />
+<ChannelRow key={session.channelId} session={session} onAction={refetch} channelsAddress={channelsAddress} />
 ))}
 </tbody>
 </table>

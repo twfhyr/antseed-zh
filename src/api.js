@@ -1,4 +1,6 @@
-const API_BASE = '/zh/api';
+// import.meta.env.BASE_URL is Vite's configured `base` ('/' or '/zh/'),
+// so this tracks the build target automatically without a separate env var.
+const API_BASE = `${import.meta.env.BASE_URL}api`.replace(/\/+/g, '/').replace(/^([^/])/, '/$1');
 
 async function get(endpoint) {
   const res = await fetch(`${API_BASE}${endpoint}`);
@@ -20,10 +22,6 @@ export async function fetchSellers() {
 
 export async function fetchServices() {
   return get('/services');
-}
-
-export async function fetchComputedStats() {
-  return get('/computed-stats');
 }
 
 export async function fetchProviderModels() {
@@ -72,6 +70,29 @@ export async function fetchBuyerUsage() {
 return get('/buyer-usage');
 }
 
-export async function fetchNetworkStats() {
-return get('/network-stats');
+/** Returns the tokenomics payload. The server answers immediately from its
+ *  cache (flagging `stale: true` while a background chain refresh runs), so
+ *  this resolves fast even on a cold backend.
+ *  Pass `{ wait: true }` to block until fresh on-chain data is available. */
+export async function fetchTokenomics({ wait = false } = {}) {
+  return get(`/tokenomics${wait ? '?wait=1' : ''}`);
+}
+
+export async function fetchHistoryDaily(days = 90) {
+  return get(`/history/daily?days=${days}`);
+}
+
+export async function fetchHistoryEpochs(limit = 30) {
+  return get(`/history/epochs?limit=${limit}`);
+}
+
+/** One page of buyers, newest-spend first.
+ *  Resolves to `{ items, total, offset, limit, hasMore }`. */
+export async function fetchHistoryBuyers({ limit = 100, offset = 0, q = '' } = {}) {
+  const query = `limit=${limit}&offset=${offset}` + (q ? `&q=${encodeURIComponent(q)}` : '');
+  return get(`/history/buyers?${query}`);
+}
+
+export async function fetchHistorySellers(limit = 200) {
+  return get(`/history/sellers?limit=${limit}`);
 }

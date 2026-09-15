@@ -2,9 +2,15 @@ import express from 'express';
 import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { Interface, JsonRpcProvider, Contract } from 'ethers';
 import db from './database.js';
 import { syncFromOfficialNetwork } from './sync-official.js';
 import { readChainMetrics, updateChainMetrics, startChainPoller } from './chain-poller.js';
+import {
+  runHistorySync, startHistorySync,
+  readLatestSnapshot, readDailyMetrics, readBuyersOnchain, countBuyersOnchain, readSellersOnchain,
+  readEpochMetrics,
+} from './sync-history.js';
 import {
   EmissionsClient, ANTSTokenClient, DepositsClient, RegistryClient, EmissionsGateClient,
   UsageAccountingClient, UsageRewardsClient, SellerPoolsClient, SellerPoolsRewardsClient,
@@ -23,6 +29,49 @@ const PORT = process.env.PORT || 3001;
 
 app.use(cors());
 app.use(express.json());
+
+// This backend always runs behind nginx (both the `:8088/zh` proxy and the
+// antseed-zh.com vhost `proxy_pass` to 127.0.0.1:3001). Without this, every
+// request — including ones from the public internet — has req.ip ===
+// '127.0.0.1', which silently defeated the localhost check in
+// requireAdminAuth below. Trust exactly one hop (our own nginx).
+app.set('trust proxy', 1);
+
+// ─── Admin auth gate ───
+// Previously /api/admin/sync and /api/admin/force-chain-sync were open to
+// anyone. Require a shared-secret token (ADMIN_SYNC_TOKEN env var).
+//
+// SECURITY: this used to fall back to "allow if req.ip is localhost" when
+// ADMIN_SYNC_TOKEN was unset. Combined with the missing `trust proxy` above,
+// that made every admin route publicly callable through nginx (verified:
+// `curl -X POST http://<public-ip>:8088/zh/api/admin/force-chain-sync` -> 200),
+// giving anyone an unauthenticated RPC/Antscan amplification lever against
+// the rate-limited Tenderly gateway. We now fail CLOSED: no token configured
+// means remote admin calls are refused outright, and the localhost exemption
+// is evaluated against the real client IP (req.ip, now proxy-aware) rather
+// than the proxy's address.
+const ADMIN_SYNC_TOKEN = process.env.ADMIN_SYNC_TOKEN || null;
+
+function isLoopback(ip) {
+  return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
+}
+
+function requireAdminAuth(req, res, next) {
+  if (ADMIN_SYNC_TOKEN) {
+    const provided = req.get('x-admin-token') || req.query.token;
+    if (provided === ADMIN_SYNC_TOKEN) return next();
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+  // No token configured: only genuinely local callers (server-side cron /
+  // health checks running on this host) may proceed. `req.ip` is now the
+  // real client address because of `trust proxy` above, and we additionally
+  // require the socket peer itself to be loopback so a spoofed
+  // X-Forwarded-For cannot fabricate a local origin.
+  const clientIp = req.ip || '';
+  const socketIp = req.socket?.remoteAddress || '';
+  if (isLoopback(clientIp) && isLoopback(socketIp) && !req.get('x-forwarded-for')) return next();
+  return res.status(401).json({ error: 'unauthorized (set ADMIN_SYNC_TOKEN to allow admin calls)' });
+}
 
 // ─── Snake-case to camelCase helpers ───
 function toCamelCase(str) {
@@ -81,7 +130,7 @@ app.get('/api/stats', (_req, res) => {
   });
 });
 
-app.put('/api/stats', (req, res) => {
+app.put('/api/stats', requireAdminAuth, (req, res) => {
   const {
     totalBuyers, totalSellers, totalServices, totalVolume,
     activeTransactions, buyerGrowth, sellerGrowth, serviceGrowth,
@@ -122,7 +171,7 @@ app.get('/api/buyers/:id', (req, res) => {
   res.json(camelize(row));
 });
 
-app.post('/api/buyers', (req, res) => {
+app.post('/api/buyers', requireAdminAuth, (req, res) => {
   const { id, name, status, totalSpent, requests, avgLatency, joined } = req.body;
   const result = db.prepare(`
     INSERT INTO buyers (id, name, status, total_spent, requests, avg_latency, joined)
@@ -131,7 +180,7 @@ app.post('/api/buyers', (req, res) => {
   res.status(201).json({ id: result.lastInsertRowid });
 });
 
-app.put('/api/buyers/:id', (req, res) => {
+app.put('/api/buyers/:id', requireAdminAuth, (req, res) => {
   const { name, status, totalSpent, requests, avgLatency, joined } = req.body;
   const result = db.prepare(`
     UPDATE buyers SET
@@ -146,7 +195,7 @@ app.put('/api/buyers/:id', (req, res) => {
   res.json({ updated: result.changes });
 });
 
-app.delete('/api/buyers/:id', (req, res) => {
+app.delete('/api/buyers/:id', requireAdminAuth, (req, res) => {
   const result = db.prepare('DELETE FROM buyers WHERE id = ?').run(req.params.id);
   res.json({ deleted: result.changes });
 });
@@ -163,7 +212,7 @@ app.get('/api/sellers/:id', (req, res) => {
   res.json(camelize(row));
 });
 
-app.post('/api/sellers', (req, res) => {
+app.post('/api/sellers', requireAdminAuth, (req, res) => {
   const { id, name, status, totalEarned, capacity, uptime, models, joined } = req.body;
   const result = db.prepare(`
     INSERT INTO sellers (id, name, status, total_earned, capacity, uptime, models, joined)
@@ -172,7 +221,7 @@ app.post('/api/sellers', (req, res) => {
   res.status(201).json({ id: result.lastInsertRowid });
 });
 
-app.put('/api/sellers/:id', (req, res) => {
+app.put('/api/sellers/:id', requireAdminAuth, (req, res) => {
   const { name, status, totalEarned, capacity, uptime, models, joined } = req.body;
   const result = db.prepare(`
     UPDATE sellers SET
@@ -188,7 +237,7 @@ app.put('/api/sellers/:id', (req, res) => {
   res.json({ updated: result.changes });
 });
 
-app.delete('/api/sellers/:id', (req, res) => {
+app.delete('/api/sellers/:id', requireAdminAuth, (req, res) => {
   const result = db.prepare('DELETE FROM sellers WHERE id = ?').run(req.params.id);
   res.json({ deleted: result.changes });
 });
@@ -205,7 +254,7 @@ app.get('/api/services/:id', (req, res) => {
   res.json(parseService(row));
 });
 
-app.post('/api/services', (req, res) => {
+app.post('/api/services', requireAdminAuth, (req, res) => {
   const {
     id, name, provider, sellerId, sellerName,
     categories, protocols,
@@ -225,7 +274,7 @@ app.post('/api/services', (req, res) => {
   res.status(201).json({ id: result.lastInsertRowid });
 });
 
-app.put('/api/services/:id', (req, res) => {
+app.put('/api/services/:id', requireAdminAuth, (req, res) => {
   const {
     name, provider, sellerId, sellerName,
     categories, protocols,
@@ -259,22 +308,27 @@ app.put('/api/services/:id', (req, res) => {
   res.json({ updated: result.changes });
 });
 
-app.delete('/api/services/:id', (req, res) => {
+app.delete('/api/services/:id', requireAdminAuth, (req, res) => {
   const result = db.prepare('DELETE FROM services WHERE id = ?').run(req.params.id);
   res.json({ deleted: result.changes });
 });
 
 // ─── Computed stats for live updates ───
 app.get('/api/computed-stats', (_req, res) => {
-  const buyerCount = db.prepare('SELECT COUNT(*) as c FROM buyers').get().c;
+  // Previously this summed `buyers.total_spent` — a column that only ever
+  // held the 8 fabricated seed rows — and reported ~$98,242 of invented
+  // volume as the network total. Buyer count came from the same fake table.
+  // Both now come from the real Antscan network snapshot (the same source
+  // sync-official.js uses for the stats row), and are null when no snapshot
+  // has been synced yet rather than falling back to a guess.
+  const snap = readLatestSnapshot();
   const sellerCount = db.prepare('SELECT COUNT(*) as c FROM sellers').get().c;
   const serviceCount = db.prepare('SELECT COUNT(*) as c FROM services').get().c;
-  const totalVolume = db.prepare('SELECT SUM(total_spent) as s FROM buyers').get().s ?? 0;
   res.json({
-    totalBuyers: buyerCount,
+    totalBuyers: snap?.buyer_count ?? null,
     totalSellers: sellerCount,
     totalServices: serviceCount,
-    totalVolume,
+    totalVolume: snap ? Number(snap.total_volume_usdc) / 1e6 : null,
   });
 });
 
@@ -286,7 +340,332 @@ app.get('/api/chain-stats', (_req, res) => {
   res.json(data);
 });
 
-app.post('/api/admin/force-chain-sync', async (_req, res) => {
+// ─── Tokenomics: current (epoch 22+) vs legacy allocation, live stake data ───
+// This is a separate, cached (5 min TTL) endpoint so the Tokenomics tab loads
+// fast without re-reading the chain on every request. Data is real on-chain
+// reads (via the same clients the poller uses), not hardcoded percentages.
+const TOKENOMICS_TTL_MS = 5 * 60 * 1000;
+let tokenomicsCache = null;
+let tokenomicsCacheAt = 0;
+// Guards against a refresh stampede: several concurrent visitors on a cold
+// cache would otherwise each kick off the same ~42s chain read.
+let tokenomicsRefreshing = null;
+
+/** Durable (SQLite-backed) companion to the in-memory caches. Survives
+ *  restarts, so a cold process can still answer instantly with the last
+ *  known good payload while it refreshes in the background. */
+function readPayloadCache(key) {
+  try {
+    const row = db.prepare('SELECT data, fetched_at FROM payload_cache WHERE key = ?').get(key);
+    if (!row) return null;
+    return { data: JSON.parse(row.data), fetchedAt: row.fetched_at };
+  } catch { return null; }
+}
+
+function writePayloadCache(key, data) {
+  try {
+    db.prepare(`INSERT INTO payload_cache (key, data, fetched_at) VALUES (?, ?, ?)
+      ON CONFLICT(key) DO UPDATE SET data = excluded.data, fetched_at = excluded.fetched_at`)
+      .run(key, JSON.stringify(data), Date.now());
+  } catch { /* cache write failures must never break the response */ }
+}
+
+/** Recomputes tokenomics and updates both cache layers. Deduplicated: a
+ *  second caller while a refresh is in flight joins the existing promise. */
+function refreshTokenomics() {
+  if (tokenomicsRefreshing) return tokenomicsRefreshing;
+  tokenomicsRefreshing = computeTokenomics()
+    .then((data) => {
+      tokenomicsCache = data;
+      tokenomicsCacheAt = Date.now();
+      writePayloadCache('tokenomics', data);
+      return data;
+    })
+    .finally(() => { tokenomicsRefreshing = null; });
+  return tokenomicsRefreshing;
+}
+
+// Gate share values (minShareBps/maxShareBps on the dynamic staker and usage
+// configs) use a 100_000 denominator, not the standard 10_000 bps one — see
+// AntseedEmissionsGate.SHARE_DENOMINATOR / AntseedSellerPoolsRewards.
+// GATE_SHARE_DENOMINATOR / AntseedUsageRewards.GATE_SHARE_DENOMINATOR.
+// Converting to a percentage is therefore bps / 100_000 * 100 === bps / 1000.
+const GATE_SHARE_DENOMINATOR = 100_000;
+function bpsToPct(bps) {
+  if (bps == null) return null;
+  return (Number(bps) / GATE_SHARE_DENOMINATOR) * 100;
+}
+
+// Legacy (pre-epoch-22) allocation. These percentages are mutable on-chain
+// (AntseedEmissions.setShares) and the deployed Base-mainnet V2 contract has
+// in fact been re-configured away from its constructor defaults: a live
+// getShares() returns 65/5/15/15, not the 50/20/15/15 the contract tests
+// assert. Hardcoding either set is therefore wrong — read them live, and
+// only fall back to the last-known-live values if the chain read fails.
+const LEGACY_ALLOCATION_FALLBACK = [
+  { name: 'sellers', sharePct: 65, desc: 'Legacy V2 seller emissions (capped at 50% of the seller bucket per seller).' },
+  { name: 'buyers', sharePct: 5, desc: 'Legacy V2 buyer emissions (capped at 5% of the buyer bucket per buyer).' },
+  { name: 'reserve', sharePct: 15, desc: 'Protocol reserve — legacy flush destination.' },
+  { name: 'team', sharePct: 15, desc: 'Team wallet — legacy flush destination.' },
+];
+
+async function readLegacyAllocation() {
+  if (!emissionsClient) return LEGACY_ALLOCATION_FALLBACK;
+  try {
+    const p = await emissionsClient.getShares();
+    if (!p || !p.initialized) return LEGACY_ALLOCATION_FALLBACK;
+    return [
+      { name: 'sellers', sharePct: Number(p.sellerSharePct), desc: `Legacy V2 seller emissions (capped at ${Number(p.maxSellerSharePct)}% of the seller bucket per seller).` },
+      { name: 'buyers', sharePct: Number(p.buyerSharePct), desc: `Legacy V2 buyer emissions (capped at ${Number(p.maxBuyerSharePct)}% of the buyer bucket per buyer).` },
+      { name: 'reserve', sharePct: Number(p.reserveSharePct), desc: 'Protocol reserve — legacy flush destination.' },
+      { name: 'team', sharePct: Number(p.teamSharePct), desc: 'Team wallet — legacy flush destination.' },
+    ];
+  } catch (_) {
+    return LEGACY_ALLOCATION_FALLBACK;
+  }
+}
+
+async function computeTokenomics() {
+  const cd = readChainMetrics();
+  const stack = await resolveStack().catch(() => null);
+  const currentEpoch = stack?.currentEpoch ?? cd?.emissions?.currentEpoch ?? null;
+  const effectiveEpoch = stack?.effectiveEpoch ?? cd?.emissions?.effectiveEpoch ?? 22;
+
+  let stake = null;
+  try {
+    if (sellerPoolsClient && sellerPoolsRewardsClient && currentEpoch != null) {
+      const [totalActiveStake, totalPowerWeight, dynStaker, epochEmission, initialEmission] = await Promise.all([
+        sellerPoolsClient.totalActiveStakeAtEpoch(currentEpoch).catch(() => null),
+        sellerPoolsClient.totalPowerWeightAtEpoch(currentEpoch).catch(() => null),
+        sellerPoolsRewardsClient.dynamicStakerConfigAt(currentEpoch).catch(() => null),
+        emissionsGateClient ? emissionsGateClient.getEpochEmission(currentEpoch).catch(() => null) : null,
+        emissionsGateClient ? emissionsGateClient.initialEmission().catch(() => null) : null,
+      ]);
+      const activeAnts = totalActiveStake != null ? Number(totalActiveStake) / 1e18 : null;
+      const powerWeight = totalPowerWeight != null ? Number(totalPowerWeight) / 1e18 : null;
+      let effectiveSharePct = null;
+      let target = null;
+      if (dynStaker && activeAnts != null) {
+        // BPS here are gate-share units with denominator 100_000 (see
+        // AntseedSellerPoolsRewards.GATE_SHARE_DENOMINATOR), NOT standard
+        // 10_000 bps. Dividing by 100 reported the on-chain defaults
+        // (2_000 / 40_000) as "20%" and "400%" — a 400% emission share was
+        // being rendered on the Tokenomics tab. Correct conversion to a
+        // percentage is bps / 100_000 * 100 === bps / 1000.
+        const min = bpsToPct(dynStaker.minShareBps);
+        const max = bpsToPct(dynStaker.maxShareBps);
+        const rawTarget = Number(dynStaker.stakeShareTarget) / 1e18;
+        // The configured target is denominated at the initial emission level
+        // and scales with each epoch's emission
+        // (_liveStakerEpochBudget: scaledTarget = target * epochEmission / initialEmission).
+        // Using the raw target overstated the denominator and understated
+        // the effective share.
+        const scale = epochEmission != null && initialEmission != null && initialEmission > 0n
+          ? Number(epochEmission) / Number(initialEmission)
+          : 1;
+        target = rawTarget * scale;
+        // Mirrors AntseedShareMath.saturatingShareBps: zero metric earns
+        // nothing (returns 0, not min); a zero target saturates to max.
+        if (activeAnts === 0) effectiveSharePct = 0;
+        else if (target === 0) effectiveSharePct = max;
+        else effectiveSharePct = min + (max - min) * (activeAnts / (activeAnts + target));
+      }
+      stake = {
+        totalActiveStakeAnts: activeAnts,
+        totalPowerWeight: powerWeight,
+        stakeShareTarget: target,
+        minSharePct: dynStaker ? bpsToPct(dynStaker.minShareBps) : null,
+        maxSharePct: dynStaker ? bpsToPct(dynStaker.maxShareBps) : null,
+        effectiveSharePct,
+      };
+    }
+  } catch (_) { /* leave stake null on failure — no fabricated fallback */ }
+
+  let usage = null;
+  try {
+    if (usageRewardsClient && currentEpoch != null) {
+      const dynUsage = await usageRewardsClient.dynamicUsageConfigAt(currentEpoch).catch(() => null);
+      if (dynUsage) {
+        usage = {
+          // Same 100_000 gate-share denominator as the staker config above;
+          // /100 previously reported the 5_000/10_000 defaults as 50%/100%
+          // instead of the real 5%/10%.
+          buyerMinSharePct: bpsToPct(dynUsage.buyerMinShareBps),
+          buyerMaxSharePct: bpsToPct(dynUsage.buyerMaxShareBps),
+          sellerMinSharePct: bpsToPct(dynUsage.sellerMinShareBps),
+          sellerMaxSharePct: bpsToPct(dynUsage.sellerMaxShareBps),
+          volumeShareTargetUsdc: Number(dynUsage.volumeShareTarget) / 1e6,
+        };
+      }
+    }
+  } catch (_) { /* leave usage null on failure */ }
+
+  // Emitted-so-far distribution: split total supply into the one-time
+  // pre-epoch-22 backlog (funded into the legacy escrow, distributed to
+  // legacy sellers/buyers/reserve/team as they claim) vs everything minted
+  // under the current gate (epoch 22+, split by minter bucket).
+  let distribution = null;
+  try {
+    if (emissionsGateClient && antsTokenClient && effectiveEpoch != null) {
+      const [escrowAddr, cumThroughEffective, totalSupply] = await Promise.all([
+        emissionsGateClient.legacyEscrow().catch(() => null),
+        emissionsGateClient.cumulativeEmissionThrough(effectiveEpoch).catch(() => null),
+        antsTokenClient.totalSupply().catch(() => null),
+      ]);
+      const legacyTotal = cumThroughEffective != null ? Number(cumThroughEffective) / 1e18 : null;
+      // NOTE: this used to be `.catch(() => 0n)`. On an RPC hiccup that made
+      // legacyEscrowRemaining 0, hence legacyClaimed === legacyTotal — i.e.
+      // the Tokenomics tab would claim the entire pre-epoch-22 backlog had
+      // been claimed and the escrow was empty. Fall back to null like every
+      // other read here so the UI shows "—" instead of a fabricated figure.
+      const escrowBalance = escrowAddr && antsTokenClient
+        ? await antsTokenClient.balanceOf(escrowAddr).catch(() => null)
+        : null;
+      const legacyEscrowRemaining = escrowBalance != null ? Number(escrowBalance) / 1e18 : null;
+      const legacyClaimed = legacyTotal != null && legacyEscrowRemaining != null
+        ? Math.max(0, legacyTotal - legacyEscrowRemaining)
+        : null;
+
+      // minterEpochMinted tracks what has actually been claimed against each
+      // minter's budget (unlike minterEpochBudget, which is just the epoch's
+      // ceiling) — read it directly since the SDK wrapper doesn't expose it.
+      let currentByMinter = [];
+      let currentTotal = null;
+      if (currentEpoch != null && currentEpoch >= effectiveEpoch && emissionsCfg.emissionsGateAddress) {
+        const epochs = Array.from({ length: currentEpoch - effectiveEpoch + 1 }, (_, i) => effectiveEpoch + i);
+        // Previously this ran nested Promise.all over GATE_MINTERS x epochs
+        // with raw contract calls, i.e. 5 x N simultaneous eth_calls that
+        // bypassed Multicall3 entirely. At ~1 epoch/week that crosses the
+        // Tenderly gateway's ~30-40 in-flight limit within months, and the
+        // `.catch(() => 0n)` fallback would then silently report 0 ANTS
+        // minted per bucket as if it were real. Batch through multicallView
+        // (chunked + bounded concurrency) and treat failures as unknown.
+        const requests = [];
+        for (const minter of GATE_MINTERS) {
+          const id = gateMinterId(minter.id);
+          for (const epoch of epochs) {
+            requests.push({ target: emissionsCfg.emissionsGateAddress, iface: gateMintedIface, method: 'minterEpochMinted', args: [id, epoch] });
+          }
+        }
+        const decoded = await multicallView(requests);
+        let anyFailed = false;
+        currentByMinter = GATE_MINTERS.map((minter, mIdx) => {
+          let total = 0;
+          for (let eIdx = 0; eIdx < epochs.length; eIdx++) {
+            const v = decoded[mIdx * epochs.length + eIdx];
+            if (v?.[0] == null) { anyFailed = true; continue; }
+            total += Number(v[0]) / 1e18;
+          }
+          return { name: minter.name, mintedAnts: total };
+        });
+        // Don't present a partial sum as the authoritative total.
+        currentTotal = anyFailed ? null : currentByMinter.reduce((s, m) => s + m.mintedAnts, 0);
+      }
+
+      distribution = {
+        totalSupply: totalSupply != null ? Number(totalSupply) / 1e18 : null,
+        legacy: {
+          scheduledTotal: legacyTotal, // full pre-epoch-22 backlog (one-time mint)
+          claimed: legacyClaimed,       // already paid out to sellers/buyers/reserve/team
+          remainingInEscrow: legacyEscrowRemaining,
+        },
+        current: {
+          total: currentTotal, // minted under the gate since epoch 22, by minter bucket
+          byMinter: currentByMinter,
+        },
+      };
+    }
+  } catch (_) { /* leave distribution null on failure — no fabricated fallback */ }
+
+  const legacyAllocation = await readLegacyAllocation();
+
+  return {
+    fetchedAt: Date.now(),
+    currentEpoch,
+    effectiveEpoch,
+    migrationDate: '2026-09-10T09:54:21Z',
+    supply: cd?.ants ?? null,
+    currentAllocation: cd?.allocation ?? [], // epoch 22+ ceilings, read live from AntseedEmissionsGate
+    legacyAllocation,                          // pre-epoch-22 config, read live (mutable via setShares)
+    dynamicShares: { stake, usage },
+    distribution,
+    contracts: cd?.contracts ?? null,
+  };
+}
+
+// Stale-while-revalidate: this endpoint never makes the client wait for a
+// chain read if ANY cached payload exists (in memory, or persisted from a
+// previous process). The response carries `stale` + `fetchedAt` so the UI can
+// render real numbers immediately and show a refreshing indicator.
+// `?wait=1` forces the old blocking behaviour (used by the refresh poll).
+app.get('/api/tokenomics', async (req, res) => {
+  try {
+    const fresh = tokenomicsCache && Date.now() - tokenomicsCacheAt < TOKENOMICS_TTL_MS;
+    if (fresh) return res.json({ ...tokenomicsCache, stale: false });
+
+    // Fall back to the durable cache so a just-restarted process still has
+    // something real to show.
+    const persisted = !tokenomicsCache ? readPayloadCache('tokenomics') : null;
+    const cached = tokenomicsCache || persisted?.data || null;
+    const cachedAt = tokenomicsCache ? tokenomicsCacheAt : persisted?.fetchedAt || 0;
+
+    if (cached && req.query.wait !== '1') {
+      refreshTokenomics().catch(() => {}); // kick off, don't await
+      return res.json({ ...cached, stale: true, fetchedAt: cachedAt });
+    }
+
+    const data = await refreshTokenomics();
+    res.json({ ...data, stale: false });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ─── Real historical network data (Antscan-sourced, cached in SQLite) ───
+app.get('/api/history/overview', (_req, res) => {
+  const snap = readLatestSnapshot();
+  res.json(snap ?? null);
+});
+
+app.get('/api/history/daily', (req, res) => {
+  const days = Math.min(Number(req.query.days) || 90, 365);
+  res.json(readDailyMetrics(days));
+});
+
+app.get('/api/history/epochs', (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 30, 50);
+  res.json(readEpochMetrics(limit));
+});
+
+app.get('/api/history/buyers', (req, res) => {
+  // Paginated: the Buyers tab soft-loads pages on scroll instead of pulling
+  // all ~1150 rows (and rendering ~1150 DOM rows) up front.
+  // Returns a bare array when no pagination is requested, to stay compatible
+  // with any caller expecting the previous shape.
+  const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 1000);
+  const offset = Math.max(Number(req.query.offset) || 0, 0);
+  // Addresses are stored lowercase; searching is a plain substring match.
+  const q = String(req.query.q || '').trim().toLowerCase().slice(0, 64);
+  const items = readBuyersOnchain(limit, offset, q);
+  const total = countBuyersOnchain(q);
+  res.json({ items, total, offset, limit, hasMore: offset + items.length < total });
+});
+
+app.get('/api/history/sellers', (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 5000, 5000);
+  res.json(readSellersOnchain(limit));
+});
+
+app.post('/api/admin/force-history-sync', requireAdminAuth, async (_req, res) => {
+  try {
+    const data = await runHistorySync();
+    res.json({ success: true, data });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.post('/api/admin/force-chain-sync', requireAdminAuth, async (_req, res) => {
   try {
     const data = await updateChainMetrics();
     res.json({ success: true, data });
@@ -295,7 +674,7 @@ app.post('/api/admin/force-chain-sync', async (_req, res) => {
   }
 });
 
-app.post('/api/admin/sync', async (_req, res) => {
+app.post('/api/admin/sync', requireAdminAuth, async (_req, res) => {
   try {
     await syncFromOfficialNetwork();
     res.json({ success: true, message: 'Synced from official network' });
@@ -381,13 +760,13 @@ const sellerRegistryClient = emissionsCfg.sellerRegistryAddress
   : null;
 
 // ─── Protocol phase + epoch ranges (recognized-usage era since epoch 22) ───
-const STACK_TTL_MS = 60_000;
+// Epochs last 7 days (EPOCH_DURATION = 604800), so a 10-minute stack cache is
+// never meaningfully stale; a 60s TTL used to re-resolve it on most lookups.
+const STACK_TTL_MS = 600_000;
 const PENDING_TTL_MS = 90_000;
-// Concurrent epoch workers for the epoch fan-outs. Each worker makes its RPC
-// calls sequentially, so total in-flight requests ≈ this number. Measured on
-// the base-mainnet tenderly gateway: sustained bursts beyond ~30-40 in-flight
-// get queued and start dying with request timeouts; 12 is comfortably safe.
-const EPOCH_CONCURRENCY = 12;
+// ANTS balances change whenever a user claims, so this must expire — it
+// previously had no TTL at all and served a stale balance indefinitely.
+const BALANCE_TTL_MS = 60_000;
 let stackCache = null;
 
 // RPC calls wrapped in safe() degrade to a fallback on failure. A transient
@@ -482,17 +861,86 @@ async function resolveStack() {
   return stackCache;
 }
 
-// Process items with a bounded number of concurrent workers.
-async function mapWithConcurrency(items, limit, fn) {
-  const results = new Array(items.length);
-  let next = 0;
-  const workerCount = Math.max(1, Math.min(limit, items.length));
-  await Promise.all(Array.from({ length: workerCount }, async () => {
-    while (true) {
-      const index = next++;
-      if (index >= items.length) return;
-      results[index] = await fn(items[index], index);
+// ─── Multicall3 batching ───
+// One eth_call carries dozens of view reads through Multicall3. This collapses
+// the per-epoch fan-outs (~130 reads for a 22-epoch lookup) into 1-3 RPCs —
+// critical for latency AND for the tenderly gateway, which queues bursts
+// beyond ~30-40 in-flight calls until they die with TIMEOUT errors.
+const MULTICALL3_ADDRESS = '0xcA11bde05977b3631167028862bE2a173976CA11';
+const multicallProvider = new JsonRpcProvider(emissionsCfg.rpcUrl);
+const multicall3 = new Contract(MULTICALL3_ADDRESS, [
+  'function aggregate3(tuple(address target, bool allowFailure, bytes callData)[] calls) payable returns (tuple(bool success, bytes returnData)[] returnData)',
+], multicallProvider);
+
+const emissionsTarget = legacyAddresses.legacyEmissionsContractAddress;
+const emissionsV1Target = legacyAddresses.legacyEmissionsV1ContractAddress || EMISSIONS_V1_FALLBACK;
+const usageAccountingTarget = emissionsCfg.usageAccountingAddress || null;
+const usageRewardsTarget = emissionsCfg.usageRewardsAddress || null;
+
+const emissionsViewIface = new Interface([
+  'function userSellerPoints(address account, uint256 epoch) view returns (uint256)',
+  'function userBuyerPoints(address account, uint256 epoch) view returns (uint256)',
+  'function sellerEpochClaimed(address account, uint256 epoch) view returns (bool)',
+  'function buyerEpochClaimed(address account, uint256 epoch) view returns (bool)',
+  'function epochTotalSellerPoints(uint256 epoch) view returns (uint256)',
+  'function epochTotalBuyerPoints(uint256 epoch) view returns (uint256)',
+  'function getEpochEmission(uint256 epoch) view returns (uint256)',
+  'function pendingEmissions(address account, uint256[] epochs) view returns (uint256 seller, uint256 buyer)',
+]);
+const usageAccountingViewIface = new Interface([
+  'function sellerPointsByEpoch(uint256 epoch, address seller) view returns (uint256)',
+  'function buyerPointsByEpoch(uint256 epoch, address buyer) view returns (uint256)',
+  'function pendingEmissions(address account, uint256[] epochs) view returns (uint256 seller, uint256 buyer)',
+]);
+const usageRewardsViewIface = new Interface([
+  'function agentEpochClaimed(uint256 agentId, uint256 epoch) view returns (bool)',
+  'function pendingAgentReward(uint256 agentId, uint256 epoch) view returns (uint256)',
+  'function buyerEpochClaimed(address buyer, uint256 epoch) view returns (bool)',
+  'function pendingBuyerReward(address buyer, uint256 epoch) view returns (uint256)',
+]);
+// minterEpochMinted = ANTS actually minted against a bucket's budget (as
+// opposed to minterEpochBudget, which is only the epoch's ceiling). Not
+// exposed on the SDK client, so it's batched through multicallView.
+const gateMintedIface = new Interface([
+  'function minterEpochMinted(bytes32 minterId, uint256 epoch) view returns (uint256)',
+]);
+
+// Batched view reads: each request is { target, iface, method, args }; the
+// result is the decoded args array per request, or null for a reverting read.
+// A chunk that fails as a whole (RPC timeout, gas cap) is split and retried;
+// a single call that still fails yields null like a reverting read.
+async function multicallView(requests, options = {}) {
+  if (requests.length === 0) return [];
+  const chunkSize = options.chunkSize ?? 100;
+  const concurrency = Math.max(1, options.concurrency ?? 3);
+  const results = new Array(requests.length).fill(null);
+  const run = async (offset, size) => {
+    const chunk = requests.slice(offset, offset + size);
+    if (chunk.length === 0) return;
+    const calls = chunk.map((r) => ({ target: r.target, allowFailure: true, callData: r.iface.encodeFunctionData(r.method, r.args) }));
+    let returned;
+    try {
+      returned = await multicall3.getFunction('aggregate3').staticCall(calls);
+    } catch {
+      if (chunk.length === 1) return;
+      const half = Math.ceil(chunk.length / 2);
+      await run(offset, half);
+      await run(offset + half, chunk.length - half);
+      return;
     }
+    returned.forEach((entry, index) => {
+      const r = chunk[index];
+      if (!entry.success || entry.returnData === '0x') return;
+      try {
+        results[offset + index] = [...r.iface.decodeFunctionResult(r.method, entry.returnData)];
+      } catch {
+        results[offset + index] = null;
+      }
+    });
+  };
+  const offsets = Array.from({ length: Math.ceil(requests.length / chunkSize) }, (_, index) => index * chunkSize);
+  await Promise.all(Array.from({ length: Math.min(concurrency, offsets.length) }, async () => {
+    for (let next = offsets.shift(); next !== undefined; next = offsets.shift()) await run(next, chunkSize);
   }));
   return results;
 }
@@ -527,31 +975,65 @@ const EPOCH_TOTALS_CURRENT_TTL_MS = 60 * 1000;
 const epochTotalsGet = db.prepare('SELECT data FROM epoch_history WHERE address = ? AND epoch = ?');
 const epochTotalsPut = db.prepare('INSERT OR REPLACE INTO epoch_history (address, epoch, data) VALUES (?, ?, ?)');
 
-async function loadEpochTotals(epoch, currentEpoch) {
+function readCachedEpochTotals(epoch, currentEpoch) {
   const cached = epochTotalsGet.get(EPOCH_TOTALS_KEY, epoch);
-  if (cached) {
-    try {
-      const parsed = JSON.parse(cached.data);
-      const age = Date.now() - parsed.fetchedAt;
-      if (parsed.wasCurrent) {
-        if (epoch >= currentEpoch && age < EPOCH_TOTALS_CURRENT_TTL_MS) return parsed;
-      } else if (epoch < currentEpoch && age < EPOCH_TOTALS_CLOSED_TTL_MS) {
-        return parsed;
-      }
-    } catch { /* corrupt row — refetch below */ }
+  if (!cached) return null;
+  try {
+    const parsed = JSON.parse(cached.data);
+    const age = Date.now() - parsed.fetchedAt;
+    if (parsed.wasCurrent) {
+      if (epoch >= currentEpoch && age < EPOCH_TOTALS_CURRENT_TTL_MS) return parsed;
+    } else if (epoch < currentEpoch && age < EPOCH_TOTALS_CLOSED_TTL_MS) {
+      return parsed;
+    }
+  } catch { /* corrupt row — treat as a miss */ }
+  return null;
+}
+
+// Totals for all requested epochs: served from the epoch_history cache, with
+// the misses fetched in ONE multicall round and persisted back.
+async function loadEpochTotalsBatch(epochs, currentEpoch) {
+  const entries = new Map();
+  const missing = [];
+  for (const epoch of epochs) {
+    const cached = readCachedEpochTotals(epoch, currentEpoch);
+    if (cached) entries.set(epoch, cached);
+    else missing.push(epoch);
   }
-  const esp = await strict(() => emissionsClient.epochTotalSellerPoints(epoch));
-  const ebp = await strict(() => emissionsClient.epochTotalBuyerPoints(epoch));
-  const emission = await strict(() => emissionsClient.getEpochEmission(epoch));
-  const entry = {
-    fetchedAt: Date.now(),
-    wasCurrent: epoch >= currentEpoch,
-    totalSellerPts: esp.toString(),
-    totalBuyerPts: ebp.toString(),
-    emission: emission.toString(),
-  };
-  epochTotalsPut.run(EPOCH_TOTALS_KEY, epoch, JSON.stringify(entry));
-  return entry;
+  if (missing.length > 0) {
+    const requests = [];
+    for (const epoch of missing) {
+      requests.push({ target: emissionsTarget, iface: emissionsViewIface, method: 'epochTotalSellerPoints', args: [epoch] });
+      requests.push({ target: emissionsTarget, iface: emissionsViewIface, method: 'epochTotalBuyerPoints', args: [epoch] });
+      requests.push({ target: emissionsTarget, iface: emissionsViewIface, method: 'getEpochEmission', args: [epoch] });
+    }
+    const decoded = await multicallView(requests);
+    missing.forEach((epoch, i) => {
+      const sellerPts = decoded[i * 3];
+      const buyerPts = decoded[i * 3 + 1];
+      const emission = decoded[i * 3 + 2];
+      // multicallView returns null for any call that failed (reverted, or a
+      // chunk that errored even after splitting to size 1). Previously these
+      // were coerced with `?? 0n` into a real-looking "0" and PERSISTED for
+      // up to 6 hours under the shared __epoch_totals__ key — so one
+      // transient gateway timeout poisoned that epoch's totals for every
+      // address, silently reporting zero points / zero emission (and hence
+      // zero rewards) as if they were real on-chain values. Skip caching
+      // unless all three reads actually resolved; a miss just gets retried
+      // on the next request.
+      if (sellerPts?.[0] == null || buyerPts?.[0] == null || emission?.[0] == null) return;
+      const entry = {
+        fetchedAt: Date.now(),
+        wasCurrent: epoch >= currentEpoch,
+        totalSellerPts: String(sellerPts[0]),
+        totalBuyerPts: String(buyerPts[0]),
+        emission: String(emission[0]),
+      };
+      epochTotalsPut.run(EPOCH_TOTALS_KEY, epoch, JSON.stringify(entry));
+      entries.set(epoch, entry);
+    });
+  }
+  return entries;
 }
 
 app.get('/api/deposits/config', (_req, res) => {
@@ -743,147 +1225,216 @@ app.get('/api/emissions/pending', async (req, res) => {
  let sellerTotal = 0;
  let buyerTotal = 0;
 
- // Epochs in parallel with a bounded worker pool; per epoch, all addresses and
- // both emissions contracts are fetched concurrently.
- const epochDetails = await mapWithConcurrency(epochs, EPOCH_CONCURRENCY, async (epoch) => {
- const isCurrent = epoch >= currentEpoch;
+  // ── Multicall rounds instead of ~180 individual eth_calls ──
+  // Round 0: epoch-level totals (address-independent; served from epoch_history).
+  const totalsByEpoch = await loadEpochTotalsBatch(epochs, currentEpoch);
 
- // Epoch-level totals are shared across addresses (and cached in epoch_history).
- const totals = await loadEpochTotals(epoch, currentEpoch);
- const totalSellerPts = Number(totals.totalSellerPts);
- const totalBuyerPts = Number(totals.totalBuyerPts);
- const emissionAmount = Number(totals.emission) / 1e18;
+  // Live share/cap params for the current-epoch reward estimate below. These
+  // are mutable on-chain (setShares), so they must not be hardcoded. Null on
+  // failure -> the estimate is skipped rather than computed from guesses.
+  const epochParams = await emissionsClient.getShares()
+    .then((p) => (p && p.initialized ? p : null))
+    .catch(() => null);
 
- // Pass 1: per address — points + claim status. Calls are sequential within a
- // worker so the total in-flight request count stays ≈ EPOCH_CONCURRENCY; the
- // gateway queues bursts far beyond that and queued calls die with timeouts.
- const addrPoints = [];
- for (const addr of uniqueAddresses) {
-   const sp = Number(await strict(() => emissionsClient.userSellerPoints(addr, epoch)));
-   const bp = Number(await strict(() => emissionsClient.userBuyerPoints(addr, epoch)));
-   const sc = await strict(() => emissionsClient.sellerEpochClaimed(addr, epoch));
-   const bc = await strict(() => emissionsClient.buyerEpochClaimed(addr, epoch));
-   let v1sp = 0;
-   let v1bp = 0;
-   let v1sc = false;
-   let v1bc = false;
-   if (epoch <= MIGRATION_EPOCH) {
-     v1sp = Number(await strict(() => emissionsV1Client.userSellerPoints(addr, epoch)));
-     v1bp = Number(await strict(() => emissionsV1Client.userBuyerPoints(addr, epoch)));
-     if (epoch < MIGRATION_EPOCH) {
-       v1sc = await strict(() => emissionsV1Client.sellerEpochClaimed(addr, epoch));
-       v1bc = await strict(() => emissionsV1Client.buyerEpochClaimed(addr, epoch));
-     }
-   }
-   addrPoints.push({ addr, sp, bp, sc, bc, v1sp, v1bp, v1sc, v1bc });
- }
+  // Round 1: batched pending totals for the whole epoch set + points/claim flags
+  // for every (address, epoch) on V2 and V1 — one multicallView fan-out.
+  const totalsRequests = [];
+  for (const addr of uniqueAddresses) {
+    totalsRequests.push({ target: emissionsTarget, iface: emissionsViewIface, method: 'pendingEmissions', args: [addr, epochs] });
+  }
+  const v1EpochsInSet = epochs.filter((e) => e <= MIGRATION_EPOCH);
+  if (v1EpochsInSet.length > 0) {
+    for (const addr of uniqueAddresses) {
+      totalsRequests.push({ target: emissionsV1Target, iface: emissionsViewIface, method: 'pendingEmissions', args: [addr, v1EpochsInSet] });
+    }
+  }
+  const pass1Requests = [];
+  const pass1Slots = [];
+  epochs.forEach((epoch, epochIdx) => {
+    for (const addr of uniqueAddresses) {
+      for (const [field, method] of [['sp', 'userSellerPoints'], ['bp', 'userBuyerPoints'], ['sc', 'sellerEpochClaimed'], ['bc', 'buyerEpochClaimed']]) {
+        pass1Slots.push({ epochIdx, addr, field });
+        pass1Requests.push({ target: emissionsTarget, iface: emissionsViewIface, method, args: [addr, epoch] });
+      }
+      if (epoch <= MIGRATION_EPOCH) {
+        for (const [field, method] of [['v1sp', 'userSellerPoints'], ['v1bp', 'userBuyerPoints']]) {
+          pass1Slots.push({ epochIdx, addr, field });
+          pass1Requests.push({ target: emissionsV1Target, iface: emissionsViewIface, method, args: [addr, epoch] });
+        }
+        if (epoch < MIGRATION_EPOCH) {
+          for (const [field, method] of [['v1sc', 'sellerEpochClaimed'], ['v1bc', 'buyerEpochClaimed']]) {
+            pass1Slots.push({ epochIdx, addr, field });
+            pass1Requests.push({ target: emissionsV1Target, iface: emissionsViewIface, method, args: [addr, epoch] });
+          }
+        }
+      }
+    }
+  });
+  const round1 = await multicallView([...totalsRequests, ...pass1Requests]);
+  const round1Totals = round1.slice(0, totalsRequests.length);
+  const pass1 = round1.slice(totalsRequests.length);
 
- // Pass 2: pendingEmissions per address (only for non-current epochs), also
- // sequential within the worker for the same reason.
- const pendingResults = isCurrent ? null : [];
- if (!isCurrent) {
-   for (const a of addrPoints) {
-     if (a.sp === 0 && a.bp === 0 && a.v1sp === 0 && a.v1bp === 0) {
-       pendingResults.push({ v2: null, v1: null });
-       continue;
-     }
-     const v2 = await strict(() => emissionsClient.pendingEmissions(a.addr, [epoch]));
-     let v1 = null;
-     if (epoch <= MIGRATION_EPOCH) {
-       const p = await strict(() => emissionsV1Client.pendingEmissions(a.addr, [epoch]));
-       v1 = { seller: Number(p.seller) / 1e18, buyer: Number(p.buyer) / 1e18 };
-     }
-     pendingResults.push({
-       v2: { seller: Number(v2.seller) / 1e18, buyer: Number(v2.buyer) / 1e18 },
-       v1,
-     });
-   }
- }
+  // Decode round 1: per-epoch map of addr → { sp, bp, sc, bc, v1sp, v1bp, v1sc, v1bc }
+  const pointsByEpoch = epochs.map(() => new Map());
+  pass1.forEach((decoded, i) => {
+    const { epochIdx, addr, field } = pass1Slots[i];
+    let perAddr = pointsByEpoch[epochIdx].get(addr);
+    if (!perAddr) {
+      perAddr = {};
+      pointsByEpoch[epochIdx].set(addr, perAddr);
+    }
+    if (decoded === null) return;
+    if (field === 'sp' || field === 'bp' || field === 'v1sp' || field === 'v1bp') {
+      perAddr[field] = Number(decoded[0]);
+    } else {
+      perAddr[field] = decoded[0] === true;
+    }
+  });
 
- let epochSellerPts = 0;
- let epochBuyerPts = 0;
- let epochSellerReward = 0;
- let epochBuyerReward = 0;
- let epochSellerRewardV1 = 0;
- let epochBuyerRewardV1 = 0;
- let epochSellerRewardV2 = 0;
- let epochBuyerRewardV2 = 0;
- let epochSellerClaimed = false;
- let epochBuyerClaimed = false;
+  // Round 2: pendingEmissions per (address, epoch) for non-current epochs where
+  // the address earned points (V2 always; V1 for epochs ≤ MIGRATION_EPOCH).
+  const pass2Requests = [];
+  const pass2Slots = [];
+  epochs.forEach((epoch, epochIdx) => {
+    if (epoch >= currentEpoch) return;
+    for (const addr of uniqueAddresses) {
+      const a = pointsByEpoch[epochIdx].get(addr) || {};
+      if ((a.sp || 0) === 0 && (a.bp || 0) === 0 && (a.v1sp || 0) === 0 && (a.v1bp || 0) === 0) continue;
+      pass2Slots.push({ epochIdx, addr, contract: 'v2' });
+      pass2Requests.push({ target: emissionsTarget, iface: emissionsViewIface, method: 'pendingEmissions', args: [addr, [epoch]] });
+      if (epoch <= MIGRATION_EPOCH) {
+        pass2Slots.push({ epochIdx, addr, contract: 'v1' });
+        pass2Requests.push({ target: emissionsV1Target, iface: emissionsViewIface, method: 'pendingEmissions', args: [addr, [epoch]] });
+      }
+    }
+  });
+  const pass2 = await multicallView(pass2Requests);
+  const pendingByEpoch = epochs.map(() => new Map());
+  pass2.forEach((decoded, i) => {
+    const { epochIdx, addr, contract } = pass2Slots[i];
+    let perAddr = pendingByEpoch[epochIdx].get(addr);
+    if (!perAddr) {
+      perAddr = { v2: null, v1: null };
+      pendingByEpoch[epochIdx].set(addr, perAddr);
+    }
+    perAddr[contract] = decoded ? { seller: Number(decoded[0]) / 1e18, buyer: Number(decoded[1]) / 1e18 } : null;
+  });
 
- for (let i = 0; i < addrPoints.length; i++) {
-   const { addr, sp, bp, sc, bc, v1sp, v1bp, v1sc, v1bc } = addrPoints[i];
-   const userSellerPts = sp + v1sp;
-   const userBuyerPts = bp + v1bp;
+  // Aggregate per epoch (same semantics as the per-call version).
+  const epochDetails = epochs.map((epoch, epochIdx) => {
+  const isCurrent = epoch >= currentEpoch;
+  // A missing entry means the on-chain read did not resolve (see
+  // loadEpochTotalsBatch — we no longer fabricate zeros for failed calls).
+  // Flag it so the current-epoch estimate below reports null instead of a
+  // confident-looking 0 reward.
+  const totals = totalsByEpoch.get(epoch);
+  const totalsUnavailable = !totals;
+  const totalSellerPts = Number(totals?.totalSellerPts || 0);
+  const totalBuyerPts = Number(totals?.totalBuyerPts || 0);
+  const emissionAmount = Number(totals?.emission || 0) / 1e18;
 
-   if (userSellerPts > 0 || userBuyerPts > 0) {
-     epochSellerPts += userSellerPts;
-     epochBuyerPts += userBuyerPts;
+  let epochSellerPts = 0;
+  let epochBuyerPts = 0;
+  let epochSellerReward = 0;
+  let epochBuyerReward = 0;
+  let epochSellerRewardV1 = 0;
+  let epochBuyerRewardV1 = 0;
+  let epochSellerRewardV2 = 0;
+  let epochBuyerRewardV2 = 0;
+  let epochSellerClaimed = false;
+  let epochBuyerClaimed = false;
 
-     if (!isCurrent) {
-       const p = pendingResults[i];
-       if (p) {
-         if (p.v2) {
-           epochSellerRewardV2 += p.v2.seller;
-           epochBuyerRewardV2 += p.v2.buyer;
-           epochSellerReward += p.v2.seller;
-           epochBuyerReward += p.v2.buyer;
-         }
-         if (p.v1) {
-           epochSellerRewardV1 += p.v1.seller;
-           epochBuyerRewardV1 += p.v1.buyer;
-           epochSellerReward += p.v1.seller;
-           epochBuyerReward += p.v1.buyer;
-         }
-       }
-     }
-   }
-   if (sc || v1sc) epochSellerClaimed = true;
-   if (bc || v1bc) epochBuyerClaimed = true;
- }
+  for (const addr of uniqueAddresses) {
+    const { sp = 0, bp = 0, sc = false, bc = false, v1sp = 0, v1bp = 0, v1sc = false, v1bc = false } = pointsByEpoch[epochIdx].get(addr) || {};
+    const userSellerPts = sp + v1sp;
+    const userBuyerPts = bp + v1bp;
 
- if (isCurrent) {
-   for (const { sp, bp, v1sp, v1bp } of addrPoints) {
-     const userSellerPts = sp + v1sp;
-     const userBuyerPts = bp + v1bp;
-     if (userSellerPts > 0) epochSellerReward += totalSellerPts > 0 ? (userSellerPts / totalSellerPts) * emissionAmount * 0.5 : 0;
-     if (userBuyerPts > 0) epochBuyerReward += totalBuyerPts > 0 ? (userBuyerPts / totalBuyerPts) * emissionAmount * 0.2 : 0;
-   }
- }
+    if (userSellerPts > 0 || userBuyerPts > 0) {
+      epochSellerPts += userSellerPts;
+      epochBuyerPts += userBuyerPts;
 
- return {
- epoch,
- sellerPoints: epochSellerPts,
- buyerPoints: epochBuyerPts,
- sellerReward: epochSellerReward,
- buyerReward: epochBuyerReward,
- sellerClaimed: epochSellerClaimed,
- buyerClaimed: epochBuyerClaimed,
- isCurrentEpoch: isCurrent,
- ...(epoch <= MIGRATION_EPOCH && !isCurrent ? {
-   sellerRewardV1: epochSellerRewardV1,
-   buyerRewardV1: epochBuyerRewardV1,
-   sellerRewardV2: epochSellerRewardV2,
-   buyerRewardV2: epochBuyerRewardV2,
- } : {}),
- };
- });
-       // Parallel total accumulation
-       const totalsResult = await Promise.all(uniqueAddresses.map(addr =>
-         Promise.all([
-           addr,
-           emissionsClient.pendingEmissions(addr, epochs),
-           epochs.some(e => e <= MIGRATION_EPOCH)
-             ? emissionsV1Client.pendingEmissions(addr, epochs.filter(e => e <= MIGRATION_EPOCH))
-             : Promise.resolve({ seller: 0n, buyer: 0n }),
-         ])
-       ));
-       for (const [, pending, v1Pending] of totalsResult) {
-         sellerTotal += Number(pending.seller) / 1e18;
-         buyerTotal += Number(pending.buyer) / 1e18;
-         sellerTotal += Number(v1Pending.seller) / 1e18;
-         buyerTotal += Number(v1Pending.buyer) / 1e18;
-       }
+      if (!isCurrent) {
+        const p = pendingByEpoch[epochIdx].get(addr);
+        if (p) {
+          if (p.v2) {
+            epochSellerRewardV2 += p.v2.seller;
+            epochBuyerRewardV2 += p.v2.buyer;
+            epochSellerReward += p.v2.seller;
+            epochBuyerReward += p.v2.buyer;
+          }
+          if (p.v1) {
+            epochSellerRewardV1 += p.v1.seller;
+            epochBuyerRewardV1 += p.v1.buyer;
+            epochSellerReward += p.v1.seller;
+            epochBuyerReward += p.v1.buyer;
+          }
+        }
+      }
+    }
+    if (sc || v1sc) epochSellerClaimed = true;
+    if (bc || v1bc) epochBuyerClaimed = true;
+  }
+
+  if (isCurrent && !totalsUnavailable && epochParams) {
+    // These shares used to be hardcoded as 0.5 / 0.2. They are mutable
+    // on-chain via setShares(), and the per-seller cap (maxSellerSharePct)
+    // was omitted entirely — so a dominant seller's displayed current-epoch
+    // reward could be up to 2x the real claimable amount. Mirror
+    // AntseedEmissions.pendingEmissions: reward = userPts/totalPts * budget,
+    // clamped to budget * maxSellerSharePct / 100.
+    const sellerBudget = emissionAmount * (epochParams.sellerSharePct / 100);
+    const buyerBudget = emissionAmount * (epochParams.buyerSharePct / 100);
+    const maxSellerReward = sellerBudget * (epochParams.maxSellerSharePct / 100);
+    for (const addr of uniqueAddresses) {
+      const { sp = 0, bp = 0, v1sp = 0, v1bp = 0 } = pointsByEpoch[epochIdx].get(addr) || {};
+      const userSellerPts = sp + v1sp;
+      const userBuyerPts = bp + v1bp;
+      if (userSellerPts > 0 && totalSellerPts > 0) {
+        const raw = (userSellerPts / totalSellerPts) * sellerBudget;
+        epochSellerReward += Math.min(raw, maxSellerReward);
+      }
+      if (userBuyerPts > 0 && totalBuyerPts > 0) {
+        epochBuyerReward += (userBuyerPts / totalBuyerPts) * buyerBudget;
+      }
+    }
+  }
+
+  return {
+  epoch,
+  sellerPoints: epochSellerPts,
+  buyerPoints: epochBuyerPts,
+  sellerReward: epochSellerReward,
+  buyerReward: epochBuyerReward,
+  sellerClaimed: epochSellerClaimed,
+  buyerClaimed: epochBuyerClaimed,
+  isCurrentEpoch: isCurrent,
+  ...(epoch <= MIGRATION_EPOCH && !isCurrent ? {
+    sellerRewardV1: epochSellerRewardV1,
+    buyerRewardV1: epochBuyerRewardV1,
+    sellerRewardV2: epochSellerRewardV2,
+    buyerRewardV2: epochBuyerRewardV2,
+  } : {}),
+  };
+  });
+  // Pending totals over the whole epoch set (V2 + V1) already came back in
+  // round 1: first one entry per address from V2, then one per address from V1.
+  {
+    const n = uniqueAddresses.length;
+    for (let i = 0; i < n; i++) {
+      const v2 = round1Totals[i];
+      if (v2) {
+        sellerTotal += Number(v2[0]) / 1e18;
+        buyerTotal += Number(v2[1]) / 1e18;
+      }
+      if (v1EpochsInSet.length > 0) {
+        const v1 = round1Totals[n + i];
+        if (v1) {
+          sellerTotal += Number(v1[0]) / 1e18;
+          buyerTotal += Number(v1[1]) / 1e18;
+        }
+      }
+    }
+  }
 
  const data = {
  seller: sellerTotal.toFixed(6),
@@ -986,9 +1537,14 @@ app.get('/api/emissions/balance', async (req, res) => {
     const address = req.query.address;
     if (!address) return res.status(400).json({ error: 'address query param required' });
 
-    const cached = db.prepare('SELECT ants FROM address_balances WHERE address = ?').get(address.toLowerCase());
-    if (cached) {
-      return res.json({ ants: cached.ants });
+    // This cache previously had NO TTL: the row stored fetched_at but never
+    // compared it, so once an address was queried its ANTS balance was
+    // frozen forever. After a user claimed rewards the dashboard kept
+    // showing their pre-claim balance until the SQLite file was deleted.
+    const bust = req.query.bust === '1';
+    const cached = db.prepare('SELECT ants, fetched_at FROM address_balances WHERE address = ?').get(address.toLowerCase());
+    if (!bust && cached && Date.now() - Number(cached.fetched_at ?? 0) < BALANCE_TTL_MS) {
+      return res.json({ ants: cached.ants, cached: true });
     }
 
     const balance = await antsTokenClient.balanceOf(address);
@@ -1016,25 +1572,38 @@ async function loadSellerUsageRewards(address, stack, agentIdPromise) {
     return { total: 0n, epochs: [] };
   }
   const agentId = await agentIdPromise;
-  // The batched pending total and the per-epoch rows are independent — issue
-  // them together. pendingAgentReward is fetched unconditionally and gated by
-  // the claimed flag afterwards (safe() absorbs reverts on claimed epochs).
-  const [total, rows] = await Promise.all([
-    safe(() => pendingEpochRewards(stack.recognizedEpochs, async (batch) => (await usageAccountingClient.pendingEmissions(address, batch)).seller), 0n),
-    mapWithConcurrency(stack.recognizedEpochs, EPOCH_CONCURRENCY, async (epoch) => {
-      // Sequential within the worker so total in-flight RPCs stay bounded;
-      // safe() retries transient gateway throttles once before its fallback.
-      const sellerClaimed = agentId ? await safe(() => usageRewardsClient.agentEpochClaimed(agentId, epoch), false) : false;
-      const sellerPoints = await safe(() => usageAccountingClient.sellerPointsByEpoch(epoch, address), 0n);
-      const sellerAmount = agentId ? await safe(() => usageRewardsClient.pendingAgentReward(agentId, epoch), 0n) : 0n;
-      return {
-        epoch,
-        points: Number(sellerPoints) / 1e6,
-        amount: sellerClaimed ? 0 : Number(sellerAmount) / 1e18,
-        claimed: sellerClaimed,
-      };
-    }),
-  ]);
+  const epochs = stack.recognizedEpochs;
+  // One multicall: batched pending total (slot 0) + per-epoch rows. With an
+  // agentId every epoch is [claimed, amount, points]; without, just [points].
+  const requests = [{ target: usageAccountingTarget, iface: usageAccountingViewIface, method: 'pendingEmissions', args: [address, epochs] }];
+  for (const epoch of epochs) {
+    if (agentId) {
+      requests.push({ target: usageRewardsTarget, iface: usageRewardsViewIface, method: 'agentEpochClaimed', args: [agentId, epoch] });
+      requests.push({ target: usageRewardsTarget, iface: usageRewardsViewIface, method: 'pendingAgentReward', args: [agentId, epoch] });
+    }
+    requests.push({ target: usageAccountingTarget, iface: usageAccountingViewIface, method: 'sellerPointsByEpoch', args: [epoch, address] });
+  }
+  const decoded = await multicallView(requests);
+  const total = decoded[0] ? BigInt(decoded[0][0]) : 0n;
+  const rows = [];
+  let i = 1;
+  for (const epoch of epochs) {
+    let claimed = false;
+    let amount = 0n;
+    if (agentId) {
+      claimed = !!decoded[i] && decoded[i][0] === true;
+      amount = decoded[i + 1] ? BigInt(decoded[i + 1][0]) : 0n;
+      i += 2;
+    }
+    const points = decoded[i] ? BigInt(decoded[i][0]) : 0n;
+    i += 1;
+    rows.push({
+      epoch,
+      points: Number(points) / 1e6,
+      amount: claimed ? 0 : Number(amount) / 1e18,
+      claimed,
+    });
+  }
   return { total, epochs: rows };
 }
 
@@ -1042,36 +1611,59 @@ async function loadBuyerUsageRewards(address, stack) {
   if (stack.phase !== 'active' || !usageRewardsClient || stack.recognizedEpochs.length === 0) {
     return { total: 0n, epochs: [] };
   }
-  const rows = await mapWithConcurrency(stack.recognizedEpochs, EPOCH_CONCURRENCY, async (epoch) => {
-    const buyerClaimed = await safe(() => usageRewardsClient.buyerEpochClaimed(address, epoch), false);
-    const buyerPoints = usageAccountingClient ? await safe(() => usageAccountingClient.buyerPointsByEpoch(epoch, address), 0n) : 0n;
-    const buyerAmount = await safe(() => usageRewardsClient.pendingBuyerReward(address, epoch), 0n);
-    return { epoch, buyerClaimed, buyerPoints, buyerAmount };
-  });
-  const total = rows.reduce((sum, r) => sum + (r.buyerClaimed ? 0n : r.buyerAmount), 0n);
-  return {
-    total,
-    epochs: rows.map((r) => ({
-      epoch: r.epoch,
-      points: Number(r.buyerPoints) / 1e6,
-      amount: r.buyerClaimed ? 0 : Number(r.buyerAmount) / 1e18,
-      claimed: r.buyerClaimed,
-    })),
-  };
+  const epochs = stack.recognizedEpochs;
+  const includePoints = !!usageAccountingClient;
+  // One multicall: per epoch [claimed, amount, points?].
+  const requests = [];
+  for (const epoch of epochs) {
+    requests.push({ target: usageRewardsTarget, iface: usageRewardsViewIface, method: 'buyerEpochClaimed', args: [address, epoch] });
+    requests.push({ target: usageRewardsTarget, iface: usageRewardsViewIface, method: 'pendingBuyerReward', args: [address, epoch] });
+    if (includePoints) {
+      requests.push({ target: usageAccountingTarget, iface: usageAccountingViewIface, method: 'buyerPointsByEpoch', args: [epoch, address] });
+    }
+  }
+  const decoded = await multicallView(requests);
+  const rows = [];
+  let total = 0n;
+  let i = 0;
+  for (const epoch of epochs) {
+    const claimed = !!decoded[i] && decoded[i][0] === true;
+    const amount = decoded[i + 1] ? BigInt(decoded[i + 1][0]) : 0n;
+    i += 2;
+    let points = 0n;
+    if (includePoints) {
+      points = decoded[i] ? BigInt(decoded[i][0]) : 0n;
+      i += 1;
+    }
+    const effective = claimed ? 0n : amount;
+    total += effective;
+    rows.push({
+      epoch,
+      points: Number(points) / 1e6,
+      amount: Number(effective) / 1e18,
+      claimed,
+    });
+  }
+  return { total, epochs: rows };
 }
 
 async function loadLegacyRewards(address, stack) {
   if (stack.legacyEpochs.length === 0) return { seller: 0, buyer: 0 };
   const v1Epochs = stack.legacyEpochs.filter((e) => e <= MIGRATION_EPOCH);
-  const [pending, v1Pending] = await Promise.all([
-    safe(() => emissionsClient.pendingEmissions(address, stack.legacyEpochs), { seller: 0n, buyer: 0n }),
-    v1Epochs.length > 0
-      ? safe(() => emissionsV1Client.pendingEmissions(address, v1Epochs), { seller: 0n, buyer: 0n })
-      : Promise.resolve({ seller: 0n, buyer: 0n }),
-  ]);
+  // One multicall: V2 pending over all legacy epochs + V1 pending over the
+  // pre-migration subset.
+  const requests = [
+    { target: emissionsTarget, iface: emissionsViewIface, method: 'pendingEmissions', args: [address, stack.legacyEpochs] },
+  ];
+  if (v1Epochs.length > 0) {
+    requests.push({ target: emissionsV1Target, iface: emissionsViewIface, method: 'pendingEmissions', args: [address, v1Epochs] });
+  }
+  const decoded = await multicallView(requests);
+  const v2 = decoded[0] || [0n, 0n];
+  const v1 = v1Epochs.length > 0 ? (decoded[1] || [0n, 0n]) : [0n, 0n];
   return {
-    seller: Number(pending.seller) / 1e18 + Number(v1Pending.seller) / 1e18,
-    buyer: Number(pending.buyer) / 1e18 + Number(v1Pending.buyer) / 1e18,
+    seller: Number(v2[0]) / 1e18 + Number(v1[0]) / 1e18,
+    buyer: Number(v2[1]) / 1e18 + Number(v1[1]) / 1e18,
   };
 }
 
@@ -1182,17 +1774,49 @@ app.get('/api/rewards', async (req, res) => {
   }
 });
 
-app.use(express.static(path.join(__dirname, '../dist')));
+// Two static builds share this backend: `dist` (base='/zh/', served behind
+// the 5.223.54.56:8088/zh path-prefix proxy) and `dist-root` (base='/',
+// served at antseed-zh.com root). Pick by Host header so nginx can just
+// proxy_pass everything here for the dedicated domain, instead of needing
+// filesystem read access under /root (which stays 700).
+const ROOT_DOMAIN_HOSTS = new Set(['antseed-zh.com', 'www.antseed-zh.com']);
+function staticDirFor(req) {
+  const host = (req.hostname || '').toLowerCase();
+  return ROOT_DOMAIN_HOSTS.has(host) ? '../dist-root' : '../dist';
+}
 
-app.use((_req, res) => {
-  res.sendFile(path.join(__dirname, '../dist/index.html'));
+app.use((req, res, next) => {
+  express.static(path.join(__dirname, staticDirFor(req)))(req, res, next);
+});
+
+app.use((req, res) => {
+  res.sendFile(path.join(__dirname, staticDirFor(req), 'index.html'));
 });
 
 app.listen(PORT, '0.0.0.0', async () => {
   console.log(`AntSeed Dashboard + API running on http://0.0.0.0:${PORT}`);
-  // Sync real data from the official AntSeed network API
+  // Sync real historical/network data first (Antscan-sourced, cached locally
+  // in SQLite — closed days are never re-fetched/overwritten) so the DHT
+  // sync below can match sellers to real on-chain earnings by agentId.
+  await runHistorySync().catch((e) => console.error('[history-sync] initial run failed:', e.message));
+  // Sync live peer/service list from the official AntSeed network API
   await syncFromOfficialNetwork();
   // Start background poller for on-chain metrics (every 5 minutes)
   startChainPoller(300);
   console.log('Chain metrics poller started (refresh every 5 min).');
+  // Keep history in sync on the same cadence going forward (already ran once above).
+  startHistorySync(300, { runImmediately: false });
+  console.log('History sync started (refresh every 5 min).');
+
+  // Warm the tokenomics cache in the background. It needs the chain poller's
+  // data, so it runs after startChainPoller. Until it lands, requests are
+  // served from the persisted payload_cache, so nobody waits on the ~42s
+  // cold chain read.
+  const warmedFrom = readPayloadCache('tokenomics');
+  if (warmedFrom) {
+    console.log(`Tokenomics served from persisted cache (${new Date(warmedFrom.fetchedAt).toISOString()}) while refreshing.`);
+  }
+  refreshTokenomics()
+    .then(() => console.log('Tokenomics cache warmed.'))
+    .catch((e) => console.error('[tokenomics] warm failed:', e.message));
 });
