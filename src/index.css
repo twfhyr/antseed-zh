@@ -580,6 +580,11 @@ text-decoration: underline;
   padding: 0.5rem 0.625rem;
   font-size: 0.75rem;
   font-weight: 400;
+  /* `.table th` sets text-transform: uppercase, which is inherited by any
+     tooltip nested inside a header cell (see .stat-info-tooltip--below
+     below) — the tooltip's own prose should never inherit that. */
+  text-transform: none;
+  letter-spacing: normal;
   line-height: 1.4;
   text-align: left;
   white-space: normal;
@@ -589,6 +594,23 @@ text-decoration: underline;
   pointer-events: none;
   transition: opacity 0.15s var(--ease), transform 0.15s var(--ease);
   z-index: 20;
+}
+
+/* Table column headers sit at the very top of `.table-container`, which
+   clips overflow (for its rounded corners) — a tooltip popping upward from
+   there has nowhere to go and gets cut off by that clip, showing as a
+   sliver against the header's own dark background. Used on every
+   info-icon inside a <th> (BuyersList.jsx/SellersList.jsx); pops downward
+   into the table body instead, which is never clipped. */
+.stat-info-tooltip--below {
+  bottom: auto;
+  top: calc(100% + 8px);
+  transform: translateX(-50%) translateY(-4px);
+}
+
+.stat-info-icon:hover .stat-info-tooltip--below,
+.stat-info-icon:focus-visible .stat-info-tooltip--below {
+  transform: translateX(-50%) translateY(0);
 }
 
 .stat-info-icon:hover .stat-info-tooltip,

@@ -26,11 +26,16 @@ function sumWei(a, b) {
   return ((a != null ? BigInt(a) : 0n) + (b != null ? BigInt(b) : 0n)).toString();
 }
 
+/** Used only in table column headers here, which sit at the top of
+ *  `.table-container` (clips overflow for its rounded corners) — an
+ *  upward-popping tooltip has nowhere to go there and gets cut off, so this
+ *  always pops downward into the table body instead (see
+ *  .stat-info-tooltip--below in index.css). */
 function InfoTip({ text }) {
   return (
     <span className="stat-info-icon" tabIndex={0} style={{ marginLeft: '0.3rem' }}>
       <Info size={12} />
-      <span className="stat-info-tooltip" role="tooltip">{text}</span>
+      <span className="stat-info-tooltip stat-info-tooltip--below" role="tooltip">{text}</span>
     </span>
   );
 }
@@ -126,7 +131,7 @@ function BuyersList() {
   }, [loadMore, hasMore]);
 
   const shown = buyers.length;
-  const colSpan = mode === 'epoch' ? 4 : 5;
+  const colSpan = mode === 'epoch' ? 6 : 5;
   const epochLabel = t('tabs.epoch', { n: epochNumber ?? '…' });
 
   return (
@@ -165,6 +170,8 @@ function BuyersList() {
               <th>{t('table.address')}</th>
               <th>{t('table.points')}<InfoTip text={t('table.pointsTip')} /></th>
               <th>{t('table.requests')}</th>
+              <th>{t('table.stakingReward')}<InfoTip text={t('table.stakingRewardTip')} /></th>
+              <th>{t('table.usageReward')}<InfoTip text={t('table.usageRewardTip')} /></th>
               <th>{t('table.potentialAnts')}<InfoTip text={t('table.potentialAntsTip')} /></th>
             </tr>
           ) : (
@@ -196,6 +203,8 @@ function BuyersList() {
                 <>
                   <td className="price">{usd(buyer.points != null ? Number(buyer.points) / 1e6 : null)}</td>
                   <td>{Number(buyer.requests || 0).toLocaleString()}</td>
+                  <td>{fmtAnts(buyer.pool_reward_wei)}</td>
+                  <td>{fmtAnts(buyer.usage_reward_wei)}</td>
                   <td className="price">{fmtAnts(sumWei(buyer.usage_reward_wei, buyer.pool_reward_wei))}</td>
                 </>
               ) : (

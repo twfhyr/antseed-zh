@@ -151,10 +151,14 @@ export default {
   'tabs.epoch': 'Epoch #{n}',
   'table.points': 'Points',
   'table.pointsTip': 'Recognized settled volume this epoch, after anti-fraud filtering — roughly a USD-equivalent figure, not a request count.',
-  'table.potentialAnts': 'Potential ANTS',
-  'table.potentialAntsTip': 'Estimated usage + staking reward if this epoch closed right now, read directly from the reward contracts. Not final until the epoch actually closes, and not yet claimable. Refreshes about once an hour.',
+  'table.stakingReward': 'Staking Reward',
+  'table.stakingRewardTip': "This address's own pending staking/pool reward this epoch (previewStakerRewards), read directly from the reward contracts. Blank (—) means this address holds no stake position at all right now — a real 0 still shows as 0.",
+  'table.usageReward': 'Usage Reward',
+  'table.usageRewardTip': 'The usage-only reward (settling requests as a buyer or seller), read directly from the reward contracts — excludes any staking reward.',
+  'table.potentialAnts': 'Total ANTS',
+  'table.potentialAntsTip': 'Staking Reward + Usage Reward combined — the estimated total if this epoch closed right now. Not final until the epoch actually closes, and not yet claimable. Refreshes about once an hour.',
   'table.stakedAnts': 'Staked ANTS',
-  'table.stakedAntsTip': "Total ANTS staked into this seller's pool by anyone, not only the seller — backs the seller's reward eligibility this epoch.",
+  'table.stakedAntsTip': "Total ANTS staked into this seller's pool by anyone, not only the seller — backs the seller's reward eligibility this epoch. Different from Staking Reward (the reward earned from staking), not the amount staked.",
   'table.noEpochData': 'No recognized activity for this epoch yet.',
 
   // Overview current-epoch row

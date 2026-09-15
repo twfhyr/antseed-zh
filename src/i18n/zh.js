@@ -148,10 +148,14 @@ export default {
   'tabs.epoch': '第 {n} 纪元',
   'table.points': '积分',
   'table.pointsTip': '本纪元经反作弊过滤后的认可结算量 —— 大致相当于美元等值数字，并非请求数。',
-  'table.potentialAnts': '预计 ANTS',
-  'table.potentialAntsTip': '若本纪元此刻结束，直接从奖励合约读取的使用量+质押奖励预估值。在纪元实际结束前不是最终值，也暂不可领取。约每小时刷新一次。',
+  'table.stakingReward': '质押奖励',
+  'table.stakingRewardTip': '该地址本纪元自身的质押/资金池奖励（直接从奖励合约的 previewStakerRewards 读取）。显示为"—"表示该地址当前未持有任何质押仓位；真实的 0 会显示为 0。',
+  'table.usageReward': '使用量奖励',
+  'table.usageRewardTip': '仅使用量部分的奖励（作为买家或卖家结算请求所得），直接从奖励合约读取 —— 不包含质押奖励。',
+  'table.potentialAnts': '预计总 ANTS',
+  'table.potentialAntsTip': '质押奖励 + 使用量奖励之和 —— 若本纪元此刻结束的预估总额。在纪元实际结束前不是最终值，也暂不可领取。约每小时刷新一次。',
   'table.stakedAnts': '质押 ANTS',
-  'table.stakedAntsTip': '该卖家资金池中的质押总量（任何人都可质押，不仅限于卖家本人）—— 是卖家本纪元获得奖励资格的依据。',
+  'table.stakedAntsTip': '该卖家资金池中的质押总量（任何人都可质押，不仅限于卖家本人）—— 是卖家本纪元获得奖励资格的依据。与"质押奖励"（质押所得的奖励）不同，这里指的是质押的本金数量。',
   'table.noEpochData': '本纪元暂无认可活动记录。',
 
   // 概览页当前纪元数据行

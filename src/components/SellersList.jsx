@@ -35,11 +35,13 @@ function sumWei(a, b) {
   return ((a != null ? BigInt(a) : 0n) + (b != null ? BigInt(b) : 0n)).toString();
 }
 
+/** Used only in table column headers here — see the matching comment in
+ *  BuyersList.jsx for why this pops downward instead of upward. */
 function InfoTip({ text }) {
   return (
     <span className="stat-info-icon" tabIndex={0} style={{ marginLeft: '0.3rem' }}>
       <Info size={12} />
-      <span className="stat-info-tooltip" role="tooltip">{text}</span>
+      <span className="stat-info-tooltip stat-info-tooltip--below" role="tooltip">{text}</span>
     </span>
   );
 }
@@ -132,7 +134,7 @@ function TotalSellersTable({ sellers, search }) {
  *  reward data (see notes/epoch-features-plan.md) — a different data source
  *  than the Total tab's DHT+all-time prop, so it manages its own
  *  loading/pagination state rather than filtering the `sellers` prop. */
-function EpochSellersTable({ query, onEpochNumber }) {
+function EpochSellersTable({ query, onEpochNumber, onCount }) {
   const { t } = useI18n();
   const [rows, setRows] = useState([]);
   const [total, setTotal] = useState(null);
@@ -142,6 +144,12 @@ function EpochSellersTable({ query, onEpochNumber }) {
   const [error, setError] = useState(null);
   const sentinelRef = useRef(null);
   const inFlight = useRef(false);
+
+  // Lifted to the parent so the "Sellers" header can show a count next to
+  // the title, the same way BuyersList already does — this table (unlike
+  // the Total tab's `sellers` prop) fetches its own paginated data, so the
+  // parent has no other way to know the count.
+  useEffect(() => { onCount(rows.length, total); }, [rows.length, total, onCount]);
 
   useEffect(() => {
     let cancelled = false;
@@ -201,14 +209,16 @@ function EpochSellersTable({ query, onEpochNumber }) {
             <th>{t('table.points')}<InfoTip text={t('table.pointsTip')} /></th>
             <th>{t('table.requests')}</th>
             <th>{t('table.stakedAnts')}<InfoTip text={t('table.stakedAntsTip')} /></th>
+            <th>{t('table.stakingReward')}<InfoTip text={t('table.stakingRewardTip')} /></th>
+            <th>{t('table.usageReward')}<InfoTip text={t('table.usageRewardTip')} /></th>
             <th>{t('table.potentialAnts')}<InfoTip text={t('table.potentialAntsTip')} /></th>
           </tr>
         </thead>
         <tbody>
           {loading ? (
-            <tr><td colSpan={5}><div className="empty-state">{t('common.loading')}</div></td></tr>
+            <tr><td colSpan={7}><div className="empty-state">{t('common.loading')}</div></td></tr>
           ) : error ? (
-            <tr><td colSpan={5}><div className="empty-state">{error}</div></td></tr>
+            <tr><td colSpan={7}><div className="empty-state">{error}</div></td></tr>
           ) : rows.map((row) => {
             const pinned = (row.address || '').toLowerCase() === PINNED_ADDRESS;
             return (
@@ -225,16 +235,18 @@ function EpochSellersTable({ query, onEpochNumber }) {
                 <td className="price">{usd(row.points != null ? Number(row.points) / 1e6 : null)}</td>
                 <td>{row.requests != null ? Number(row.requests).toLocaleString() : '—'}</td>
                 <td>{fmtAnts(row.staked_ants_wei)}</td>
+                <td>{fmtAnts(row.pool_reward_wei)}</td>
+                <td>{fmtAnts(row.usage_reward_wei)}</td>
                 <td className="price">{fmtAnts(sumWei(row.usage_reward_wei, row.pool_reward_wei))}</td>
               </tr>
             );
           })}
           {!loading && !error && rows.length === 0 && (
-            <tr><td colSpan={5}><div className="empty-state">{t('table.noEpochData')}</div></td></tr>
+            <tr><td colSpan={7}><div className="empty-state">{t('table.noEpochData')}</div></td></tr>
           )}
           {!loading && !error && loadingMore && (
             <tr>
-              <td colSpan={5}>
+              <td colSpan={7}>
                 <div className="empty-state loading-row">
                   <Loader2 size={15} className="spin" />
                   {t('table.loadingMore')}
@@ -255,6 +267,11 @@ function SellersList({ sellers = [] }) {
   const [search, setSearch] = useState('');
   const [query, setQuery] = useState('');
   const [epochNumber, setEpochNumber] = useState(null);
+  // { shown, total } for the epoch sub-tab, reported up from
+  // EpochSellersTable since it fetches its own paginated data — mirrors
+  // BuyersList's count badge next to the tab title.
+  const [epochCount, setEpochCount] = useState({ shown: 0, total: null });
+  const onEpochCount = useCallback((shown, total) => setEpochCount({ shown, total }), []);
 
   useEffect(() => {
     const id = setTimeout(() => setQuery(search.trim()), 300);
@@ -262,11 +279,20 @@ function SellersList({ sellers = [] }) {
   }, [search]);
 
   const epochLabel = t('tabs.epoch', { n: epochNumber ?? '…' });
+  const count = mode === 'epoch' ? epochCount.total : sellers.length;
+  const shown = mode === 'epoch' ? epochCount.shown : sellers.length;
 
   return (
     <div className="table-container">
       <div className="table-header">
-        <h2 className="table-title">{t('nav.sellers')}</h2>
+        <h2 className="table-title">
+          {t('nav.sellers')}{' '}
+          {count != null && (
+            <span className="table-count">
+              {shown < count ? t('table.showingOf', { shown, total: count }) : count.toLocaleString()}
+            </span>
+          )}
+        </h2>
         <div className="search-box">
           <Search size={16} className="search-icon" />
           <input
@@ -286,7 +312,7 @@ function SellersList({ sellers = [] }) {
         </button>
       </div>
       {mode === 'epoch'
-        ? <EpochSellersTable query={query} onEpochNumber={setEpochNumber} />
+        ? <EpochSellersTable query={query} onEpochNumber={setEpochNumber} onCount={onEpochCount} />
         : <TotalSellersTable sellers={sellers} search={search} />}
     </div>
   );

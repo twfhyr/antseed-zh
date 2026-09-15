@@ -537,13 +537,16 @@ async function computeTokenomics() {
         const target = Number(dynUsage.volumeShareTarget) / 1e6;
 
         // Live effective share for the *open* current epoch — mirrors the
-        // staker share's formula above. Input is that side's real recognized
-        // points this epoch (Antscan `stakingEpoch.totalBuyerPoints` /
-        // `.totalSellerPoints`, ≈ micro-USDC of settled, policy-filtered
-        // volume), same saturatingShareBps rule (zero input -> zero share,
-        // zero target -> saturates to max). Previously this tab only showed
-        // the static min–max range, never where the epoch actually sits in
-        // it — see notes/epoch-features-plan.md.
+        // staker share's formula above. Per antseed.com/docs/recognized-usage/:
+        // "The usage input is the larger of the epoch's total buyer points
+        // and total seller points, after points policies" — ONE shared
+        // input (max of the two sides), fed into BOTH the buyer and the
+        // seller share formula. Previously this used each side's own points
+        // as its own input, which happens to match when buyer/seller points
+        // are equal (the common case absent wash-trading divergence) but is
+        // wrong in general — fixed to match the documented formula exactly.
+        // Same saturatingShareBps rule as the staker share (zero input ->
+        // zero share, zero target -> saturates to max).
         const shareFor = (input, min, max) => {
           if (input == null || min == null || max == null) return null;
           if (input === 0) return 0;
@@ -552,6 +555,9 @@ async function computeTokenomics() {
         };
         const buyerPointsUsdc = stakingEpochNow?.totalBuyerPoints != null ? Number(stakingEpochNow.totalBuyerPoints) / 1e6 : null;
         const sellerPointsUsdc = stakingEpochNow?.totalSellerPoints != null ? Number(stakingEpochNow.totalSellerPoints) / 1e6 : null;
+        const usageInput = buyerPointsUsdc != null || sellerPointsUsdc != null
+          ? Math.max(buyerPointsUsdc ?? 0, sellerPointsUsdc ?? 0)
+          : null;
 
         usage = {
           buyerMinSharePct: buyerMin,
@@ -559,8 +565,8 @@ async function computeTokenomics() {
           sellerMinSharePct: sellerMin,
           sellerMaxSharePct: sellerMax,
           volumeShareTargetUsdc: target,
-          buyerEffectiveSharePct: shareFor(buyerPointsUsdc, buyerMin, buyerMax),
-          sellerEffectiveSharePct: shareFor(sellerPointsUsdc, sellerMin, sellerMax),
+          buyerEffectiveSharePct: shareFor(usageInput, buyerMin, buyerMax),
+          sellerEffectiveSharePct: shareFor(usageInput, sellerMin, sellerMax),
           buyerRecognizedVolumeUsdc: buyerPointsUsdc,
           sellerRecognizedVolumeUsdc: sellerPointsUsdc,
           buyerEpochBudgetAnts: buyerBudget != null ? Number(buyerBudget) / 1e18 : null,
