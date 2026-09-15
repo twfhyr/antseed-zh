@@ -12,6 +12,12 @@ the most part, already implemented.
   this file whenever you finish something on it or find something new that
   belongs on it — it should stay accurate, not grow stale like a plan
   document does.
+- **Feature plans** (e.g. `epoch-features-plan.md`) — a written, reviewable
+  plan for a specific non-trivial feature, following the same pattern:
+  goal, confirmed real data sources, per-surface design, and explicit open
+  questions the user needs to answer before implementation starts. Once a
+  plan is approved and implemented, fold anything still-open into
+  `dev-plan.md` and mark the plan file's status line "Implemented."
 
 If you're an agent picking up work here, read `../AGENTS.md` first — it has
 the non-negotiable rules (never fabricate a number, chief among them) that

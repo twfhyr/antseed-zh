@@ -12,6 +12,9 @@ import {
   readEpochMetrics,
 } from './sync-history.js';
 import {
+  fetchBuyerEpochs, fetchSellerEpochs, fetchPoolEpochs, fetchOpenStakePositions, fetchStakingEpoch,
+} from './antscan.js';
+import {
   EmissionsClient, ANTSTokenClient, DepositsClient, RegistryClient, EmissionsGateClient,
   UsageAccountingClient, UsageRewardsClient, SellerPoolsClient, SellerPoolsRewardsClient,
   SellerRegistryClient, SellerRewardsPoolClient, StakingClient,
@@ -113,6 +116,38 @@ app.get('/api/provider/models', async (_req, res) => {
 });
 
 // ─── Stats ───
+// Current-epoch buyers/sellers/volume for the Overview tab — sourced from
+// epoch_metrics (Antscan-backed, synced every 5 min by sync-history.js),
+// keyed by the live epoch number from the chain poller. No services number:
+// unlike buyers/sellers/volume, services have no per-epoch entity on Antscan
+// (they're a live DHT catalog snapshot, not a settlement ledger) — see
+// notes/epoch-features-plan.md for why that was deliberately left out
+// rather than faked.
+function currentEpochOverview() {
+  const chain = readChainMetrics();
+  const epoch = chain?.emissions?.currentEpoch;
+  if (epoch == null) return null;
+  const row = db.prepare('SELECT * FROM epoch_metrics WHERE epoch = ?').get(epoch);
+  // Epoch date range (unix seconds), so the frontend can show a day-by-day
+  // breakdown of just this epoch's window rather than an all-epochs
+  // aggregate. genesis/epochDuration are both already live-read by
+  // chain-poller.js; startTs is undefined (not just late) if either is
+  // missing, since a wrong range would silently mislabel days as
+  // in/out of the epoch.
+  const genesis = chain?.emissions?.genesis;
+  const duration = chain?.emissions?.epochDuration;
+  const startTs = genesis != null && duration != null ? genesis + epoch * duration : null;
+  const endTs = startTs != null && duration != null ? startTs + duration : null;
+  return {
+    epoch,
+    buyers: row?.active_buyers ?? null,
+    sellers: row?.active_sellers ?? null,
+    volumeUsdc: row?.volume_usdc != null ? Number(row.volume_usdc) / 1e6 : null,
+    startTs,
+    endTs,
+  };
+}
+
 app.get('/api/stats', (_req, res) => {
   const row = db.prepare('SELECT * FROM stats WHERE id = 1').get();
   if (!row) return res.status(404).json({ error: 'Stats not found' });
@@ -127,6 +162,7 @@ app.get('/api/stats', (_req, res) => {
     serviceGrowth: row.service_growth,
     volumeGrowth: row.volume_growth,
     transactionGrowth: row.transaction_growth,
+    currentEpoch: currentEpochOverview(),
   });
 });
 
@@ -484,17 +520,51 @@ async function computeTokenomics() {
   let usage = null;
   try {
     if (usageRewardsClient && currentEpoch != null) {
-      const dynUsage = await usageRewardsClient.dynamicUsageConfigAt(currentEpoch).catch(() => null);
+      const [dynUsage, stakingEpochNow, buyerBudget, sellerBudget] = await Promise.all([
+        usageRewardsClient.dynamicUsageConfigAt(currentEpoch).catch(() => null),
+        fetchStakingEpoch(currentEpoch).catch(() => null),
+        usageRewardsClient.buyerEpochBudget(currentEpoch).catch(() => null),
+        usageRewardsClient.sellerEpochBudget(currentEpoch).catch(() => null),
+      ]);
       if (dynUsage) {
+        // Same 100_000 gate-share denominator as the staker config above;
+        // /100 previously reported the 5_000/10_000 defaults as 50%/100%
+        // instead of the real 5%/10%.
+        const buyerMin = bpsToPct(dynUsage.buyerMinShareBps);
+        const buyerMax = bpsToPct(dynUsage.buyerMaxShareBps);
+        const sellerMin = bpsToPct(dynUsage.sellerMinShareBps);
+        const sellerMax = bpsToPct(dynUsage.sellerMaxShareBps);
+        const target = Number(dynUsage.volumeShareTarget) / 1e6;
+
+        // Live effective share for the *open* current epoch — mirrors the
+        // staker share's formula above. Input is that side's real recognized
+        // points this epoch (Antscan `stakingEpoch.totalBuyerPoints` /
+        // `.totalSellerPoints`, ≈ micro-USDC of settled, policy-filtered
+        // volume), same saturatingShareBps rule (zero input -> zero share,
+        // zero target -> saturates to max). Previously this tab only showed
+        // the static min–max range, never where the epoch actually sits in
+        // it — see notes/epoch-features-plan.md.
+        const shareFor = (input, min, max) => {
+          if (input == null || min == null || max == null) return null;
+          if (input === 0) return 0;
+          if (target === 0) return max; // target shared by both sides; only reached if genuinely 0
+          return min + (max - min) * (input / (input + target));
+        };
+        const buyerPointsUsdc = stakingEpochNow?.totalBuyerPoints != null ? Number(stakingEpochNow.totalBuyerPoints) / 1e6 : null;
+        const sellerPointsUsdc = stakingEpochNow?.totalSellerPoints != null ? Number(stakingEpochNow.totalSellerPoints) / 1e6 : null;
+
         usage = {
-          // Same 100_000 gate-share denominator as the staker config above;
-          // /100 previously reported the 5_000/10_000 defaults as 50%/100%
-          // instead of the real 5%/10%.
-          buyerMinSharePct: bpsToPct(dynUsage.buyerMinShareBps),
-          buyerMaxSharePct: bpsToPct(dynUsage.buyerMaxShareBps),
-          sellerMinSharePct: bpsToPct(dynUsage.sellerMinShareBps),
-          sellerMaxSharePct: bpsToPct(dynUsage.sellerMaxShareBps),
-          volumeShareTargetUsdc: Number(dynUsage.volumeShareTarget) / 1e6,
+          buyerMinSharePct: buyerMin,
+          buyerMaxSharePct: buyerMax,
+          sellerMinSharePct: sellerMin,
+          sellerMaxSharePct: sellerMax,
+          volumeShareTargetUsdc: target,
+          buyerEffectiveSharePct: shareFor(buyerPointsUsdc, buyerMin, buyerMax),
+          sellerEffectiveSharePct: shareFor(sellerPointsUsdc, sellerMin, sellerMax),
+          buyerRecognizedVolumeUsdc: buyerPointsUsdc,
+          sellerRecognizedVolumeUsdc: sellerPointsUsdc,
+          buyerEpochBudgetAnts: buyerBudget != null ? Number(buyerBudget) / 1e18 : null,
+          sellerEpochBudgetAnts: sellerBudget != null ? Number(sellerBudget) / 1e18 : null,
         };
       }
     }
@@ -616,6 +686,193 @@ app.get('/api/tokenomics', async (req, res) => {
 
     const data = await refreshTokenomics();
     res.json({ ...data, stale: false });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ─── Current-epoch participant rewards (recognized-usage era) ───
+// What a buyer/seller has earned *this epoch* — points, plus a "potential
+// reward" estimate combining their usage reward (pendingBuyerReward /
+// pendingAgentReward — exact on-chain view functions, not a reimplemented
+// formula) and, if they hold any lANTS stake position(s), their pending
+// pool/staker reward too (previewStakerRewards — also a real on-chain
+// preview, not an approximation). Both are genuinely live/moving numbers
+// while the epoch is still open. Computed here (not per-request) and
+// refreshed hourly by startEpochRewardsPoller — see
+// notes/epoch-features-plan.md for the full design and why.
+let epochRewardsSyncing = null;
+
+async function syncCurrentEpochRewards() {
+  const chain = readChainMetrics();
+  const epoch = chain?.emissions?.currentEpoch;
+  if (epoch == null) { console.warn('[epoch-rewards] no current epoch yet, skipping'); return; }
+
+  const [buyerEpochsResult, sellerEpochsResult, poolEpochsResult, stakePositionsResult] = await Promise.all([
+    fetchBuyerEpochs(epoch).catch((e) => { console.error('[epoch-rewards] buyerEpochs failed:', e.message); return { items: [] }; }),
+    fetchSellerEpochs(epoch).catch((e) => { console.error('[epoch-rewards] sellerEpochs failed:', e.message); return { items: [] }; }),
+    fetchPoolEpochs(epoch).catch((e) => { console.error('[epoch-rewards] poolEpochs failed:', e.message); return { items: [] }; }),
+    fetchOpenStakePositions().catch((e) => { console.error('[epoch-rewards] stakePositions failed:', e.message); return { items: [] }; }),
+  ]);
+  const buyers = buyerEpochsResult.items;
+  const sellers = sellerEpochsResult.items;
+  const stakedByAgentId = new Map(poolEpochsResult.items.map((p) => [String(p.agentId), p.activeStake]));
+
+  // owner (lowercased address) -> [positionId, ...], for the pool-reward
+  // component. Only ~tens of open positions network-wide as of the
+  // recognized-usage era's early weeks, so this stays cheap even fetched
+  // in full every sync.
+  const positionsByOwner = new Map();
+  for (const p of stakePositionsResult.items) {
+    const owner = (p.owner || '').toLowerCase();
+    if (!owner) continue;
+    if (!positionsByOwner.has(owner)) positionsByOwner.set(owner, []);
+    positionsByOwner.get(owner).push(p.id);
+  }
+
+  // Pool/staker reward preview: one call covering every open position
+  // network-wide, then summed back per owner. previewStakerRewards is a
+  // pure on-chain simulation (no indexing transaction required) — see
+  // SellerPoolsRewardsClient in @antseed/node.
+  const poolRewardByOwner = new Map();
+  if (sellerPoolsRewardsClient && positionsByOwner.size > 0) {
+    try {
+      const allIds = [...positionsByOwner.values()].flat();
+      const amounts = await sellerPoolsRewardsClient.previewStakerRewards(allIds);
+      let cursor = 0;
+      for (const [owner, ids] of positionsByOwner) {
+        let sum = 0n;
+        for (let i = 0; i < ids.length; i++) sum += amounts[cursor + i] ?? 0n;
+        cursor += ids.length;
+        poolRewardByOwner.set(owner, sum);
+      }
+    } catch (e) {
+      console.error('[epoch-rewards] previewStakerRewards failed:', e.message);
+    }
+  }
+
+  // Usage reward: batched through the same Multicall3 helper the tokenomics
+  // endpoint uses — one or two RPC round-trips for the whole epoch's
+  // participants instead of one eth_call per address.
+  let usageRewardByBuyer = new Map();
+  let usageRewardBySeller = new Map();
+  if (usageRewardsTarget && (buyers.length > 0 || sellers.length > 0)) {
+    const requests = [
+      ...buyers.map((b) => ({ target: usageRewardsTarget, iface: usageRewardsViewIface, method: 'pendingBuyerReward', args: [b.buyer, epoch] })),
+      ...sellers.map((s) => ({ target: usageRewardsTarget, iface: usageRewardsViewIface, method: 'pendingAgentReward', args: [s.agentId, epoch] })),
+    ];
+    const decoded = await multicallView(requests);
+    buyers.forEach((b, i) => usageRewardByBuyer.set(b.buyer.toLowerCase(), decoded[i]?.[0] ?? null));
+    sellers.forEach((s, i) => usageRewardBySeller.set(s.seller.toLowerCase(), decoded[buyers.length + i]?.[0] ?? null));
+  }
+
+  const now = Date.now();
+  const upsertBuyer = db.prepare(`
+    INSERT INTO buyer_epoch_rewards (address, epoch, points, volume_usdc, requests, usage_reward_wei, pool_reward_wei, fetched_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(address, epoch) DO UPDATE SET
+      points = excluded.points, volume_usdc = excluded.volume_usdc, requests = excluded.requests,
+      usage_reward_wei = excluded.usage_reward_wei, pool_reward_wei = excluded.pool_reward_wei, fetched_at = excluded.fetched_at
+  `);
+  const upsertSeller = db.prepare(`
+    INSERT INTO seller_epoch_rewards (address, agent_id, epoch, points, volume_usdc, requests, staked_ants_wei, usage_reward_wei, pool_reward_wei, fetched_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(address, epoch) DO UPDATE SET
+      agent_id = excluded.agent_id, points = excluded.points, volume_usdc = excluded.volume_usdc, requests = excluded.requests,
+      staked_ants_wei = excluded.staked_ants_wei, usage_reward_wei = excluded.usage_reward_wei,
+      pool_reward_wei = excluded.pool_reward_wei, fetched_at = excluded.fetched_at
+  `);
+  const tx = db.transaction(() => {
+    for (const b of buyers) {
+      const addrLower = b.buyer.toLowerCase();
+      const usageWei = usageRewardByBuyer.get(addrLower);
+      const poolWei = poolRewardByOwner.get(addrLower);
+      upsertBuyer.run(
+        b.buyer, epoch, b.points, b.volumeUsdc, b.requests,
+        usageWei != null ? usageWei.toString() : null,
+        poolWei != null ? poolWei.toString() : null,
+        now
+      );
+    }
+    for (const s of sellers) {
+      const addrLower = s.seller.toLowerCase();
+      const usageWei = usageRewardBySeller.get(addrLower);
+      const poolWei = poolRewardByOwner.get(addrLower);
+      const staked = stakedByAgentId.get(String(s.agentId));
+      upsertSeller.run(
+        s.seller, String(s.agentId), epoch, s.points, s.volumeUsdc, s.requests,
+        staked != null ? String(staked) : null,
+        usageWei != null ? usageWei.toString() : null,
+        poolWei != null ? poolWei.toString() : null,
+        now
+      );
+    }
+  });
+  tx();
+  console.log(`[epoch-rewards] synced epoch ${epoch}: ${buyers.length} buyers, ${sellers.length} sellers, ${positionsByOwner.size} stakers.`);
+}
+
+/** Deduplicated: a second caller mid-sync joins the in-flight run instead of starting another. */
+function refreshEpochRewards() {
+  if (epochRewardsSyncing) return epochRewardsSyncing;
+  epochRewardsSyncing = syncCurrentEpochRewards()
+    .catch((e) => console.error('[epoch-rewards] sync failed:', e.message))
+    .finally(() => { epochRewardsSyncing = null; });
+  return epochRewardsSyncing;
+}
+
+/** Hourly refresh, per product decision (these are "how am I doing this
+ *  week" numbers, not numbers that need to be live-live) — see
+ *  notes/epoch-features-plan.md. */
+function startEpochRewardsPoller(seconds = 3600) {
+  setInterval(() => { refreshEpochRewards(); }, seconds * 1000);
+  refreshEpochRewards();
+}
+
+function parsePageParams(req, defaultLimit = 100, maxLimit = 1000) {
+  const limit = Math.min(Math.max(Number(req.query.limit) || defaultLimit, 1), maxLimit);
+  const offset = Math.max(Number(req.query.offset) || 0, 0);
+  const q = String(req.query.q || '').trim().toLowerCase().slice(0, 64);
+  return { limit, offset, q };
+}
+
+app.get('/api/epoch/buyers', (req, res) => {
+  const chain = readChainMetrics();
+  const epoch = chain?.emissions?.currentEpoch;
+  if (epoch == null) return res.json({ epoch: null, items: [], total: 0, offset: 0, limit: 0, hasMore: false });
+  const { limit, offset, q } = parsePageParams(req);
+  const where = q ? 'AND address LIKE ?' : '';
+  const args = q ? [epoch, `%${q}%`] : [epoch];
+  const total = db.prepare(`SELECT COUNT(*) AS c FROM buyer_epoch_rewards WHERE epoch = ? ${where}`).get(...args).c;
+  const items = db.prepare(
+    `SELECT * FROM buyer_epoch_rewards WHERE epoch = ? ${where} ORDER BY CAST(points AS INTEGER) DESC, address ASC LIMIT ? OFFSET ?`
+  ).all(...args, limit, offset);
+  res.json({ epoch, items, total, offset, limit, hasMore: offset + items.length < total });
+});
+
+app.get('/api/epoch/sellers', (req, res) => {
+  const chain = readChainMetrics();
+  const epoch = chain?.emissions?.currentEpoch;
+  if (epoch == null) return res.json({ epoch: null, items: [], total: 0, offset: 0, limit: 0, hasMore: false });
+  const { limit, offset, q } = parsePageParams(req);
+  // Sellers are also matched by display name (from the live DHT `sellers`
+  // table via agent_id), not just address — the address alone isn't what
+  // most visitors recognize a seller by.
+  const where = q ? 'AND (r.address LIKE ? OR EXISTS (SELECT 1 FROM sellers s WHERE s.agent_id = r.agent_id AND LOWER(s.name) LIKE ?))' : '';
+  const args = q ? [epoch, `%${q}%`, `%${q}%`] : [epoch];
+  const total = db.prepare(`SELECT COUNT(*) AS c FROM seller_epoch_rewards r WHERE r.epoch = ? ${where}`).get(...args).c;
+  const rows = db.prepare(
+    `SELECT r.*, (SELECT s.name FROM sellers s WHERE s.agent_id = r.agent_id LIMIT 1) AS seller_name
+     FROM seller_epoch_rewards r WHERE r.epoch = ? ${where}
+     ORDER BY CAST(r.points AS INTEGER) DESC, r.address ASC LIMIT ? OFFSET ?`
+  ).all(...args, limit, offset);
+  res.json({ epoch, items: rows, total, offset, limit, hasMore: offset + rows.length < total });
+});
+
+app.post('/api/admin/force-epoch-rewards-sync', requireAdminAuth, async (_req, res) => {
+  try {
+    await syncCurrentEpochRewards();
+    res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -1807,6 +2064,13 @@ app.listen(PORT, '0.0.0.0', async () => {
   // Keep history in sync on the same cadence going forward (already ran once above).
   startHistorySync(300, { runImmediately: false });
   console.log('History sync started (refresh every 5 min).');
+
+  // Current-epoch buyer/seller points + potential-reward estimates, hourly
+  // (these are "how's my week going" numbers, not live-live ones — see
+  // notes/epoch-features-plan.md). Runs after the chain poller so
+  // readChainMetrics() already has a current epoch to sync against.
+  startEpochRewardsPoller(3600);
+  console.log('Epoch rewards poller started (refresh every hour).');
 
   // Warm the tokenomics cache in the background. It needs the chain poller's
   // data, so it runs after startChainPoller. Until it lands, requests are

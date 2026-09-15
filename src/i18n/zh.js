@@ -40,6 +40,9 @@ export default {
   'tokenomics.legacyEmittedRemaining': '仍存于托管合约中（未领取）',
   'tokenomics.currentEmitted': '当前发行（第 22 纪元起）',
   'tokenomics.currentEmittedNote': '按铸造分类账户展示当前纪元已铸造的数量。第 22 纪元刚开始，这些数字会随纪元推进而增长。',
+  'tokenomics.buyerUsageShare': '买家使用量奖励份额',
+  'tokenomics.sellerUsageShare': '卖家使用量奖励份额',
+  'tokenomics.epochBudget': '本纪元使用量奖励预算：买家 {buyer} ANTS · 卖家 {seller} ANTS —— 直接从 AntseedUsageRewards 合约读取的实时额度。',
 
   // 数据卡片
   'stats.totalBuyers': '买家总数',
@@ -59,6 +62,7 @@ export default {
   'overview.volume': '交易量（USDC）',
   'overview.epochNote': '第 22 纪元是当前（尚未结束）的认可使用周期；此前的纪元均已结算完毕。',
   'overview.dayNote': '今天的数据仍在更新；此前的日期均已结算完毕。',
+  'overview.epochDailyNote': '仅展示当前纪元约 7 天窗口内的每日明细。今天的数据仍在更新中。',
   'overview.error': '图表数据加载失败。',
   'overview.empty': '暂无数据。',
   'overview.loading': '正在加载历史数据…',
@@ -138,4 +142,30 @@ export default {
   'tokenomics.refreshingHint': '正在加载最新链上数据，当前显示的是上次缓存的数值。',
   'table.showingOf': '显示 {shown} / {total}',
   'table.loadingMore': '加载更多…',
+
+  // 当前纪元子标签页（买家/卖家）— 详见 notes/epoch-features-plan.md
+  'tabs.total': '总计',
+  'tabs.epoch': '第 {n} 纪元',
+  'table.points': '积分',
+  'table.pointsTip': '本纪元经反作弊过滤后的认可结算量 —— 大致相当于美元等值数字，并非请求数。',
+  'table.potentialAnts': '预计 ANTS',
+  'table.potentialAntsTip': '若本纪元此刻结束，直接从奖励合约读取的使用量+质押奖励预估值。在纪元实际结束前不是最终值，也暂不可领取。约每小时刷新一次。',
+  'table.stakedAnts': '质押 ANTS',
+  'table.stakedAntsTip': '该卖家资金池中的质押总量（任何人都可质押，不仅限于卖家本人）—— 是卖家本纪元获得奖励资格的依据。',
+  'table.noEpochData': '本纪元暂无认可活动记录。',
+
+  // 概览页当前纪元数据行
+  'overview.epochBuyers': '买家',
+  'overview.epochSellers': '卖家',
+  'overview.epochVolume': '交易量（USDC）',
+  'overview.epochBuyersTip': '本纪元内至少有一笔认可结算的买家地址数（去重）。',
+  'overview.epochSellersTip': '本纪元内至少有一笔认可结算的卖家数（去重）。',
+  'overview.epochVolumeTip': '当前（尚未结束）纪元内已认可（结算并经策略过滤）的 USDC 交易量。',
+
+  // 关于页面 —— 当前纪元数据说明
+  'about.nav.epochData': '纪元数据',
+  'about.epochDataTitle': '当前纪元数据，每小时刷新',
+  'about.epochDataBody1': '概览、买家、卖家标签页中的"第 N 纪元"视图展示的是当前尚未结束的认可使用纪元 —— 即本周实际已结算的数据，而非历史总计。',
+  'about.epochDataBody2': '"积分"是经反作弊过滤后的认可结算量。"预计 ANTS"结合了使用量奖励，以及（若该地址同时进行质押）质押池奖励 —— 两者均直接从奖励合约读取，而非本地估算。这两个数字会随纪元推进而变化，在纪元实际结束前均非最终值，也不可领取。',
+  'about.epochDataBody3': '这些数据约每小时刷新一次，而非每次访问页面都刷新 —— 出现短暂延迟是正常现象，并非故障。',
 };

@@ -36,8 +36,10 @@ function CustomTooltip({ active, payload, label, volumeLabel, buyersLabel, selle
 }
 
 /** Dune-style combo chart: buyers/sellers as bars (left axis), volume as a
- *  line (right axis), sharing one x-axis (day or epoch). */
-function BreakdownChart({ data, xKey }) {
+ *  line (right axis), sharing one x-axis (day or epoch). Exported so
+ *  EpochDailyChart.jsx (the Overview epoch sub-tab's day-within-this-epoch
+ *  view) can reuse the exact same chart look instead of duplicating it. */
+export function BreakdownChart({ data, xKey }) {
   const { t } = useI18n();
   return (
     <ResponsiveContainer width="100%" height={280}>
@@ -86,14 +88,19 @@ function BreakdownChart({ data, xKey }) {
 
 /** Renders the three distinct states a series can be in. Previously every
  *  non-populated state fell through to "loading", so a failed request showed
- *  a spinner message forever. */
-function ChartState({ data, error, xKey, t }) {
+ *  a spinner message forever. Exported for the same reason as BreakdownChart
+ *  above. */
+export function ChartState({ data, error, xKey, t }) {
   if (error) return <div className="empty-state">{t('overview.error')}</div>;
   if (data == null) return <div className="empty-state">{t('overview.loading')}</div>;
   if (data.length === 0) return <div className="empty-state">{t('overview.empty')}</div>;
   return <BreakdownChart data={data} xKey={xKey} />;
 }
 
+/** Total sub-tab's chart (Overview.jsx): all-time daily series, or an
+ *  all-epochs aggregate (one bar per epoch, epoch 0 through the current
+ *  one) — NOT the current epoch's own day-by-day breakdown, which is a
+ *  different view (EpochDailyChart.jsx, under Overview's Epoch sub-tab). */
 function HistoryCharts({ daily, epochs, dailyError, epochsError }) {
   const { t } = useI18n();
   const [tab, setTab] = useState('day');

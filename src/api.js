@@ -96,3 +96,16 @@ export async function fetchHistoryBuyers({ limit = 100, offset = 0, q = '' } = {
 export async function fetchHistorySellers(limit = 200) {
   return get(`/history/sellers?limit=${limit}`);
 }
+
+/** Current-epoch buyer points + potential-reward estimates, paginated.
+ *  Resolves to `{ epoch, items, total, offset, limit, hasMore }`. */
+export async function fetchEpochBuyers({ limit = 100, offset = 0, q = '' } = {}) {
+  const query = `limit=${limit}&offset=${offset}` + (q ? `&q=${encodeURIComponent(q)}` : '');
+  return get(`/epoch/buyers?${query}`);
+}
+
+/** Current-epoch seller points/stake/potential-reward estimates, paginated. */
+export async function fetchEpochSellers({ limit = 100, offset = 0, q = '' } = {}) {
+  const query = `limit=${limit}&offset=${offset}` + (q ? `&q=${encodeURIComponent(q)}` : '');
+  return get(`/epoch/sellers?${query}`);
+}

@@ -4,8 +4,6 @@ import ServicesList from './components/ServicesList';
 import BuyersList from './components/BuyersList';
 import TokenomicsTab from './components/TokenomicsTab';
 import ANTSInfo from './components/ANTSInfo';
-import ClaimANTS from './components/ClaimANTS';
-import ChannelsView from './components/ChannelsView';
 import Overview from './components/Overview';
 import About from './components/About';
 import Header from './components/Header';
@@ -154,20 +152,14 @@ return (
           >
             {t('nav.antsInfo')}
           </a>
-          <a
-            href={tabHref('claim')}
-            className={`tab ${activeTab === 'claim' ? 'active' : ''}`}
-            onClick={(e) => { e.preventDefault(); setActiveTab('claim'); }}
-          >
-            {t('nav.claim')}
-          </a>
-          <a
-            href={tabHref('channels')}
-            className={`tab ${activeTab === 'channels' ? 'active' : ''}`}
-            onClick={(e) => { e.preventDefault(); setActiveTab('channels'); }}
-          >
-            {t('nav.channels')}
-          </a>
+          {/* Claim ANTS / Channels tabs and the header wallet-connect button
+              are deliberately not surfaced — both need a connected wallet,
+              which reads as "this site wants access to my funds" on a site
+              most visitors land on to browse read-only, and asking for a
+              wallet connection is sensitive to prompt for by default. The
+              components (ClaimANTS.jsx, ChannelsView.jsx) and their backend
+              endpoints are untouched, kept for if/when this comes back —
+              see notes/dev-plan.md. */}
           <a
             href={tabHref('about')}
             className={`tab ${activeTab === 'about' ? 'active' : ''}`}
@@ -183,8 +175,6 @@ return (
         {activeTab === 'services' && <ServicesList services={services} />}
         {activeTab === 'tokenomics' && <TokenomicsTab />}
         {activeTab === 'ants-info' && <ANTSInfo />}
-        {activeTab === 'claim' && <ClaimANTS />}
-        {activeTab === 'channels' && <ChannelsView />}
         {activeTab === 'about' && <About />}
       </main>
       <DepositModal isOpen={depositOpen} onClose={() => setDepositOpen(false)} buyerAddress={buyerAddress} />
