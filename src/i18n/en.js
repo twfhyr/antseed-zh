@@ -40,6 +40,9 @@ export default {
   'tokenomics.legacyEmittedRemaining': 'Still held in escrow (unclaimed)',
   'tokenomics.currentEmitted': 'Current emissions (epoch 22+)',
   'tokenomics.currentEmittedNote': 'Minted so far under the current gate, by minter bucket. Epoch 22 just started — most of this will grow as the epoch progresses.',
+  'tokenomics.buyerUsageShare': 'Buyer usage reward share',
+  'tokenomics.sellerUsageShare': 'Seller usage reward share',
+  'tokenomics.epochBudget': "This epoch's usage budget: {buyer} ANTS (buyer) · {seller} ANTS (seller) — the live bucket size, read directly from AntseedUsageRewards.",
 
   // Stat cards
   'stats.totalBuyers': 'Total Buyers',
@@ -141,4 +144,30 @@ export default {
   'tokenomics.refreshingHint': 'Showing the last cached values while fresh on-chain data loads.',
   'table.showingOf': 'showing {shown} of {total}',
   'table.loadingMore': 'Loading more…',
+
+  // Current-epoch sub-tabs (Buyers/Sellers) — see notes/epoch-features-plan.md
+  'tabs.total': 'Total',
+  'tabs.epoch': 'Epoch #{n}',
+  'table.points': 'Points',
+  'table.pointsTip': 'Recognized settled volume this epoch, after anti-fraud filtering — roughly a USD-equivalent figure, not a request count.',
+  'table.potentialAnts': 'Potential ANTS',
+  'table.potentialAntsTip': 'Estimated usage + staking reward if this epoch closed right now, read directly from the reward contracts. Not final until the epoch actually closes, and not yet claimable. Refreshes about once an hour.',
+  'table.stakedAnts': 'Staked ANTS',
+  'table.stakedAntsTip': "Total ANTS staked into this seller's pool by anyone, not only the seller — backs the seller's reward eligibility this epoch.",
+  'table.noEpochData': 'No recognized activity for this epoch yet.',
+
+  // Overview current-epoch row
+  'overview.epochBuyers': 'Buyers',
+  'overview.epochSellers': 'Sellers',
+  'overview.epochVolume': 'Volume (USDC)',
+  'overview.epochBuyersTip': 'Distinct buyer addresses with at least one settlement recognized in the current epoch.',
+  'overview.epochSellersTip': 'Distinct sellers with at least one settlement recognized in the current epoch.',
+  'overview.epochVolumeTip': 'USDC volume recognized (settled + policy-filtered) so far in the current, still-open epoch.',
+
+  // About — current-epoch data explainer
+  'about.nav.epochData': 'Epoch Data',
+  'about.epochDataTitle': 'This Epoch, Refreshed Hourly',
+  'about.epochDataBody1': 'The "Epoch #N" views on the Overview, Buyers, and Sellers tabs show the current, still-open recognized-usage epoch — what has actually settled so far this week, not an all-time total.',
+  'about.epochDataBody2': '"Points" is recognized settled volume after anti-fraud filtering. "Potential ANTS" combines a usage reward and, for addresses that also stake, a pool reward — both read directly from the reward contracts, not estimated locally. Both numbers move as the epoch progresses and are not final or claimable until the epoch actually closes.',
+  'about.epochDataBody3': 'These figures are refreshed about once an hour, not on every page load — a short delay is expected and not a bug.',
 };

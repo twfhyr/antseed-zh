@@ -50,16 +50,19 @@ const PAGE_MAX = 1000;
 
 /** Walks `pageInfo.endCursor` until `want` rows are collected or the entity
  *  is exhausted. Returns the same `{ items, totalCount }` shape a single
- *  query would. */
-async function fetchAllPaged(entity, orderBy, fields, want) {
+ *  query would. `where`, if given, is inlined verbatim as a GraphQL object
+ *  literal (e.g. `{epoch: "22"}`) — callers build it, this just plumbs it
+ *  through pagination. */
+async function fetchAllPaged(entity, orderBy, fields, want, where = null) {
   const items = [];
   let cursor = null;
   let totalCount = 0;
+  const whereClause = where ? `, where: ${where}` : '';
   while (items.length < want) {
     const pageSize = Math.min(PAGE_MAX, want - items.length);
     const after = cursor ? `, after: ${JSON.stringify(cursor)}` : '';
     const data = await gql(`{
-    ${entity}(limit: ${pageSize}, orderBy: "${orderBy}", orderDirection: "desc"${after}) {
+    ${entity}(limit: ${pageSize}, orderBy: "${orderBy}", orderDirection: "desc"${whereClause}${after}) {
       items { ${fields} }
       pageInfo { hasNextPage endCursor }
       totalCount
@@ -184,4 +187,70 @@ export async function fetchBuyerEpochCount(epoch) {
     }
   }`);
   return data.buyerEpochs.totalCount;
+}
+
+// ─── Current-epoch per-participant data (recognized-usage era, M001) ───
+// Real per-address/per-agent points and stake for a single epoch — used to
+// show buyers/sellers what they've earned *this* epoch, not just all-time.
+// See notes/epoch-features-plan.md.
+
+const EPOCH_PARTICIPANT_FIELDS = `
+        buyer
+        epoch
+        points
+        volumeUsdc
+        requests
+`;
+
+/** Every buyer with recognized activity in a given epoch, points-desc.
+ *  `points` is recognized volume in micro-USDC units after policy
+ *  filtering (wash-trading etc.) — NOT the same as `weightedPoints`, which
+ *  is an internal fixed-point reward-index intermediate and not
+ *  human-readable on its own. */
+export async function fetchBuyerEpochs(epoch, limit = 5000) {
+  return fetchAllPaged('buyerEpochs', 'points', EPOCH_PARTICIPANT_FIELDS, limit, `{epoch: "${epoch}"}`);
+}
+
+const SELLER_EPOCH_FIELDS = `
+        seller
+        agentId
+        epoch
+        points
+        volumeUsdc
+        requests
+`;
+
+/** Every seller with recognized activity in a given epoch, points-desc. */
+export async function fetchSellerEpochs(epoch, limit = 5000) {
+  return fetchAllPaged('sellerEpochs', 'points', SELLER_EPOCH_FIELDS, limit, `{epoch: "${epoch}"}`);
+}
+
+/** Per-seller-pool stake for a given epoch (`activeStake`, in ANTS wei) —
+ *  the pool's total, contributed by anyone who staked into it, not just
+ *  the seller themselves. Keyed by `agentId`. */
+export async function fetchPoolEpochs(epoch, limit = 5000) {
+  const fields = `agentId epoch activeStake weight usagePoints settled`;
+  return fetchAllPaged('poolEpochs', 'activeStake', fields, limit, `{epoch: "${epoch}"}`);
+}
+
+/** Every currently-open (not withdrawn) lANTS stake position, network-wide —
+ *  small (tens, not thousands, as of the recognized-usage era's early
+ *  weeks), so fetched in full rather than filtered per-owner. Used to find
+ *  which buyers/sellers also hold a staking position, for the pool-reward
+ *  component of "potential rewards" (see notes/epoch-features-plan.md). */
+export async function fetchOpenStakePositions(limit = 5000) {
+  const fields = `id owner agentId amount weightAmount stakeStartEpoch stakeEndEpoch`;
+  return fetchAllPaged('stakePositions', 'id', fields, limit, `{withdrawn: false}`);
+}
+
+/** Network-wide totals for a single epoch (total buyer/seller points, total
+ *  active stake, total settled volume/requests) — the denominator side of
+ *  the dynamic reward-share formula. Singular lookup, not paginated. */
+export async function fetchStakingEpoch(epoch) {
+  const data = await gql(`{
+    stakingEpoch(id: "${epoch}") {
+      epoch totalBuyerPoints totalSellerPoints totalActiveStake totalPowerWeight volumeUsdc requests stakerBudget
+    }
+  }`);
+  return data.stakingEpoch;
 }

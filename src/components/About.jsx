@@ -9,7 +9,7 @@ const MY_PEER_ID = '412282c48584073c5aee6a79945f105a7777e194';
 // defines both nav order and page order. Kept flat/simple on purpose (no
 // "Part 1 / Part 2" grouping): visitors just pick whatever they're curious
 // about and jump straight there.
-const SECTIONS = ['whatIs', 'layers', 'provide', 'payments', 'community', 'node', 'models', 'start'];
+const SECTIONS = ['whatIs', 'layers', 'provide', 'payments', 'epochData', 'community', 'node', 'models', 'start'];
 
 function About() {
   const { t } = useI18n();
@@ -120,6 +120,13 @@ function About() {
           <h3>{t('about.paymentsTitle')}</h3>
           <p>{t('about.paymentsP1')}</p>
           <p>{t('about.paymentsP2')}</p>
+        </div>
+
+        <div className="table-container about-section" data-section="epochData" ref={setRef('epochData')}>
+          <h3>{t('about.epochDataTitle')}</h3>
+          <p>{t('about.epochDataBody1')}</p>
+          <p>{t('about.epochDataBody2')}</p>
+          <p>{t('about.epochDataBody3')}</p>
         </div>
 
         <div className="table-container about-section about-section--community" data-section="community" ref={setRef('community')}>

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import StatsCards from './StatsCards';
+import EpochStatsCards from './EpochStatsCards';
 import HistoryCharts from './HistoryCharts';
 import { fetchStats, fetchHistoryDaily, fetchHistoryEpochs } from '../api';
 import { useI18n } from '../i18n/index.jsx';
@@ -33,8 +34,9 @@ function Overview() {
   return (
     <div>
       {error && <div className="table-container" style={{ padding: '1.5rem', marginBottom: '1.5rem' }}><div className="empty-state">{error}</div></div>}
+      {stats?.currentEpoch && <EpochStatsCards epoch={stats.currentEpoch} />}
       {stats && <StatsCards stats={stats} />}
-      <HistoryCharts daily={daily} epochs={epochs} dailyError={dailyError} epochsError={epochsError} />
+      <HistoryCharts daily={daily} epochs={epochs} dailyError={dailyError} epochsError={epochsError} currentEpoch={stats?.currentEpoch?.epoch} />
     </div>
   );
 }

@@ -1,6 +1,8 @@
 # Plan: Current-Epoch Data Throughout the Dashboard
 
-Status: **DRAFT — awaiting review, no implementation yet.**
+Status: **Implemented** (2026-09-15). Kept as the design record — see §5 for
+the decisions that shaped the final implementation and §7 for what actually
+shipped vs. what was deliberately left out.
 Requested by: twfhyr, 2026-09-15.
 
 ## 1. Goal
@@ -24,21 +26,18 @@ I've flagged it instead of inventing one.
   `emissions.currentEpoch`). Every "current epoch" sub-tab/section label
   uses this exact number, so it's always correct without hardcoding 22
   anywhere — epoch 23 starts automatically next week.
-- **"Potential rewards (not finalized)"** — for a **buyer**, this means
-  their usage-reward bucket only (`AntseedUsageRewards.pendingBuyerReward`).
-  For a **seller**, I'm proposing it means their own **usage** reward
-  (`pendingAgentReward`, i.e. what they earn for serving requests) — **not**
-  the seller-pool/staker reward, because per existing memory (see
-  `[[antseed-ants-staking]]`) *anyone* can stake ANTS into a seller's pool,
-  so "staker rewards for this pool" isn't really "the seller's" number —
-  it belongs to whoever staked. **Open question 1 below** — confirm this
-  reading before I build it.
+- **"Potential rewards (not finalized)"** — for both buyers and sellers,
+  this is **usage reward + pool/staker reward** (if the address holds any
+  lANTS stake position), combined into one figure. Decided in §5 point 1:
+  same treatment for both, even though (per `[[antseed-ants-staking]]`)
+  *anyone* can stake ANTS into a seller's pool, not only the seller
+  themselves — the pool-reward component just reflects whatever that
+  specific address actually has staked, wherever they staked it.
 - These are genuinely **live, moving numbers** while the epoch is open —
   they'll go up as more settlements land and can shift if participation
-  changes (the reward math is share-based, not fixed-per-point). The UI
-  needs to say this out loud, not just in a column label nobody reads —
-  proposing a persistent "epoch in progress — estimates only, not final
-  until the epoch closes" banner on every current-epoch sub-tab.
+  changes (the reward math is share-based, not fixed-per-point). Per §5
+  point 7, this is explained in a new About page section rather than a
+  banner on every sub-tab, plus per-column tooltips.
 
 ## 3. What I confirmed is actually available (verified live, not assumed)
 
@@ -123,12 +122,9 @@ Epoch #N sub-tab, per row:
   (buyers list is already paginated at `limit=100` by default — this
   keeps the batch small regardless of total buyer count).
 
-Backend: new `GET /api/history/buyers?epoch=current&...` (or a parallel
-endpoint) that, for the requested page's addresses, queries Antscan
-`buyerEpochs(where: {buyer_in: [...], epoch: "N"})` for points and
-multicalls `pendingBuyerReward` for the reward estimate. Cache per-page
-with a short TTL (proposing 60s — long enough to avoid hammering the RPC
-on every scroll, short enough that "live" still means something).
+Implemented as `GET /api/epoch/buyers`, reading from `buyer_epoch_rewards`
+(populated hourly for the *whole* epoch's participant list, not per-page —
+see §5 point 5 and §6).
 
 ### 4.4 Sellers tab
 
@@ -138,19 +134,17 @@ Epoch #N sub-tab, per row:
 - Remove: "Joined" column.
 - Add: **Staked ANTS** — `poolEpoch(agentId, currentEpoch).activeStake`
   (Antscan, no RPC needed).
-- Add: **Potential earned ANTS** — `pendingAgentReward(agentId,
-  currentEpoch)` (seller's own usage reward; see §2 on why this excludes
-  pool/staker rewards — **open question 1**).
+- Add: **Potential earned ANTS** — usage reward (`pendingAgentReward`) +
+  pool reward if the seller's own wallet holds any stake position (§5
+  point 1).
 
-Backend: same pattern as Buyers — batched by `agentId` for the current
-page (`sellers` table already carries `agent_id` from the DHT sync).
+Implemented as `GET /api/epoch/sellers`, reading from
+`seller_epoch_rewards`, joined with the live `sellers` table (by
+`agent_id`) for display name.
 
 ### 4.5 Services tab
 
-Blocked on **open question 2** — I don't have a concrete, cheap, accurate
-plan for this one the way I do for Buyers/Sellers/Overview. Once you
-confirm what "current epoch" should mean for a live catalog (see the
-question), I'll fill this section in properly rather than guess.
+Dropped — no epoch sub-tab for Services (§5 point 2).
 
 ### 4.6 Tokenomics
 
@@ -169,49 +163,76 @@ epoch, no formula reimplementation needed) as a concrete "here's the total
 pool being split this epoch" number above the per-user estimates on the
 Buyers/Sellers tabs.
 
-## 5. Open questions (need your answer before I implement)
+## 5. Decisions (answered 2026-09-15, before implementation)
 
-1. **Seller "potential earned ANTS" — usage reward only, or usage + pool
-   reward if the seller also happens to stake in their own pool?** I'm
-   proposing usage-only (see §2) since pool rewards aren't really "the
-   seller's" in general. If you want pool rewards included when the seller
-   IS also a staker in their own pool, that's a bit more work (checking
-   whether the seller's own address holds any stake positions in that
-   pool) — let me know.
-2. **Services — what should "current epoch" mean here?** Given there's no
-   clean per-epoch service entity (§3), pick one: (a) drop the epoch
-   sub-tab for Services entirely and only do it for Overview/Buyers/
-   Sellers/Tokenomics; (b) show per-service volume/requests for the
-   current epoch anyway, accepting it'll be a heavier, more cached, maybe
-   periodic-batch-computed number rather than live-on-every-request; (c)
-   something else you have in mind that I'm missing.
-3. **Overview's current-epoch row — 3 cards (buyers/sellers/volume) or 4
-   with a caveated services number?** See §4.1 — leaning toward 3 unless
-   you'd rather see a non-epoch-scoped services count sitting next to
-   epoch-scoped numbers with a clear label.
-4. **Any wallet address whose current-epoch numbers I should sanity-check
-   `pendingBuyerReward`/`pendingAgentReward` against before wiring this up
-   for real?** (e.g. one of your two seller agent IDs — 51642 or 47218 —
-   or a buyer address you know has settled volume this epoch.) I'd rather
-   verify against a known real case than assume the contract behaves
-   exactly as documented for a still-open epoch.
+1. **Seller "potential earned ANTS" includes both usage reward and pool
+   reward** (if the address holds any stake position, in any pool) — same
+   treatment as buyers. Implemented as: usage reward
+   (`pendingBuyerReward`/`pendingAgentReward`, exact on-chain) + pool
+   reward (`previewStakerRewards` summed over that address's currently-open
+   lANTS positions, exact on-chain preview, no reimplemented formula) —
+   shown as one combined "Potential ANTS" figure.
+2. **No epoch sub-tab for Services** — dropped entirely, per §3/§4.5's
+   analysis (no clean per-epoch service entity to build it on).
+3. **Overview's current-epoch row is 3 cards** — buyers/sellers/volume,
+   no services number.
+4. **No specific address needed to sanity-check against** — verified
+   instead against real, already-public epoch-22 participant data pulled
+   live from Antscan during implementation (not tied to any one person's
+   wallet). Confirmed both `pendingBuyerReward`/`pendingAgentReward` and
+   `previewStakerRewards` return real, live, non-zero numbers for the
+   still-open current epoch, as designed.
+5. **Refresh cadence: hourly**, not the 60s originally proposed in §4.3 —
+   these are "how's my week going" numbers, not numbers that need to feel
+   live-live. Implemented as a background poller
+   (`startEpochRewardsPoller`, `backend/server.js`), not a per-request
+   computation — keeps page loads fast and RPC usage low regardless of
+   traffic.
+6. **Sub-tab order: Epoch #N first (default), Total second** — on both
+   Buyers and Sellers, reflecting that this is what most visitors care
+   about first.
+7. **No per-tab "estimates, not final" banner** — the explanation lives in
+   a new About page section instead (see §7), plus per-column info-icon
+   tooltips (existing pattern, e.g. `StatsCards.jsx`'s `.stat-info-icon`)
+   on Points/Potential ANTS/Staked ANTS specifically.
 
-## 6. Implementation order (once approved)
+## 6. Implementation order (as executed)
 
-1. `backend/antscan.js`: add `fetchBuyerEpoch(buyer, epoch)` /
-   `fetchSellerEpoch(seller, epoch)` / `fetchStakingEpoch(epoch)` /
-   `fetchPoolEpoch(agentId, epoch)` — batched/plural variants where Antscan
-   supports an `_in` filter, to avoid one GraphQL round-trip per row.
-2. `backend/server.js`: current-epoch reward endpoints for Buyers/Sellers
-   (multicall-batched `pendingBuyerReward`/`pendingAgentReward`), short-TTL
-   cached; extend `computeTokenomics()` with the usage effective-share
-   calc; extend `/api/stats` (or add a sibling) with the current-epoch
-   Overview numbers from `epoch_metrics`.
-3. Frontend: `HistoryCharts.jsx` epoch tab (data already fetched, just not
-   rendered); `BuyersList.jsx`/`SellersList.jsx` sub-tab toggle + new/
-   removed columns; `Overview.jsx` epoch card row; `TokenomicsTab.jsx`
-   usage effective-share display. All new copy needs `en.js`/`zh.js`
-   entries per `AGENTS.md`.
-4. Services, once open question 2 is answered.
+1. `backend/antscan.js`: added `fetchBuyerEpochs(epoch)` /
+   `fetchSellerEpochs(epoch)` / `fetchPoolEpochs(epoch)` /
+   `fetchOpenStakePositions()` / `fetchStakingEpoch(epoch)`, and extended
+   `fetchAllPaged` to accept an optional `where` clause.
+2. `backend/database.js`: added `buyer_epoch_rewards` / `seller_epoch_rewards` tables.
+3. `backend/server.js`: `syncCurrentEpochRewards()` (batches usage reward via
+   the existing `multicallView` + `usageRewardsViewIface`, and pool reward
+   via `sellerPoolsRewardsClient.previewStakerRewards`), `GET
+   /api/epoch/buyers` / `GET /api/epoch/sellers` (paginated, searchable,
+   matching the existing `/api/history/buyers` shape), `POST
+   /api/admin/force-epoch-rewards-sync`; extended `/api/stats` with a
+   `currentEpoch` block; extended `computeTokenomics()`'s `usage` section
+   with live effective-share + on-chain epoch budgets.
+4. Frontend: `HistoryCharts.jsx` now labels its existing epoch tab
+   dynamically ("Epoch #N"); `EpochStatsCards.jsx` (new) for the Overview
+   epoch row; `BuyersList.jsx`/`SellersList.jsx` rewritten with an
+   Epoch/Total sub-tab toggle (`SellersList.jsx` also gained its own
+   paginated fetch for epoch mode, since the Total tab's `sellers` prop
+   from `App.jsx` has no epoch dimension); `TokenomicsTab.jsx` usage-share
+   cards now show a live effective % (was range-only) plus the epoch's
+   ANTS budget; `About.jsx` gained an "Epoch Data" section explaining the
+   hourly refresh and what "not finalized" means. All new copy has
+   `en.js`/`zh.js` entries.
+5. Verified end-to-end against the live production process (restarted
+   locally, both `dist`/`dist-root` builds, before pushing) — real
+   non-zero points/rewards/stake confirmed via `/api/epoch/buyers`,
+   `/api/epoch/sellers`, `/api/stats`, `/api/tokenomics`.
 
-I have **not** started implementation — this is the plan for your review.
+## 7. Notable implementation finding (not a bug)
+
+`pendingBuyerReward`/`pendingAgentReward` are subject to a real, on-chain
+per-participant cap: `UsageRewardsClient.maxRewardShareBps()` = 500 (5% of
+that side's epoch budget). With only 69 buyers / 16 sellers recognized in
+epoch 22 so far, several participants' raw point-proportional share already
+exceeds 5%, so they clamp to the *same* capped value — which is why several
+rows can show an identical "Potential ANTS" figure right now. This is
+correct, verified on-chain behavior, not a display bug; it'll naturally
+show more variation as epoch participation grows.

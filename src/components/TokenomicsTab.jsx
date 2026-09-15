@@ -322,14 +322,33 @@ function TokenomicsTab() {
             </div>
             {usage && (
               <div className="stat-card">
-                <div className="stat-title">Usage rewards share (seller)</div>
-                <div className="stat-value">{pct(usage.sellerMinSharePct)}–{pct(usage.sellerMaxSharePct)}</div>
-                <div className="stat-change">buyer: {pct(usage.buyerMinSharePct)}–{pct(usage.buyerMaxSharePct)}</div>
+                <div className="stat-title">{t('tokenomics.buyerUsageShare')}</div>
+                <div className="stat-value">{pct(usage.buyerEffectiveSharePct)}</div>
+                <div className="stat-change">
+                  {t('tokenomics.stakerShareRange')}: {pct(usage.buyerMinSharePct)}–{pct(usage.buyerMaxSharePct)}
+                </div>
+              </div>
+            )}
+            {usage && (
+              <div className="stat-card">
+                <div className="stat-title">{t('tokenomics.sellerUsageShare')}</div>
+                <div className="stat-value">{pct(usage.sellerEffectiveSharePct)}</div>
+                <div className="stat-change">
+                  {t('tokenomics.stakerShareRange')}: {pct(usage.sellerMinSharePct)}–{pct(usage.sellerMaxSharePct)}
+                </div>
               </div>
             )}
           </div>
         ) : (
           <div className="empty-state">{t('tokenomics.unavailable')}</div>
+        )}
+        {usage && (usage.buyerEpochBudgetAnts != null || usage.sellerEpochBudgetAnts != null) && (
+          <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '1rem' }}>
+            {t('tokenomics.epochBudget', {
+              buyer: usage.buyerEpochBudgetAnts != null ? compact(usage.buyerEpochBudgetAnts) : '—',
+              seller: usage.sellerEpochBudgetAnts != null ? compact(usage.sellerEpochBudgetAnts) : '—',
+            })}
+          </p>
         )}
       </div>
 

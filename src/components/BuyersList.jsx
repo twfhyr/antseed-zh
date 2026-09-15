@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Search, Loader2 } from 'lucide-react';
-import { fetchHistoryBuyers } from '../api';
+import { Search, Loader2, Info } from 'lucide-react';
+import { fetchHistoryBuyers, fetchEpochBuyers } from '../api';
 import { useI18n } from '../i18n/index.jsx';
 
 const PAGE_SIZE = 100;
@@ -15,20 +15,44 @@ function usd(v) {
   return `$${Number(v).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
 }
 
+function fmtAnts(wei) {
+  if (wei == null) return '—';
+  return (Number(wei) / 1e18).toLocaleString(undefined, { maximumFractionDigits: 2 });
+}
+
+/** Sums two wei-string amounts (nullable) without precision loss. */
+function sumWei(a, b) {
+  if (a == null && b == null) return null;
+  return ((a != null ? BigInt(a) : 0n) + (b != null ? BigInt(b) : 0n)).toString();
+}
+
+function InfoTip({ text }) {
+  return (
+    <span className="stat-info-icon" tabIndex={0} style={{ marginLeft: '0.3rem' }}>
+      <Info size={12} />
+      <span className="stat-info-tooltip" role="tooltip">{text}</span>
+    </span>
+  );
+}
+
 /**
  * Buyers are soft-loaded a page at a time as the user scrolls, rather than
- * pulling all ~1150 rows (and mounting ~1150 table rows) on tab open.
- * Search is sent to the server so it matches across ALL buyers, not just the
- * pages fetched so far.
+ * pulling all rows (and mounting that many table rows) on tab open. Search
+ * is sent to the server so it matches across ALL buyers, not just the pages
+ * fetched so far. Two sub-tabs share this pagination/scroll machinery:
+ * "Epoch #N" (default — what most visitors care about, see
+ * notes/epoch-features-plan.md) and "Total" (all-time).
  */
 function BuyersList() {
   const { t } = useI18n();
+  const [mode, setMode] = useState('epoch'); // 'epoch' | 'total'
+  const [epochNumber, setEpochNumber] = useState(null);
   const [buyers, setBuyers] = useState([]);
   const [total, setTotal] = useState(null);
   const [hasMore, setHasMore] = useState(false);
   const [search, setSearch] = useState('');
   const [query, setQuery] = useState('');   // debounced value actually sent
-  const [loading, setLoading] = useState(true);      // first page / new search
+  const [loading, setLoading] = useState(true);      // first page / new search / mode switch
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState(null);
   const sentinelRef = useRef(null);
@@ -36,35 +60,38 @@ function BuyersList() {
   // updates are async, so `loadingMore` alone can let two fetches through.
   const inFlight = useRef(false);
 
+  const fetchPage = mode === 'epoch' ? fetchEpochBuyers : fetchHistoryBuyers;
+
   // Debounce typing so we don't issue a request per keystroke.
   useEffect(() => {
     const id = setTimeout(() => setQuery(search.trim()), 300);
     return () => clearTimeout(id);
   }, [search]);
 
-  // Load the first page whenever the (debounced) search term changes.
+  // Load the first page whenever the (debounced) search term or sub-tab changes.
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    fetchHistoryBuyers({ limit: PAGE_SIZE, offset: 0, q: query })
+    fetchPage({ limit: PAGE_SIZE, offset: 0, q: query })
       .then((page) => {
         if (cancelled) return;
         setBuyers(page.items || []);
         setTotal(page.total ?? null);
         setHasMore(Boolean(page.hasMore));
+        if (page.epoch != null) setEpochNumber(page.epoch);
       })
       .catch((e) => { if (!cancelled) setError(e.message); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [query]);
+  }, [query, mode]);
 
   const loadMore = useCallback(async () => {
     if (inFlight.current || loading || !hasMore) return;
     inFlight.current = true;
     setLoadingMore(true);
     try {
-      const page = await fetchHistoryBuyers({
+      const page = await fetchPage({
         limit: PAGE_SIZE,
         offset: buyers.length,
         q: query,
@@ -84,7 +111,7 @@ function BuyersList() {
       inFlight.current = false;
       setLoadingMore(false);
     }
-  }, [buyers.length, hasMore, loading, query]);
+  }, [buyers.length, hasMore, loading, query, fetchPage]);
 
   // Infinite scroll via IntersectionObserver on a sentinel row.
   useEffect(() => {
@@ -99,6 +126,8 @@ function BuyersList() {
   }, [loadMore, hasMore]);
 
   const shown = buyers.length;
+  const colSpan = mode === 'epoch' ? 4 : 5;
+  const epochLabel = t('tabs.epoch', { n: epochNumber ?? '…' });
 
   return (
     <div className="table-container">
@@ -121,21 +150,38 @@ function BuyersList() {
           />
         </div>
       </div>
+      <div style={{ display: 'flex', gap: '0.5rem', padding: '0 0 1rem' }}>
+        <button type="button" className={`tab ${mode === 'epoch' ? 'active' : ''}`} onClick={() => setMode('epoch')}>
+          {epochLabel}
+        </button>
+        <button type="button" className={`tab ${mode === 'total' ? 'active' : ''}`} onClick={() => setMode('total')}>
+          {t('tabs.total')}
+        </button>
+      </div>
       <table className="table">
         <thead>
-          <tr>
-            <th>{t('table.address')}</th>
-            <th>{t('table.spentUsdc')}</th>
-            <th>{t('table.deposited')}</th>
-            <th>{t('table.requests')}</th>
-            <th>{t('table.firstSeen')}</th>
-          </tr>
+          {mode === 'epoch' ? (
+            <tr>
+              <th>{t('table.address')}</th>
+              <th>{t('table.points')}<InfoTip text={t('table.pointsTip')} /></th>
+              <th>{t('table.requests')}</th>
+              <th>{t('table.potentialAnts')}<InfoTip text={t('table.potentialAntsTip')} /></th>
+            </tr>
+          ) : (
+            <tr>
+              <th>{t('table.address')}</th>
+              <th>{t('table.spentUsdc')}</th>
+              <th>{t('table.deposited')}</th>
+              <th>{t('table.requests')}</th>
+              <th>{t('table.firstSeen')}</th>
+            </tr>
+          )}
         </thead>
         <tbody>
           {loading ? (
-            <tr><td colSpan="5"><div className="empty-state">{t('common.loading')}</div></td></tr>
+            <tr><td colSpan={colSpan}><div className="empty-state">{t('common.loading')}</div></td></tr>
           ) : error ? (
-            <tr><td colSpan="5"><div className="empty-state">{error}</div></td></tr>
+            <tr><td colSpan={colSpan}><div className="empty-state">{error}</div></td></tr>
           ) : buyers.map((buyer) => (
             <tr key={buyer.address}>
               <td>
@@ -146,22 +192,32 @@ function BuyersList() {
                   </div>
                 </div>
               </td>
-              <td className="price">{usd(Number(buyer.spent_usdc) / 1e6)}</td>
-              <td className="price">{usd(Number(buyer.deposited_usdc) / 1e6)}</td>
-              <td>{Number(buyer.request_count || 0).toLocaleString()}</td>
-              <td>{buyer.first_seen_at ? new Date(buyer.first_seen_at * 1000).toISOString().split('T')[0] : '—'}</td>
+              {mode === 'epoch' ? (
+                <>
+                  <td className="price">{usd(buyer.points != null ? Number(buyer.points) / 1e6 : null)}</td>
+                  <td>{Number(buyer.requests || 0).toLocaleString()}</td>
+                  <td className="price">{fmtAnts(sumWei(buyer.usage_reward_wei, buyer.pool_reward_wei))}</td>
+                </>
+              ) : (
+                <>
+                  <td className="price">{usd(Number(buyer.spent_usdc) / 1e6)}</td>
+                  <td className="price">{usd(Number(buyer.deposited_usdc) / 1e6)}</td>
+                  <td>{Number(buyer.request_count || 0).toLocaleString()}</td>
+                  <td>{buyer.first_seen_at ? new Date(buyer.first_seen_at * 1000).toISOString().split('T')[0] : '—'}</td>
+                </>
+              )}
             </tr>
           ))}
           {!loading && !error && buyers.length === 0 && (
             <tr>
-              <td colSpan="5">
-                <div className="empty-state">{t('table.noBuyers')}</div>
+              <td colSpan={colSpan}>
+                <div className="empty-state">{mode === 'epoch' ? t('table.noEpochData') : t('table.noBuyers')}</div>
               </td>
             </tr>
           )}
           {!loading && !error && loadingMore && (
             <tr>
-              <td colSpan="5">
+              <td colSpan={colSpan}>
                 <div className="empty-state loading-row">
                   <Loader2 size={15} className="spin" />
                   {t('table.loadingMore')}

@@ -94,9 +94,13 @@ function ChartState({ data, error, xKey, t }) {
   return <BreakdownChart data={data} xKey={xKey} />;
 }
 
-function HistoryCharts({ daily, epochs, dailyError, epochsError }) {
+function HistoryCharts({ daily, epochs, dailyError, epochsError, currentEpoch }) {
   const { t } = useI18n();
   const [tab, setTab] = useState('day');
+  // Falls back to the latest fetched epoch row if the caller hasn't passed
+  // the live current-epoch number yet, so the tab label isn't stuck on a
+  // loading state longer than it needs to be.
+  const epochLabelNumber = currentEpoch ?? epochs?.[epochs.length - 1]?.epoch;
 
   // Use null (not 0) when a value is genuinely unknown: recharts renders a
   // gap for null, whereas `?? 0` drew a real-looking zero bar. That mattered
@@ -135,7 +139,7 @@ function HistoryCharts({ daily, epochs, dailyError, epochsError }) {
           className={`tab ${tab === 'epoch' ? 'active' : ''}`}
           onClick={() => setTab('epoch')}
         >
-          {t('overview.byEpoch')}
+          {epochLabelNumber != null ? t('tabs.epoch', { n: epochLabelNumber }) : t('overview.byEpoch')}
         </button>
       </div>
       {tab === 'day' && <ChartState data={dailyData} error={dailyError} xKey="label" t={t} />}

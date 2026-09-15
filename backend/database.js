@@ -280,6 +280,42 @@ db.exec(`
     data TEXT NOT NULL,
     fetched_at INTEGER NOT NULL
   );
+
+  -- Current-epoch per-participant points and reward estimates (recognized-
+  -- usage era). Refreshed hourly by backend/epoch-rewards.js, not computed
+  -- per-request — see notes/epoch-features-plan.md. usage_reward_wei is the
+  -- real on-chain pendingBuyerReward/pendingAgentReward; pool_reward_wei is
+  -- the real on-chain previewStakerRewards sum for any lANTS positions the
+  -- address holds (zero for the vast majority, who don't stake). Both are
+  -- wei-string ANTS amounts, null until first successfully fetched — never
+  -- fabricated. One row per (address, epoch); old epochs' rows are kept
+  -- (not deleted) so the table also works as a light history, though only
+  -- the current epoch's row is ever refreshed.
+  CREATE TABLE IF NOT EXISTS buyer_epoch_rewards (
+    address TEXT NOT NULL,
+    epoch INTEGER NOT NULL,
+    points TEXT,
+    volume_usdc TEXT,
+    requests TEXT,
+    usage_reward_wei TEXT,
+    pool_reward_wei TEXT,
+    fetched_at INTEGER NOT NULL,
+    PRIMARY KEY (address, epoch)
+  );
+
+  CREATE TABLE IF NOT EXISTS seller_epoch_rewards (
+    address TEXT NOT NULL,
+    agent_id TEXT,
+    epoch INTEGER NOT NULL,
+    points TEXT,
+    volume_usdc TEXT,
+    requests TEXT,
+    staked_ants_wei TEXT,
+    usage_reward_wei TEXT,
+    pool_reward_wei TEXT,
+    fetched_at INTEGER NOT NULL,
+    PRIMARY KEY (address, epoch)
+  );
 `);
 }
 
