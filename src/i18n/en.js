@@ -62,6 +62,7 @@ export default {
   'overview.volume': 'Volume (USDC)',
   'overview.epochNote': 'Epoch 22 is the current (still-open) recognized-usage period; earlier epochs are final.',
   'overview.dayNote': 'Today is still in progress; earlier days are final.',
+  'overview.epochDailyNote': 'Day-by-day breakdown of just the current epoch’s ~7-day window. Today is still in progress.',
   'overview.error': 'Failed to load chart data.',
   'overview.empty': 'No data yet.',
   'overview.loading': 'Loading history…',

@@ -128,11 +128,23 @@ function currentEpochOverview() {
   const epoch = chain?.emissions?.currentEpoch;
   if (epoch == null) return null;
   const row = db.prepare('SELECT * FROM epoch_metrics WHERE epoch = ?').get(epoch);
+  // Epoch date range (unix seconds), so the frontend can show a day-by-day
+  // breakdown of just this epoch's window rather than an all-epochs
+  // aggregate. genesis/epochDuration are both already live-read by
+  // chain-poller.js; startTs is undefined (not just late) if either is
+  // missing, since a wrong range would silently mislabel days as
+  // in/out of the epoch.
+  const genesis = chain?.emissions?.genesis;
+  const duration = chain?.emissions?.epochDuration;
+  const startTs = genesis != null && duration != null ? genesis + epoch * duration : null;
+  const endTs = startTs != null && duration != null ? startTs + duration : null;
   return {
     epoch,
     buyers: row?.active_buyers ?? null,
     sellers: row?.active_sellers ?? null,
     volumeUsdc: row?.volume_usdc != null ? Number(row.volume_usdc) / 1e6 : null,
+    startTs,
+    endTs,
   };
 }
 

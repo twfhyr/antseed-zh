@@ -37,30 +37,55 @@ listed so the reasoning doesn't get lost:
 - Re-wired `ClaimANTS.jsx`, `ChannelsView.jsx`, and `ANTSInfo.jsx` as nav
   tabs in `App.jsx` (they were fully built but unreachable — no tab
   rendered them, a regression from the dashboard rewrite that dropped the
-  wallet-gated tabs without removing the components). Added a compact
-  RainbowKit `<ConnectButton>` to `Header.jsx` since Claim/Channels need a
-  connect entry point and the header previously had none (removed
-  deliberately in an earlier pass when the dashboard was public-read-only
-  only). Registered the three new tab paths in
-  `src/hooks/useTabRouter.js`'s `TAB_PATHS`/`VALID_TABS` — a new tab added
-  to `App.jsx` without a matching entry there silently falls back to
-  `overview` on direct navigation/reload.
+  wallet-gated tabs without removing the components), plus a header
+  `<ConnectButton>`. **Reversed later the same day** (see the epoch-features
+  round below): Claim ANTS / Channels and the connect button were hidden
+  again — wallet-adjacent UI is sensitive to surface by default on a
+  public dashboard. `ANTSInfo.jsx` (no wallet needed) stayed. Registered
+  the new tab paths in `src/hooks/useTabRouter.js`'s `TAB_PATHS` when
+  adding tabs — a tab in `App.jsx` without a matching entry there silently
+  falls back to `overview` on direct navigation/reload; this cuts both
+  ways when removing a tab too, remember to remove the entry there as well
+  (done for `claim`/`channels`).
+
+### Epoch-features round (same day, follow-up review)
+
+- Overview's Epoch/Total distinction was unclear when both stat-card rows
+  rendered stacked at once. Restructured to match the Buyers/Sellers
+  pattern: two top-level tabs (Epoch #N first, Total second), each
+  rendering its own stat cards + chart, not both simultaneously.
+- Clarified what the "epoch" chart view actually means: **not** an
+  all-epochs aggregate (bars per epoch, 0 through current) — that stayed
+  under Total as `HistoryCharts.jsx`'s existing "By Epoch" toggle, label
+  reverted to static. The Overview Epoch tab instead gets a new
+  `EpochDailyChart.jsx`: a day-by-day breakdown filtered to just the
+  current epoch's ~7-day window (`[startTs, endTs)`, computed
+  server-side in `currentEpochOverview()` from the live
+  genesis/epochDuration/currentEpoch — added to `/api/stats`
+  `currentEpoch.startTs`/`.endTs`), reusing `HistoryCharts.jsx`'s exported
+  `BreakdownChart`/`ChartState` instead of duplicating the chart JSX.
+- Hid Claim ANTS, Channels, and the header connect button again (see
+  above) — components and backend endpoints untouched, same "kept for
+  later, not surfaced" pattern `Header.jsx` used before this round
+  re-added them.
 
 ## Open items
 
 ### Verify in a real browser (couldn't be done headlessly this session)
 
-No browser tool was available when the Claim ANTS / Channels / $ANTS Info
-tabs were re-wired. Build succeeded, the new tab strings are present in the
-built bundle, and the API endpoints they depend on (`/api/deposits/config`,
-`/api/channels`, `/api/rewards`) respond correctly — but nobody has actually
-clicked through these tabs since the rewiring. Check for:
-- Console errors on mount (especially wagmi/RainbowKit — `ConnectButton`
-  render, `useAccount`/`useReadContracts` behavior with no wallet connected)
-- Visual fit of `ConnectButton` in the header at both `zh` and `en` widths
-- Mobile layout for all three re-wired tabs specifically (mobile responsive
-  pass was a `REWRITE_PLAN.md` action item and its general completion
-  hasn't been re-verified since these tabs came back)
+No browser tool was available in any of this day's sessions. Build
+succeeded each time, new strings are present in the built bundle, and the
+API endpoints involved respond correctly with real data (verified via
+curl/node scripts against the live chain and Antscan) — but nobody has
+actually clicked through the Overview Epoch/Total tabs, the Buyers/Sellers
+Epoch/Total sub-tabs, or `ANTSInfo.jsx` in an actual browser since these
+changes landed. Check for:
+- Console errors on mount
+- Visual fit/spacing of the new tab rows (Overview, Buyers, Sellers) and
+  the info-icon tooltips on the new epoch table columns
+- Mobile layout for the above (mobile responsive pass was a
+  `REWRITE_PLAN.md` action item and its general completion hasn't been
+  re-verified since these tabs came back)
 
 ### Orphaned backend endpoints
 

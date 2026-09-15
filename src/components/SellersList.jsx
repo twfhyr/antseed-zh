@@ -78,6 +78,7 @@ function TotalSellersTable({ sellers, search }) {
         <tr>
           <th>{t('table.node')}</th>
           <th>{t('table.totalEarned')}</th>
+          <th>{t('table.requests')}</th>
           <th>{t('table.capacity')}</th>
           <th>{t('table.models')}</th>
           <th>{t('table.joined')}</th>
@@ -102,6 +103,7 @@ function TotalSellersTable({ sellers, search }) {
               </div>
             </td>
             <td className="price">{seller.totalEarned != null ? `$${Number(seller.totalEarned).toLocaleString()}` : '—'}</td>
+            <td>{seller.totalRequests != null ? Number(seller.totalRequests).toLocaleString() : '—'}</td>
             <td>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
                 <span>{seller.capacity}</span>
@@ -116,7 +118,7 @@ function TotalSellersTable({ sellers, search }) {
         ))}
         {sorted.length === 0 && (
           <tr>
-            <td colSpan="5">
+            <td colSpan="6">
               <div className="empty-state">{t('table.noSellers')}</div>
             </td>
           </tr>
@@ -197,15 +199,16 @@ function EpochSellersTable({ query, onEpochNumber }) {
           <tr>
             <th>{t('table.node')}</th>
             <th>{t('table.points')}<InfoTip text={t('table.pointsTip')} /></th>
+            <th>{t('table.requests')}</th>
             <th>{t('table.stakedAnts')}<InfoTip text={t('table.stakedAntsTip')} /></th>
             <th>{t('table.potentialAnts')}<InfoTip text={t('table.potentialAntsTip')} /></th>
           </tr>
         </thead>
         <tbody>
           {loading ? (
-            <tr><td colSpan={4}><div className="empty-state">{t('common.loading')}</div></td></tr>
+            <tr><td colSpan={5}><div className="empty-state">{t('common.loading')}</div></td></tr>
           ) : error ? (
-            <tr><td colSpan={4}><div className="empty-state">{error}</div></td></tr>
+            <tr><td colSpan={5}><div className="empty-state">{error}</div></td></tr>
           ) : rows.map((row) => {
             const pinned = (row.address || '').toLowerCase() === PINNED_ADDRESS;
             return (
@@ -220,17 +223,18 @@ function EpochSellersTable({ query, onEpochNumber }) {
                   </div>
                 </td>
                 <td className="price">{usd(row.points != null ? Number(row.points) / 1e6 : null)}</td>
+                <td>{row.requests != null ? Number(row.requests).toLocaleString() : '—'}</td>
                 <td>{fmtAnts(row.staked_ants_wei)}</td>
                 <td className="price">{fmtAnts(sumWei(row.usage_reward_wei, row.pool_reward_wei))}</td>
               </tr>
             );
           })}
           {!loading && !error && rows.length === 0 && (
-            <tr><td colSpan={4}><div className="empty-state">{t('table.noEpochData')}</div></td></tr>
+            <tr><td colSpan={5}><div className="empty-state">{t('table.noEpochData')}</div></td></tr>
           )}
           {!loading && !error && loadingMore && (
             <tr>
-              <td colSpan={4}>
+              <td colSpan={5}>
                 <div className="empty-state loading-row">
                   <Loader2 size={15} className="spin" />
                   {t('table.loadingMore')}

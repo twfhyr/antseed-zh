@@ -62,6 +62,7 @@ export default {
   'overview.volume': '交易量（USDC）',
   'overview.epochNote': '第 22 纪元是当前（尚未结束）的认可使用周期；此前的纪元均已结算完毕。',
   'overview.dayNote': '今天的数据仍在更新；此前的日期均已结算完毕。',
+  'overview.epochDailyNote': '仅展示当前纪元约 7 天窗口内的每日明细。今天的数据仍在更新中。',
   'overview.error': '图表数据加载失败。',
   'overview.empty': '暂无数据。',
   'overview.loading': '正在加载历史数据…',

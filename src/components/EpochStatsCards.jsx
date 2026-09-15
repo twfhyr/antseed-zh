@@ -22,9 +22,9 @@ function fmtUsd(v) {
 /** Current-epoch counterpart to StatsCards — buyers/sellers/volume for the
  *  still-open current epoch, not all-time. No services card: services have
  *  no per-epoch data source (they're a live catalog snapshot, not a
- *  settlement ledger) — see notes/epoch-features-plan.md. Shown ABOVE the
- *  all-time StatsCards row, per product decision: this is what most
- *  visitors care about first. */
+ *  settlement ledger) — see notes/epoch-features-plan.md. Rendered under
+ *  Overview's own "Epoch #N" tab, which already labels it — no internal
+ *  heading here to avoid saying "Epoch #N" twice on screen. */
 function EpochStatsCards({ epoch }) {
   const { t } = useI18n();
   if (!epoch) return null;
@@ -37,9 +37,6 @@ function EpochStatsCards({ epoch }) {
 
   return (
     <div style={{ marginBottom: '0.5rem' }}>
-      <h3 style={{ fontSize: '0.9375rem', fontWeight: 600, marginBottom: '0.75rem', color: 'var(--accent)' }}>
-        {t('tabs.epoch', { n: epoch.epoch })}
-      </h3>
       <div className="stats-grid">
         {cards.map((card) => {
           const Icon = icons[card.key];
