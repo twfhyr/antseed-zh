@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "concurrently \"npm:server\" \"vite\"",
     "server": "node backend/server.js",
-    "build": "vite build",
+    "build": "node scripts/gen-build-id.cjs && vite build",
     "preview": "vite preview"
   },
   "dependencies": {

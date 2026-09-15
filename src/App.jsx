@@ -13,11 +13,16 @@ import { AuthorizedWalletProvider } from './context/AuthorizedWalletContext';
 import { useAccount } from 'wagmi';
 import { useI18n } from './i18n/index.jsx';
 import { useTabRouter, tabHref } from './hooks/useTabRouter';
+import { useBuildFreshness } from './hooks/useBuildFreshness';
 import { fetchStats, fetchBuyers, fetchSellers, fetchServices, fetchDepositsBalance, fetchDepositsConfig } from './api';
 
 function AppInner() {
 const { address } = useAccount();
 const { t } = useI18n();
+// Auto-reloads this tab when a newer build is live (checked on tab
+// refocus + a 5min fallback) — see src/hooks/useBuildFreshness.js. Added
+// so testing a deployed change doesn't require a manual hard refresh.
+useBuildFreshness();
 // URL-driven instead of plain useState: gives every tab a shareable,
 // bookmarkable link (e.g. antseed-zh.com/buyers) and makes browser
 // back/forward switch tabs. See src/hooks/useTabRouter.js.
