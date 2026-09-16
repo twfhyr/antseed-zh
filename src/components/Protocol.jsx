@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useI18n } from '../i18n/index.jsx';
-import { stackDiagram, requestFlowDiagram, paymentChannelDiagram } from '../data/protocolDiagrams';
+import { stackDiagram, paymentChannelDiagram } from '../data/protocolDiagrams';
+import RequestFlowAnimation from './RequestFlowAnimation';
 
 const SECTIONS = ['intro', 'layers', 'flow', 'payments', 'rewards'];
 const LAYER_KEYS = ['discovery', 'transport', 'metering', 'payments', 'reputation'];
@@ -153,7 +154,7 @@ function Protocol() {
         <div className="table-container about-section" data-section="flow" ref={setRef('flow')}>
           <h3>{t('protocol.flowTitle')}</h3>
           <p>{t('protocol.flowP1')}</p>
-          <MermaidDiagram id="protocol-request-flow" source={requestFlowDiagram(t)} summary={t('protocol.diagramRequestSummary')} />
+          <RequestFlowAnimation t={t} />
         </div>
 
         <div className="table-container about-section" data-section="payments" ref={setRef('payments')}>
