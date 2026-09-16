@@ -36,31 +36,6 @@ function compact(n) {
 // unambiguous even for adjacent slices, unlike a monochrome accent ramp.
 const ALLOC_COLORS = ['#10B981', '#3B82F6', '#D79627', '#EC4899', '#8B5CF6', '#EF4444', '#06B6D4'];
 
-const CONTRACT_LABELS = {
-  usdc: 'USDC',
-  registry: 'AntseedRegistry',
-  deposits: 'AntseedDeposits',
-  channels: 'AntseedChannels',
-  stats: 'AntseedStats',
-  antsToken: 'ANTSToken',
-  identityRegistry: 'IdentityRegistry (ERC-8004)',
-  freeUsage: 'AntseedFreeUsage',
-  depositRelay: 'AntseedDepositRelay',
-  legacyStaking: 'Legacy USDC Staking',
-  legacyEmissionsV2: 'Legacy Emissions (V2)',
-  legacyEmissionsV1: 'Legacy Emissions (V1)',
-  emissionsGate: 'AntseedEmissionsGate',
-  sellerPools: 'AntseedSellerPools',
-  sellerRegistry: 'AntseedSellerRegistry',
-  positionInit: 'AntseedPositionInit',
-  usageAccounting: 'AntseedUsageAccounting',
-  usageRewards: 'AntseedUsageRewards',
-  sellerPoolsRewards: 'AntseedSellerPoolsRewards',
-  washTradingRegistry: 'AntseedWashTradingRegistry',
-  pointsPolicyRegistry: 'AntseedPointsPolicyRegistry',
-  legacyEmissionsEscrow: 'AntseedLegacyEmissionsEscrow',
-};
-
 function AllocationPieChart({ items }) {
   const chartData = items.map((item) => ({ name: item.name, value: item.sharePct || 0 }));
   return (
@@ -357,15 +332,6 @@ function PointsSection({ title, color, formula, steps, notes }) {
   );
 }
 
-function ContractRow({ name, address }) {
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', background: 'var(--bg-secondary)', padding: '0.75rem 1rem', borderRadius: '8px' }}>
-      <span style={{ fontSize: '0.75rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-secondary)', minWidth: '200px' }}>{name}</span>
-      <code style={{ fontSize: '0.8rem', color: 'var(--text-primary)', fontFamily: 'monospace' }}>{address}</code>
-    </div>
-  );
-}
-
 function RewardsMechanicsTab({ t, chainData, loading, error }) {
   if (loading) {
     return <div className="table-container"><div className="empty-state">{t('tokenomics.loading')}</div></div>;
@@ -406,15 +372,6 @@ function RewardsMechanicsTab({ t, chainData, loading, error }) {
           </div>
         </div>
       )}
-
-      <div className="table-container" style={{ padding: '1.5rem' }}>
-        <h3 style={{ fontSize: '1.125rem', fontWeight: 600, marginBottom: '1rem' }}>{t('ants.contractsTitle')}</h3>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-          {cd.contracts && Object.entries(cd.contracts).map(([key, addr]) => (
-            addr ? <ContractRow key={key} name={CONTRACT_LABELS[key] || key} address={addr} /> : null
-          ))}
-        </div>
-      </div>
 
       <div className="table-container" style={{ padding: '1.5rem' }}>
         <h3 style={{ fontSize: '1.125rem', fontWeight: 600, marginBottom: '1rem' }}>{t('ants.dynamicSharesTitle')}</h3>

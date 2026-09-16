@@ -260,7 +260,6 @@ export default {
   'ants.verifiedBadge': '链上已验证 —— 直接从 Base 主网智能合约读取',
   'ants.eraBannerTitle': '认可使用量纪元 —— 自第 {epoch} 纪元起生效',
   'ants.eraBannerBody': 'ANTS 奖励与实际付费服务及卖家资金池质押挂钩：使用量积分来自已结算的 USDC 交易量，质押者则从锁定的 ANTS（lANTS）仓位中获得资金池奖励。第 0 至 {boundary} 纪元仍可作为旧版发行领取。',
-  'ants.contractsTitle': '合约地址（Base）',
   'ants.dynamicSharesTitle': '动态奖励份额',
   'ants.dynamicSharesIntro': '卖家资金池与使用量的份额上限并非固定发放比例 —— 实际份额会随网络参与度平滑变化。计算方式如下：',
   'ants.shareFormula': 'share = minimum + (maximum − minimum) × input / (input + target)',

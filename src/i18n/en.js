@@ -264,7 +264,6 @@ export default {
   'ants.verifiedBadge': 'Verified on-chain — directly read from Base mainnet smart contracts',
   'ants.eraBannerTitle': 'Recognized usage era — active since epoch {epoch}',
   'ants.eraBannerBody': 'ANTS rewards connect to paid service delivery and seller-pool stake: usage points are earned through settled USDC volume, and stakers earn pool rewards on locked ANTS (lANTS) positions. Epochs 0–{boundary} remain claimable as legacy emissions.',
-  'ants.contractsTitle': 'Contract Addresses (Base)',
   'ants.dynamicSharesTitle': 'Dynamic Reward Shares',
   'ants.dynamicSharesIntro': 'The seller-pool and usage ceilings are not fixed payouts — their effective shares scale smoothly with network participation. Each share follows:',
   'ants.shareFormula': 'share = minimum + (maximum − minimum) × input / (input + target)',
