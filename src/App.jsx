@@ -3,8 +3,7 @@ import SellersList from './components/SellersList';
 import ServicesList from './components/ServicesList';
 import BuyersList from './components/BuyersList';
 import Protocol from './components/Protocol';
-import TokenomicsTab from './components/TokenomicsTab';
-import ANTSInfo from './components/ANTSInfo';
+import AntsTokenomics from './components/AntsTokenomics';
 import Overview from './components/Overview';
 import About from './components/About';
 import Header from './components/Header';
@@ -151,19 +150,17 @@ return (
           >
             {t('nav.protocol')}
           </a>
+          {/* Single nav item for what used to be two separate tabs
+              (Tokenomics + $ANTS Info) — see docs/PROTOCOL_SECTION_PLAN.md
+              §2. 'ants-info' stays a valid, unlinked URL alias below so old
+              bookmarks/shared links still resolve, defaulting to the
+              Rewards sub-tab instead of Supply & Allocation. */}
           <a
             href={tabHref('tokenomics')}
-            className={`tab ${activeTab === 'tokenomics' ? 'active' : ''}`}
+            className={`tab ${(activeTab === 'tokenomics' || activeTab === 'ants-info') ? 'active' : ''}`}
             onClick={(e) => { e.preventDefault(); setActiveTab('tokenomics'); }}
           >
-            {t('nav.tokenomics')}
-          </a>
-          <a
-            href={tabHref('ants-info')}
-            className={`tab ${activeTab === 'ants-info' ? 'active' : ''}`}
-            onClick={(e) => { e.preventDefault(); setActiveTab('ants-info'); }}
-          >
-            {t('nav.antsInfo')}
+            {t('nav.antsTokenomics')}
           </a>
           {/* Claim ANTS / Channels tabs and the header wallet-connect button
               are deliberately not surfaced — both need a connected wallet,
@@ -187,8 +184,8 @@ return (
         {activeTab === 'sellers' && <SellersList sellers={sellers} />}
         {activeTab === 'services' && <ServicesList services={services} />}
         {activeTab === 'protocol' && <Protocol />}
-        {activeTab === 'tokenomics' && <TokenomicsTab />}
-        {activeTab === 'ants-info' && <ANTSInfo />}
+        {activeTab === 'tokenomics' && <AntsTokenomics defaultSubTab="supply" />}
+        {activeTab === 'ants-info' && <AntsTokenomics defaultSubTab="rewards" />}
         {activeTab === 'about' && <About />}
       </main>
       <DepositModal isOpen={depositOpen} onClose={() => setDepositOpen(false)} buyerAddress={buyerAddress} />
