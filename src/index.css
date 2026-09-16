@@ -1116,6 +1116,167 @@ text-decoration: underline;
 }
 }
 
+/* ── Protocol page ── */
+
+/* Request-flow animation (src/components/RequestFlowAnimation.jsx) */
+.protocol-flow-anim {
+  margin-top: 1rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 1rem 1rem 1.25rem;
+}
+
+.protocol-flow-anim__svg {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.protocol-flow-anim__line {
+  fill: none;
+  stroke-width: 2;
+  transition: stroke-width 0.3s var(--ease), opacity 0.3s var(--ease);
+  opacity: 0.35;
+}
+
+.protocol-flow-anim__line.active {
+  stroke-width: 2.75;
+  opacity: 1;
+}
+
+.protocol-flow-anim__node-label {
+  fill: var(--text-primary);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.protocol-ant__legs line {
+  stroke: var(--text-secondary);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+}
+
+.protocol-mound__hill {
+  fill: var(--bg-primary);
+  stroke: var(--border);
+  stroke-width: 2;
+  transition: fill 0.3s var(--ease), stroke 0.3s var(--ease), filter 0.3s var(--ease);
+}
+
+.protocol-mound__hole {
+  fill: var(--bg-secondary);
+}
+
+.protocol-mound.active .protocol-mound__hill {
+  fill: var(--accent-dim);
+  stroke: var(--accent);
+  filter: drop-shadow(0 0 6px var(--accent-glow));
+}
+
+.protocol-flow-anim__dot {
+  filter: drop-shadow(0 0 4px var(--accent-glow));
+}
+
+.protocol-flow-anim__badge-circle {
+  fill: var(--clay);
+  animation: protocol-flow-badge-pop 0.4s var(--ease);
+}
+
+.protocol-flow-anim__badge-star {
+  fill: #001408;
+  font-size: 14px;
+  animation: protocol-flow-badge-pop 0.4s var(--ease);
+}
+
+@keyframes protocol-flow-badge-pop {
+  from { opacity: 0; transform: scale(0.4); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .protocol-flow-anim__badge-circle,
+  .protocol-flow-anim__badge-star {
+    animation: none;
+  }
+}
+
+.protocol-flow-anim__caption {
+  margin-top: 0.875rem;
+  display: grid;
+  gap: 0.25rem;
+  min-height: 3.2em;
+}
+
+.protocol-flow-anim__caption strong {
+  font-size: 0.9375rem;
+}
+
+.protocol-flow-anim__caption span {
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+.protocol-flow-anim__controls {
+  margin-top: 0.875rem;
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  flex-wrap: wrap;
+}
+
+.protocol-flow-anim__playbtn {
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.protocol-flow-anim__playbtn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.protocol-flow-anim__steps {
+  display: flex;
+  gap: 0.375rem;
+  flex-wrap: wrap;
+}
+
+.protocol-flow-anim__step {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  border: 1px solid var(--border);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  border-radius: var(--radius-pill);
+  padding: 0.3rem 0.625rem;
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: all 0.2s var(--ease);
+}
+
+.protocol-flow-anim__step.done {
+  color: var(--text-primary);
+  border-color: var(--border);
+}
+
+.protocol-flow-anim__step.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #001408;
+  font-weight: 600;
+}
+
 @media (max-width: 768px) {
 .about-layout {
   grid-template-columns: 1fr;
