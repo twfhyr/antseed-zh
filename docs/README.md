@@ -90,7 +90,7 @@ Express Server (PORT 3001)
 | src/components/BuyersList.jsx | Searchable, paginated on-chain buyers table |
 | src/components/SellersList.jsx | Searchable sellers table (live DHT + on-chain earned) |
 | src/components/ServicesList.jsx | Searchable/filterable services table |
-| src/components/Protocol.jsx | Protocol tab: five-layer explainer + live Mermaid diagrams |
+| src/components/Protocol.jsx | Protocol tab: intro copy + the animated workflow diagram (ProtocolAnimation.jsx) |
 | src/components/AntsTokenomics.jsx | ANTS & Tokenomics tab (two sub-tabs): supply/allocation pie charts + dynamic staker/usage shares, and on-chain contract addresses + reward-mechanics explainer |
 | src/components/ClaimANTS.jsx | Five-bucket rewards view + wallet claim flows |
 | src/components/ChannelsView.jsx | Payment channels: list, requestClose, withdraw |

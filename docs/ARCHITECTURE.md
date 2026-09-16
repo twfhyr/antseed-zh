@@ -80,8 +80,9 @@ App.jsx (useTabRouter → one tab active at a time)
   ├─ BuyersList   ← /api/history/buyers (paginated, on-chain)
   ├─ SellersList  ← sellers array (live DHT + on-chain earned)
   ├─ ServicesList ← services array + search + category filter
-  ├─ Protocol     ← static protocol-mechanics copy + live Mermaid diagrams
-  │                 (no backend calls — see docs/PROTOCOL_SECTION_PLAN.md)
+  ├─ Protocol     ← one animated SVG workflow diagram (ProtocolAnimation.jsx)
+  │                 + static intro copy (no backend calls, no Mermaid — see
+  │                 docs/PROTOCOL_SECTION_PLAN.md)
   ├─ AntsTokenomics ← /api/tokenomics (Supply & Allocation sub-tab: supply,
   │                 allocation pies, dynamic shares) + /api/chain-stats
   │                 (Rewards & How It Works sub-tab: epoch clock, contract

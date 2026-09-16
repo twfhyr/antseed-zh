@@ -6,14 +6,18 @@ only for what's still open).
 
 ## Recently fixed (2026-09-16 session)
 
-- Added a new **Protocol** tab (`src/components/Protocol.jsx`) explaining
-  the AntSeed protocol's five layers in plain language, with three
-  Mermaid diagrams rendered live client-side (text-defined, never exported
-  images) — see `docs/PROTOCOL_SECTION_PLAN.md`. `mermaid` is loaded via
-  dynamic `import()` only inside that one component so it doesn't add to
-  the bundle every other tab ships. Its dependency tree is heavy enough
-  that it OOM'd the default Vite/Rollup build on this host — `build` in
-  `package.json` now sets `NODE_OPTIONS=--max-old-space-size=3072`.
+- Added a new **Protocol** tab (`src/components/Protocol.jsx`) — a single
+  focused page: a short ant-colony-framed intro plus one animated diagram
+  of the whole request workflow (`src/components/ProtocolAnimation.jsx`).
+  Discovery/request/response/payment/reputation each get their own step;
+  request and response travel on two visually distinct lanes (own color,
+  own arrowhead) instead of one path reused both directions; Buyer/Seller
+  are hand-built SVG ants, the DHT a small mound, and a settled USDC
+  payment travels as a seed instead of a plain dot. Plain SVG/CSS/SMIL —
+  no image asset, no new dependency. (This went through a Mermaid-diagrams
+  version first — see `docs/PROTOCOL_SECTION_PLAN.md` for that original
+  plan — before becoming the single animation described here; `mermaid`
+  was added then removed again, so it's not a dependency of this repo.)
 - Merged `TokenomicsTab.jsx` + `ANTSInfo.jsx` into
   `src/components/AntsTokenomics.jsx` — one "ANTS & Tokenomics" nav item
   with two sub-tabs (Supply & Allocation / Rewards & How It Works),
