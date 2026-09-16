@@ -90,10 +90,10 @@ Express Server (PORT 3001)
 | src/components/BuyersList.jsx | Searchable, paginated on-chain buyers table |
 | src/components/SellersList.jsx | Searchable sellers table (live DHT + on-chain earned) |
 | src/components/ServicesList.jsx | Searchable/filterable services table |
-| src/components/TokenomicsTab.jsx | Supply, allocation pie charts, dynamic staker/usage shares |
+| src/components/Protocol.jsx | Protocol tab: five-layer explainer + live Mermaid diagrams |
+| src/components/AntsTokenomics.jsx | ANTS & Tokenomics tab (two sub-tabs): supply/allocation pie charts + dynamic staker/usage shares, and on-chain contract addresses + reward-mechanics explainer |
 | src/components/ClaimANTS.jsx | Five-bucket rewards view + wallet claim flows |
 | src/components/ChannelsView.jsx | Payment channels: list, requestClose, withdraw |
-| src/components/ANTSInfo.jsx | On-chain ANTS data, contract addresses, reward-mechanics explainer |
 | src/components/About.jsx | Node showcase (this seller's peer info, connection guide) |
 | vite.config.js | Vite config; `BUILD_TARGET=root` switches base path + outDir (see README Deployment) |
 | package.json | dev script uses concurrently to run both servers |

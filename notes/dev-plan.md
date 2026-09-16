@@ -1,8 +1,30 @@
 # Dev Plan — Live Backlog
 
-Last reviewed: 2026-09-15. Keep this current — mark items done and remove
+Last reviewed: 2026-09-16. Keep this current — mark items done and remove
 them (git history is the record of what was done and when; this file is
 only for what's still open).
+
+## Recently fixed (2026-09-16 session)
+
+- Added a new **Protocol** tab (`src/components/Protocol.jsx`) explaining
+  the AntSeed protocol's five layers in plain language, with three
+  Mermaid diagrams rendered live client-side (text-defined, never exported
+  images) — see `docs/PROTOCOL_SECTION_PLAN.md`. `mermaid` is loaded via
+  dynamic `import()` only inside that one component so it doesn't add to
+  the bundle every other tab ships. Its dependency tree is heavy enough
+  that it OOM'd the default Vite/Rollup build on this host — `build` in
+  `package.json` now sets `NODE_OPTIONS=--max-old-space-size=3072`.
+- Merged `TokenomicsTab.jsx` + `ANTSInfo.jsx` into
+  `src/components/AntsTokenomics.jsx` — one "ANTS & Tokenomics" nav item
+  with two sub-tabs (Supply & Allocation / Rewards & How It Works),
+  closing the overlap this file used to flag below. `ANTSInfo`'s own
+  supply/epoch stat cards and flat allocation list were dropped (fully
+  redundant with the pies `TokenomicsTab` already had); its unique content
+  (contract list, dynamic-share explainer, the four "how rewards are
+  earned" blocks, "how to earn" cards) survived and got full `en.js`/
+  `zh.js` i18n treatment for the first time. `/tokenomics` and `/ants-info`
+  both still resolve (no dead links), defaulting to the Supply and Rewards
+  sub-tab respectively.
 
 ## Recently fixed (2026-09-15 session)
 
@@ -114,26 +136,17 @@ engineering one.
 
 ### Re-wired tabs are English-only (no i18n)
 
-`ClaimANTS.jsx`, `ChannelsView.jsx`, and `ANTSInfo.jsx` don't import
-`useI18n()` at all — every string in all three is hardcoded English. This
-predates this session (the i18n pass that added `src/i18n/` apparently
-covered only the tabs that were reachable at the time) but is now a real,
-user-facing gap since these three are reachable tabs again in a
-zh-default app. Not fixed this session — translating ~1,700 lines of
-mixed prose/labels/error messages accurately needs either a native
-reviewer or a dedicated pass, not a rushed mechanical one. Worth doing as
-its own piece of work, following the existing `t('namespace.key')` /
-`en.js`+`zh.js` pattern the rest of the app uses.
-
-### `ANTSInfo.jsx` vs `TokenomicsTab.jsx` overlap
-
-Both show ANTS supply and emission allocation; `ANTSInfo` additionally has
-the full contract-address list and the "how rewards are earned"/"how to
-earn" explainers that `TokenomicsTab` doesn't. Now that both are reachable
-tabs (see "Recently fixed" above), worth deciding whether to keep both or
-merge `ANTSInfo`'s unique sections (contracts, explainers) into
-`TokenomicsTab` and retire the separate tab, per the "curation over
-completeness" principle from `docs/REWRITE_PLAN.md`.
+`ClaimANTS.jsx` and `ChannelsView.jsx` don't import `useI18n()` at all —
+every string in both is hardcoded English. This predates this session (the
+i18n pass that added `src/i18n/` apparently covered only the tabs that were
+reachable at the time) but is now a real, user-facing gap since these are
+reachable tabs again in a zh-default app. Not fixed this session —
+translating the mixed prose/labels/error messages accurately needs either a
+native reviewer or a dedicated pass, not a rushed mechanical one. Worth
+doing as its own piece of work, following the existing `t('namespace.key')`
+/ `en.js`+`zh.js` pattern the rest of the app uses. (`ANTSInfo.jsx` used to
+be in this same boat — it's been merged into `AntsTokenomics.jsx` and fully
+i18n'd, see "Recently fixed" below.)
 
 ### Payments P1 items (from `docs/PAYMENTS_DEMAND.md`)
 

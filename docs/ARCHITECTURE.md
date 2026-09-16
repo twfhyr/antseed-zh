@@ -80,8 +80,12 @@ App.jsx (useTabRouter → one tab active at a time)
   ├─ BuyersList   ← /api/history/buyers (paginated, on-chain)
   ├─ SellersList  ← sellers array (live DHT + on-chain earned)
   ├─ ServicesList ← services array + search + category filter
-  ├─ TokenomicsTab ← /api/tokenomics (supply, allocation pies, dynamic shares)
-  ├─ ANTSInfo     ← /api/chain-stats (supply, epoch clock, allocation, contract map, reward-mechanics explainer)
+  ├─ Protocol     ← static protocol-mechanics copy + live Mermaid diagrams
+  │                 (no backend calls — see docs/PROTOCOL_SECTION_PLAN.md)
+  ├─ AntsTokenomics ← /api/tokenomics (Supply & Allocation sub-tab: supply,
+  │                 allocation pies, dynamic shares) + /api/chain-stats
+  │                 (Rewards & How It Works sub-tab: epoch clock, contract
+  │                 map, reward-mechanics explainer)
   ├─ ClaimANTS    ← /api/rewards (five buckets) + wagmi wallet claims
   ├─ ChannelsView ← /api/channels (buyer proxy) + live channels() reads via
   │                 the address from /api/deposits/config (never hardcoded —
@@ -89,12 +93,14 @@ App.jsx (useTabRouter → one tab active at a time)
   └─ About        ← this node's own peer info + connection guide
 ```
 
-`TokenomicsTab` and `ANTSInfo` both read chain-level ANTS data and overlap
-somewhat (supply/allocation appear in both, styled differently — pie charts
-vs. a flat list); `ANTSInfo` additionally has the full contract-address list
-and the "how rewards are earned" / "how to earn" explainers that
-`TokenomicsTab` doesn't. Left as two tabs for now — see `notes/dev-plan.md`
-for the consolidation question.
+`AntsTokenomics` (`src/components/AntsTokenomics.jsx`) merges what used to
+be two separate tabs — `TokenomicsTab` and `ANTSInfo` — which both read
+chain-level ANTS data and overlapped (supply/allocation appeared in both,
+styled differently — pie charts vs. a flat list). The pies stayed once, in
+the Supply & Allocation sub-tab; `ANTSInfo`'s unique content (contract
+address list, "how rewards are earned" / "how to earn" explainers) moved
+into the Rewards & How It Works sub-tab. `/tokenomics` and `/ants-info`
+both still resolve as URLs, defaulting to Supply and Rewards respectively.
 
 ---
 
