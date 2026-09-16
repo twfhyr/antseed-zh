@@ -4,6 +4,7 @@ export default {
   'nav.buyers': 'Buyers',
   'nav.sellers': 'Sellers',
   'nav.services': 'Services',
+  'nav.protocol': 'Protocol',
   'nav.tokenomics': 'Tokenomics',
   'nav.antsInfo': '$ANTS Info',
   'nav.claim': 'Claim ANTS',
@@ -175,4 +176,77 @@ export default {
   'about.epochDataBody1': 'The "Epoch #N" views on the Overview, Buyers, and Sellers tabs show the current, still-open recognized-usage epoch — what has actually settled so far this week, not an all-time total.',
   'about.epochDataBody2': '"Points" is recognized settled volume after anti-fraud filtering. "Potential ANTS" combines a usage reward and, for addresses that also stake, a pool reward — both read directly from the reward contracts, not estimated locally. Both numbers move as the epoch progresses and are not final or claimable until the epoch actually closes.',
   'about.epochDataBody3': 'These figures are refreshed about once an hour, not on every page load — a short delay is expected and not a bug.',
+
+  // Protocol tab — copy sourced from apps/website/docs/protocol/*.md and the
+  // main monorepo's CLAUDE.md (Payment Flow section). Diagrams are Mermaid,
+  // rendered live client-side (src/components/Protocol.jsx) — the keys below
+  // ending in .diagramStack.*/.diagramRequest.*/.diagramPayment.* are node/
+  // message labels fed into src/data/protocolDiagrams.js, not prose.
+  'protocol.nav.intro': 'What Is the Protocol?',
+  'protocol.nav.layers': 'The Five Layers',
+  'protocol.nav.flow': 'One Request, End to End',
+  'protocol.nav.payments': 'How Money Moves',
+  'protocol.nav.rewards': 'Where ANTS Fits In',
+
+  'protocol.introTitle': 'What Is the AntSeed Protocol?',
+  'protocol.introP1': 'A real ant colony has no boss ant giving orders — every ant acts on its own, yet the colony gets things done. AntSeed works the same way: there is no central server, company, or app store in the middle. Independent computers ("peers") offer AI services, and other independent computers buy them, directly from each other.',
+  'protocol.introP2': 'The diagram below is the whole protocol in one picture: five layers, stacked from finding each other at the bottom to knowing who to trust at the top. Every request on AntSeed passes through all five.',
+  'protocol.diagramStackSummary': 'The five layers, bottom to top: Discovery finds a seller, Transport connects to them privately, Metering counts what was used, Payments moves the money, and Reputation records how it went.',
+
+  'protocol.layersTitle': 'The Five Layers, in Plain Language',
+  "protocol.layer.discovery.plain": "Find who's selling what — with no directory office to call.",
+  'protocol.layer.discovery.tech': 'A public BitTorrent DHT holds the service listings sellers publish; anyone can query it.',
+  'protocol.layer.transport.plain': 'Talk to that seller directly and privately.',
+  'protocol.layer.transport.tech': 'A direct, end-to-end encrypted connection opens straight to the seller — no server sits in between.',
+  'protocol.layer.metering.plain': 'Both sides keep the same receipt of what was actually used.',
+  'protocol.layer.metering.tech': 'Tokens in and out are counted, and both sides sign a metering receipt for it.',
+  'protocol.layer.payments.plain': 'Pay only for what was actually delivered, as it happens.',
+  'protocol.layer.payments.tech': 'USDC deposits back a cumulative signed voucher per request, settled on Base.',
+  "protocol.layer.reputation.plain": "A seller's track record follows them, in public.",
+  "protocol.layer.reputation.tech": "Each settlement outcome updates the seller's on-chain reputation score.",
+
+  'protocol.flowTitle': 'One Request, End to End',
+  'protocol.flowP1': 'Here is what actually happens when a buyer sends a single AntSeed request, start to finish, with no server anywhere in the middle.',
+  "protocol.diagramRequestSummary": "The buyer asks the public network who offers the needed skill, connects straight to a seller, sends the request, gets a streamed answer, both sides sign a usage receipt, the buyer signs a payment authorization, and the outcome updates the seller's reputation.",
+
+  'protocol.paymentsTitle': 'How the Money Moves',
+  "protocol.paymentsP1": "AntSeed does not send a payment for every single message — that would be slow and expensive on-chain. Instead it opens one payment channel per session and only touches the blockchain to open and close it. This is the same mechanic the About page's How Payments Work section summarizes; the diagram below adds one detail left out there — what happens if a seller stops responding.",
+  'protocol.diagramPaymentSummary': 'The buyer deposits USDC and authorizes a spending limit; the seller locks that authorization into a channel; every request updates a running total the buyer signs off on; the seller settles the channel to get paid; and if the seller ever disappears, the buyer can force the channel closed and withdraw after a 15-minute grace period.',
+
+  'protocol.rewardsTitle': 'Where $ANTS Fits In',
+  'protocol.rewardsP1': 'The Payments layer above is what a buyer pays a seller in USDC for a single request — it has nothing to do with the $ANTS token. $ANTS is a separate reward paid on top, funded by network emissions, for participating in that same activity: serving requests, buying them, or staking to back a seller. The full mechanics, supply, and how to earn $ANTS live on the Tokenomics and $ANTS Info tabs.',
+
+  // Diagram-only labels (short, feed directly into Mermaid node/message text)
+  'protocol.diagramStack.discovery': 'Discovery<br/>find sellers on a public DHT',
+  'protocol.diagramStack.transport': 'Transport<br/>direct, encrypted connection',
+  'protocol.diagramStack.metering': 'Metering<br/>count tokens, sign a receipt',
+  'protocol.diagramStack.payments': 'Payments<br/>USDC vouchers, settle on Base',
+  'protocol.diagramStack.reputation': 'Reputation<br/>settlement builds trust score',
+
+  'protocol.actors.buyer': 'Buyer',
+  'protocol.actors.dht': 'Public DHT',
+  'protocol.actors.seller': 'Seller',
+
+  'protocol.diagramRequest.step1': 'who offers this skill?',
+  'protocol.diagramRequest.step2': 'candidate sellers + reputation',
+  'protocol.diagramRequest.step3': 'connect directly (encrypted)',
+  'protocol.diagramRequest.step4': 'request + terms',
+  'protocol.diagramRequest.step5': 'streamed response',
+  'protocol.diagramRequest.note1': 'both sides count tokens and sign a metering receipt',
+  'protocol.diagramRequest.step6': 'signed SpendingAuth (cumulative total)',
+  'protocol.diagramRequest.step7': 'settle on Base (see payment-channel diagram below)',
+  'protocol.diagramRequest.note2': 'outcome updates the seller reputation score',
+
+  'protocol.diagramPayment.step1': 'deposit USDC',
+  'protocol.diagramPayment.step2': 'sign ReserveAuth (max amount, deadline)',
+  'protocol.diagramPayment.step3': 'reserve(ReserveAuth)',
+  'protocol.diagramPayment.step4': 'lockForChannel()',
+  'protocol.diagramPayment.loopLabel': 'each request',
+  'protocol.diagramPayment.step5': 'sign SpendingAuth (cumulative total)',
+  'protocol.diagramPayment.step6': 'settle() / close(latest SpendingAuth)',
+  'protocol.diagramPayment.step7': 'chargeAndCreditPayouts()',
+  'protocol.diagramPayment.altLabel': 'seller disappears',
+  'protocol.diagramPayment.step8': 'requestClose()',
+  'protocol.diagramPayment.note1': '15 min grace period',
+  'protocol.diagramPayment.step9': 'withdraw()',
 };

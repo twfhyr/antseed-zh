@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import SellersList from './components/SellersList';
 import ServicesList from './components/ServicesList';
 import BuyersList from './components/BuyersList';
+import Protocol from './components/Protocol';
 import TokenomicsTab from './components/TokenomicsTab';
 import ANTSInfo from './components/ANTSInfo';
 import Overview from './components/Overview';
@@ -144,6 +145,13 @@ return (
             {t('nav.services')}
           </a>
           <a
+            href={tabHref('protocol')}
+            className={`tab ${activeTab === 'protocol' ? 'active' : ''}`}
+            onClick={(e) => { e.preventDefault(); setActiveTab('protocol'); }}
+          >
+            {t('nav.protocol')}
+          </a>
+          <a
             href={tabHref('tokenomics')}
             className={`tab ${activeTab === 'tokenomics' ? 'active' : ''}`}
             onClick={(e) => { e.preventDefault(); setActiveTab('tokenomics'); }}
@@ -178,6 +186,7 @@ return (
         {activeTab === 'buyers' && <BuyersList />}
         {activeTab === 'sellers' && <SellersList sellers={sellers} />}
         {activeTab === 'services' && <ServicesList services={services} />}
+        {activeTab === 'protocol' && <Protocol />}
         {activeTab === 'tokenomics' && <TokenomicsTab />}
         {activeTab === 'ants-info' && <ANTSInfo />}
         {activeTab === 'about' && <About />}
