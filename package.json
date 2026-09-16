@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "concurrently \"npm:server\" \"vite\"",
     "server": "node backend/server.js",
-    "build": "node scripts/gen-build-id.cjs && NODE_OPTIONS=--max-old-space-size=3072 vite build",
+    "build": "node scripts/gen-build-id.cjs && vite build",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -18,7 +18,6 @@
     "cors": "^2.8.6",
     "express": "^5.2.1",
     "lucide-react": "^0.460.0",
-    "mermaid": "^12.0.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "recharts": "^3.10.1",

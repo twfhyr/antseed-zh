@@ -1117,84 +1117,6 @@ text-decoration: underline;
 }
 
 /* ── Protocol page ── */
-.protocol-layers {
-  display: grid;
-  gap: 0.875rem;
-}
-
-.protocol-layer {
-  display: flex;
-  gap: 0.875rem;
-  align-items: flex-start;
-  background: var(--bg-secondary);
-  border-radius: var(--radius-sm);
-  padding: 0.875rem 1rem;
-}
-
-.protocol-layer__num {
-  flex-shrink: 0;
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  background: var(--bg-primary);
-  color: var(--accent);
-  font-size: 0.75rem;
-  font-weight: 700;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.protocol-layer__plain {
-  font-size: 0.875rem;
-  font-weight: 500;
-}
-
-.protocol-layer__tech {
-  font-size: 0.8125rem;
-  color: var(--text-secondary);
-  margin-top: 0.25rem;
-}
-
-.protocol-diagram {
-  margin-top: 1rem;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 1rem;
-}
-
-.protocol-diagram__svg {
-  width: 100%;
-  overflow-x: auto;
-}
-
-.protocol-diagram__svg svg {
-  display: block;
-  margin: 0 auto;
-  max-width: 100%;
-  height: auto;
-}
-
-.protocol-diagram__loading {
-  height: 120px;
-}
-
-.protocol-diagram__fallback {
-  white-space: pre-wrap;
-  font-size: 0.75rem;
-  color: var(--text-secondary);
-  overflow-x: auto;
-}
-
-.protocol-diagram__summary {
-  margin-top: 0.75rem;
-  padding-top: 0.75rem;
-  border-top: 1px solid var(--border);
-  font-size: 0.8125rem;
-  color: var(--text-secondary);
-  line-height: 1.6;
-}
 
 /* Request-flow animation (src/components/RequestFlowAnimation.jsx) */
 .protocol-flow-anim {
@@ -1213,34 +1135,43 @@ text-decoration: underline;
 
 .protocol-flow-anim__line {
   fill: none;
-  stroke: var(--border);
   stroke-width: 2;
-  transition: stroke 0.3s var(--ease), stroke-width 0.3s var(--ease), opacity 0.3s var(--ease);
-  opacity: 0.5;
+  transition: stroke-width 0.3s var(--ease), opacity 0.3s var(--ease);
+  opacity: 0.35;
 }
 
 .protocol-flow-anim__line.active {
-  stroke: var(--accent);
-  stroke-width: 2.5;
+  stroke-width: 2.75;
   opacity: 1;
-}
-
-.protocol-flow-anim__node {
-  fill: var(--bg-primary);
-  stroke: var(--border);
-  stroke-width: 2;
-  transition: stroke 0.3s var(--ease), filter 0.3s var(--ease);
-}
-
-.protocol-flow-anim__node.active {
-  stroke: var(--accent);
-  filter: drop-shadow(0 0 6px var(--accent-glow));
 }
 
 .protocol-flow-anim__node-label {
   fill: var(--text-primary);
   font-size: 13px;
   font-weight: 600;
+}
+
+.protocol-ant__legs line {
+  stroke: var(--text-secondary);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+}
+
+.protocol-mound__hill {
+  fill: var(--bg-primary);
+  stroke: var(--border);
+  stroke-width: 2;
+  transition: fill 0.3s var(--ease), stroke 0.3s var(--ease), filter 0.3s var(--ease);
+}
+
+.protocol-mound__hole {
+  fill: var(--bg-secondary);
+}
+
+.protocol-mound.active .protocol-mound__hill {
+  fill: var(--accent-dim);
+  stroke: var(--accent);
+  filter: drop-shadow(0 0 6px var(--accent-glow));
 }
 
 .protocol-flow-anim__dot {

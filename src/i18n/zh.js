@@ -174,49 +174,14 @@ export default {
   'about.epochDataBody2': '"积分"是经反作弊过滤后的认可结算量。"预计 ANTS"结合了使用量奖励，以及（若该地址同时进行质押）质押池奖励 —— 两者均直接从奖励合约读取，而非本地估算。这两个数字会随纪元推进而变化，在纪元实际结束前均非最终值，也不可领取。',
   'about.epochDataBody3': '这些数据约每小时刷新一次，而非每次访问页面都刷新 —— 出现短暂延迟是正常现象，并非故障。',
 
-  // 协议标签页 —— 内容源自 apps/website/docs/protocol/*.md 与主仓库
-  // CLAUDE.md 的 Payment Flow 一节。图表使用 Mermaid，在客户端实时渲染
-  // （见 src/components/Protocol.jsx）；以 .diagramStack.*/.diagramRequest.*/
-  // .diagramPayment.* 结尾的键是图表节点/消息文字，而非正文段落。
-  'protocol.nav.intro': '什么是协议？',
-  'protocol.nav.layers': '五层架构',
-  'protocol.nav.flow': '一次请求，从头到尾',
-  'protocol.nav.payments': '资金如何流动',
-  'protocol.nav.rewards': 'ANTS 在其中的位置',
-
-  'protocol.introTitle': '什么是 AntSeed 协议？',
+  // 协议标签页 —— 单一聚焦页面：一段简短介绍（内容源自
+  // apps/website/docs/protocol/*.md）加一个展示完整请求流程的动画
+  // （src/components/ProtocolAnimation.jsx，纯 SVG/CSS，非 Mermaid——原因
+  // 见该文件顶部注释）。protocol.anim.* 是与动画各步骤同步的文字说明。
+  'protocol.introTitle': 'AntSeed 是如何运作的',
   'protocol.introP1': '一群蚂蚁中没有"蚁王"在下达命令——每只蚂蚁都独立行动，但蚁群依然能完成任务。AntSeed 也是如此：中间没有中心服务器、公司或应用商店。独立的计算机（"节点"）提供 AI 服务，另一些独立的计算机直接向它们购买服务。',
-  'protocol.introP2': '下方的图展示了整个协议：五层架构，从最底层的"找到彼此"到最顶层的"知道该信任谁"。AntSeed 上的每一次请求都会经过这五层。',
-  'protocol.diagramStackSummary': '五层架构，从下到上：发现层找到卖家，传输层与其建立私密连接，计量层统计用量，支付层完成资金流转，声誉层记录这次交易的结果。',
-
-  'protocol.layersTitle': '五层架构，通俗解释',
-  'protocol.layer.discovery.plain': '找到谁在提供什么服务——不需要查询任何目录机构。',
-  'protocol.layer.discovery.tech': '一个公开的 BitTorrent DHT 网络保存着卖家发布的服务列表，任何人都可以查询。',
-  'protocol.layer.transport.plain': '直接、私密地与该卖家沟通。',
-  'protocol.layer.transport.tech': '客户端与卖家之间建立直接的端到端加密连接——中间没有任何服务器。',
-  'protocol.layer.metering.plain': '双方保留同一份实际用量的凭证。',
-  'protocol.layer.metering.tech': '统计输入输出的 token 数量，双方共同签署一份计量凭证。',
-  'protocol.layer.payments.plain': '按实际交付的内容付费，实时结算。',
-  'protocol.layer.payments.tech': 'USDC 存款为每次请求的累积签名凭证提供支持，并在 Base 上结算。',
-  'protocol.layer.reputation.plain': '卖家的历史记录公开可查，如影随形。',
-  'protocol.layer.reputation.tech': '每一次结算的结果都会更新卖家的链上声誉评分。',
-
-  'protocol.flowTitle': '一次请求，从头到尾',
-  'protocol.flowP1': '下面展示的是买家发起一次 AntSeed 请求时，从头到尾实际发生的过程——全程没有任何服务器介入。点击播放，或手动逐步查看。',
-
-  'protocol.paymentsTitle': '资金如何流动',
-  'protocol.paymentsP1': 'AntSeed 并不会为每一条消息都发起一次链上支付——那样既慢又昂贵。它会为每个会话开启一条支付通道，只在开启和关闭时才与区块链交互。这与"关于"页面"支付如何运作"一节所描述的机制相同；下方的图补充了那里没有展开的细节：如果卖家失联会发生什么。',
-  'protocol.diagramPaymentSummary': '买家存入 USDC 并授权一个支出上限；卖家将该授权锁定进一个支付通道；此后每次请求都会更新一个买家签名确认的累计总额；卖家结算该通道以获得付款；如果卖家失联，买家可以强制关闭通道，并在 15 分钟宽限期后提现。',
-
-  'protocol.rewardsTitle': 'ANTS 在其中的位置',
-  'protocol.rewardsP1': '上面的支付层说的是买家为单次请求以 USDC 支付给卖家的费用——这与 $ANTS 代币无关。$ANTS 是在此基础上另外发放的奖励，资金来自网络增发，奖励对象是参与同一活动的各方：提供服务、购买服务，或质押以支持某个卖家。完整的机制、供应量与获取方式详见"代币经济"与"ANTS 详情"标签页。',
-
-  // 图表专用文字（直接用于 Mermaid 节点/消息文本）
-  'protocol.diagramStack.discovery': '发现层<br/>在公开 DHT 网络中寻找卖家',
-  'protocol.diagramStack.transport': '传输层<br/>建立直接加密连接',
-  'protocol.diagramStack.metering': '计量层<br/>统计用量并签署凭证',
-  'protocol.diagramStack.payments': '支付层<br/>USDC 签名凭证，在 Base 上结算',
-  'protocol.diagramStack.reputation': '声誉层<br/>结算结果构建信任评分',
+  'protocol.introP2': '下方的动画展示的是一次真实请求的完整过程——点击播放，或点击某一步直接跳转查看。',
+  'protocol.closing': '这里说的只是买家为单次请求以 USDC 付费的部分——$ANTS 是针对同一活动另外发放的奖励。完整机制详见"代币经济"与"ANTS 详情"标签页。',
 
   'protocol.actors.buyer': '买家',
   'protocol.actors.dht': '公开 DHT 网络',
@@ -226,25 +191,12 @@ export default {
   'protocol.anim.pause': '暂停',
   'protocol.anim.discovery.title': '1. 寻找卖家',
   'protocol.anim.discovery.body': '买家向公开网络询问谁提供这项技能——无需查询任何目录机构，也不用联系任何公司。',
-  'protocol.anim.connect.title': '2. 直接建立连接',
-  'protocol.anim.connect.body': '与该卖家之间建立私密的加密连接，中间没有任何中转方。',
-  'protocol.anim.request.title': '3. 请求与响应',
-  'protocol.anim.request.body': '请求发出，结果流式返回，双方共同签署一份实际用量的凭证。',
-  'protocol.anim.payment.title': '4. 为实际用量付费',
-  'protocol.anim.payment.body': '买家为累计总额签署支付凭证，卖家在 Base 上结算以获得付款。',
+  'protocol.anim.request.title': '2. 发送请求',
+  'protocol.anim.request.body': '买家将请求直接发送给卖家——一条私密的直接连接，中间没有任何中转方。',
+  'protocol.anim.response.title': '3. 流式返回响应',
+  'protocol.anim.response.body': '卖家将结果流式返回，双方共同签署一份实际用量的凭证。',
+  'protocol.anim.payment.title': '4. 用一粒 USDC 种子付费',
+  'protocol.anim.payment.body': '就像工蚁把食物带回巢穴一样，买家把一粒代表 USDC 价值的"种子"送给卖家——签署为凭证，并在 Base 上结算。',
   'protocol.anim.reputation.title': '5. 声誉更新',
   'protocol.anim.reputation.body': '这次结算的结果会计入卖家的公开信誉记录，供下一位买家参考。',
-
-  'protocol.diagramPayment.step1': '存入 USDC',
-  'protocol.diagramPayment.step2': '签署 ReserveAuth（最大金额、截止时间）',
-  'protocol.diagramPayment.step3': 'reserve(ReserveAuth)',
-  'protocol.diagramPayment.step4': 'lockForChannel()',
-  'protocol.diagramPayment.loopLabel': '每次请求',
-  'protocol.diagramPayment.step5': '签署 SpendingAuth（累计总额）',
-  'protocol.diagramPayment.step6': 'settle() / close(最新的 SpendingAuth)',
-  'protocol.diagramPayment.step7': 'chargeAndCreditPayouts()',
-  'protocol.diagramPayment.altLabel': '卖家失联',
-  'protocol.diagramPayment.step8': 'requestClose()',
-  'protocol.diagramPayment.note1': '15 分钟宽限期',
-  'protocol.diagramPayment.step9': 'withdraw()',
 };
