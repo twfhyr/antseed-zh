@@ -4,6 +4,7 @@ import ServicesList from './components/ServicesList';
 import BuyersList from './components/BuyersList';
 import TokenomicsTab from './components/TokenomicsTab';
 import ANTSInfo from './components/ANTSInfo';
+import TownBoard from './components/TownBoard';
 import Overview from './components/Overview';
 import About from './components/About';
 import Header from './components/Header';
@@ -165,6 +166,15 @@ return (
               components (ClaimANTS.jsx, ChannelsView.jsx) and their backend
               endpoints are untouched, kept for if/when this comes back —
               see notes/dev-plan.md. */}
+          {/* Town Board (Luck/Heal/Duggy): no wallet needed to view, so
+              this is surfaced by default like any other read-only tab. */}
+          <a
+            href={tabHref('town')}
+            className={`tab ${activeTab === 'town' ? 'active' : ''}`}
+            onClick={(e) => { e.preventDefault(); setActiveTab('town'); }}
+          >
+            {t('nav.town')}
+          </a>
           <a
             href={tabHref('about')}
             className={`tab ${activeTab === 'about' ? 'active' : ''}`}
@@ -180,6 +190,7 @@ return (
         {activeTab === 'services' && <ServicesList services={services} />}
         {activeTab === 'tokenomics' && <TokenomicsTab />}
         {activeTab === 'ants-info' && <ANTSInfo />}
+        {activeTab === 'town' && <TownBoard />}
         {activeTab === 'about' && <About />}
       </main>
       <DepositModal isOpen={depositOpen} onClose={() => setDepositOpen(false)} buyerAddress={buyerAddress} />

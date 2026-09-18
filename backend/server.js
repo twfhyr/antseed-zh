@@ -236,6 +236,15 @@ app.delete('/api/buyers/:id', requireAdminAuth, (req, res) => {
   res.json({ deleted: result.changes });
 });
 
+// ─── Town board (Luck/Heal/Duggy autonomous-agent game) ───
+// Read-only: rows are written only by backend/agent-turn.mjs, never by a
+// request handler here. Humans are observers only, per the game's design.
+app.get('/api/town-board', (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 50, 200);
+  const rows = db.prepare('SELECT * FROM town_board ORDER BY id DESC LIMIT ?').all(limit);
+  res.json(rows.map(camelize).reverse());
+});
+
 // ─── Sellers ───
 app.get('/api/sellers', (_req, res) => {
   const rows = db.prepare('SELECT * FROM sellers').all();

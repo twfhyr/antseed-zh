@@ -9,6 +9,7 @@ const TAB_PATHS = {
   services: 'services',
   tokenomics: 'tokenomics',
   'ants-info': 'ants-info',
+  town: 'town',
   about: 'about',
 };
 const PATH_TABS = Object.fromEntries(
