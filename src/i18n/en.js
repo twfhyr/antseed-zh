@@ -9,6 +9,7 @@ export default {
   'nav.antsTokenomics': 'ANTS & Tokenomics',
   'nav.claim': 'Claim ANTS',
   'nav.channels': 'Channels',
+  'nav.stake': 'Stake ANTS',
   'nav.about': 'About',
 
   // Header
