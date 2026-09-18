@@ -28,6 +28,20 @@ export async function fetchProviderModels() {
   return get('/provider/models');
 }
 
+// OpenRouter list prices, cached server-side (see /api/reference-prices).
+// Used only as a comparison baseline in Services > By model; if it fails the
+// UI shows `—` for the comparison rather than guessing a reference price.
+export async function fetchReferencePrices() {
+  return get('/reference-prices');
+}
+
+// AntSeed vs Surplus Intelligence vs Orbio, cached server-side (see
+// /api/marketplace-compare). Any source can independently fail — the payload
+// carries per-source `error` fields and the UI renders `—` for those cells.
+export async function fetchMarketplaceCompare() {
+  return get('/marketplace-compare');
+}
+
 export async function fetchChainStats() {
   return get('/chain-stats');
 }

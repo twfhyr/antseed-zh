@@ -7,6 +7,7 @@ const TAB_PATHS = {
   buyers: 'buyers',
   sellers: 'sellers',
   services: 'services',
+  market: 'market',
   protocol: 'protocol',
   tokenomics: 'tokenomics',
   'ants-info': 'ants-info',

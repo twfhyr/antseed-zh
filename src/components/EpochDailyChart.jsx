@@ -11,17 +11,26 @@ const usdc = (v) => (v == null ? null : Number(v) / 1e6);
  *  sub-tab instead). Filters the same `daily` series Overview already
  *  fetches down to [startTs, endTs) from the epoch's real on-chain
  *  genesis/duration (see backend/server.js `currentEpochOverview`) rather
- *  than a separate fetch. */
+ *  than a separate fetch.
+ *
+ *  Overlap, not containment: daily rows are keyed by UTC midnight, but an
+ *  epoch starts at genesis + n×duration (currently ~09:54 UTC). Requiring
+ *  day_start >= startTs drops the epoch's first (partial) day entirely —
+ *  and right after a rollover that day is the ONLY day, so the chart went
+ *  empty for ~14h. A day counts if its 24h window intersects the epoch. */
+const DAY_SECONDS = 24 * 60 * 60;
+
 function EpochDailyChart({ daily, dailyError, startTs, endTs }) {
   const { t } = useI18n();
 
-  const inRange = (dayStart) => startTs != null && endTs != null && dayStart >= startTs && dayStart < endTs;
+  const overlaps = (dayStart) =>
+    startTs != null && endTs != null && dayStart + DAY_SECONDS > startTs && dayStart < endTs;
 
   const data = daily == null
     ? null
     : startTs == null || endTs == null
       ? [] // epoch range not resolved yet — show "no data" rather than the whole history
-      : daily.filter((d) => inRange(Number(d.day_start))).map((d) => ({
+      : daily.filter((d) => overlaps(Number(d.day_start))).map((d) => ({
           label: d.day?.slice(5) ?? d.day,
           buyers: num(d.active_buyers),
           sellers: num(d.active_sellers),

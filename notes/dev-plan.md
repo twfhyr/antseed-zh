@@ -1,8 +1,153 @@
 # Dev Plan — Live Backlog
 
-Last reviewed: 2026-09-16. Keep this current — mark items done and remove
+Last reviewed: 2026-09-17. Keep this current — mark items done and remove
 them (git history is the record of what was done and when; this file is
 only for what's still open).
+
+## Recently fixed (2026-09-17 session)
+
+- New **"Inference Market"** tab (`/market`, `MarketplaceCompare.jsx` +
+  `/api/marketplace-compare`) comparing AntSeed with Surplus Intelligence
+  and Orbio (orbio.so — note: NOT orbio.io, which is a parked domain).
+  Two parts: a static, sourced mechanism matrix (architecture, discovery,
+  transport, settlement, custody, sellers, fees, identity — objective
+  facts only, no better/worse framing, per the owner) and live metrics
+  (per-marketplace catalog stats + a shared-models price table, 3:1
+  blended, cheapest source highlighted). Orbio effective price = its API
+  list price × (1 − best live `discountBps` tier from the liquidity book
+  embedded in its homepage) × 1.05 platform fee; the 37.5% marketing
+  figure is never hardcoded, and a parse failure falls back to the
+  undiscounted list price, labeled. Plan: `notes/plans/marketplace-compare.md`.
+  Caveat for future edits: the Orbio discount parse is regex-over-Next.js-
+  payload — brittle by nature; treat `discount: null` as the normal
+  failure mode, not a bug.
+- Services tab gained a **"By model — cheapest first"** view (now the
+  default; the flat catalog is the second toggle). Groups the same
+  `/api/services` rows by model name and shows the 5 cheapest sellers per
+  model, ranked by a 3:1 output:input weighted blended price — a sort key
+  only, the table always shows the real unblended input/output figures, and
+  services missing either price are excluded rather than defaulted to zero.
+  Deliberately a view inside Services, not its own nav tab (same dataset,
+  different grouping — see "curation over completeness").
+- That view now groups by **canonical model identity**, not raw name
+  (`canonicalKey()` in `src/lib/modelTaxonomy.js`). Sellers spell the same
+  model differently, so grouping on the raw string was splitting one model
+  into several rows — `claude-opus-4.8` was **4 rows, 3 of which named the
+  wrong cheapest seller**, because each row only ranked the sellers who used
+  that exact spelling. Now one row per model with a **"Provider's model
+  name"** column showing the exact string each seller advertises (the one
+  you pass as the model id), a badge when a model has multiple spellings,
+  and search that matches either the canonical label or any seller's
+  spelling. Only formatting is merged (separators, org prefixes, release
+  datestamps); `-fast`/`-mini`/`-pro`/`-edit` variants stay distinct — there
+  is a regression guard list for this in the canonicalization tests, since
+  over-merging would put two different products in one price comparison.
+  Also dedupes a seller that lists one model under several aliases so it
+  can't take multiple slots in a top-5 of sellers. 398 raw names → 235
+  models.
+- **Catalog source switched from the hosted snapshot to the LOCAL buyer node.**
+  Per the founder, `network.antseed.com/stats` is outdated and clients should
+  read their own buyer node. Measured here: `/stats` 176 min stale vs local
+  70 min; 400 vs 412 advertised services; same 53 peers. New primary source is
+  `GET /_antseed/peers` on the buyer proxy (`backend/sync-local-buyer.js`),
+  which the node answers from its own DHT cache without contacting a seller.
+  `/stats` → on-disk cache remain as ordered fallbacks; `/api/catalog-source`
+  reports which one actually answered plus how old the observations were.
+  Live result: 956 service rows / 263 canonical models (was 911 / 255).
+  Non-obvious things that had to be handled — do not "simplify" these away:
+  - **Shape differs.** `/stats` nests `providers[{provider, services[],
+    servicePricing{}, …}]`; the local node returns `providers: ["openai"]`
+    plus parallel `providerPricing` / `providerServiceCategories` /
+    `providerServiceApiProtocols` maps. `sync-local-buyer.js` normalizes the
+    local shape into the `/stats` shape so the DB write path is untouched.
+  - **7 of 53 peers publish an empty `providers[]`** while still advertising
+    priced services, so provider names must be the UNION of `providers[]` and
+    the `providerPricing` keys. Trusting `providers[]` alone dropped 6 peers'
+    entire catalogs.
+  - **The local node has no `onChainStats`/`verifications`.** Switching source
+    silently zeroed `agent_id`, `total_earned`, `total_requests`,
+    `first_seen_at` for all 53 sellers. Fixed by joining `sellers_onchain` on
+    **address** (a peerId IS the seller's EVM address) — restores 52/53. It is
+    keyed by address, not agentId, precisely so this works without the indexer.
+  - **`totals` is indexer-only**, so `totals.settlementCount || 0` overwrote
+    `active_transactions` with 0 (COALESCE can't rescue it — 0 isn't null).
+    Now passes null to preserve the last real value.
+  - **`maxConcurrency || 10` was fabricating capacity** for every service;
+    now `?? null` so the UI shows "—".
+  - Buyer base URL: honours `BUYER_BASE_URL`/`PROVIDER_BASE_URL` if set,
+    otherwise probes 8377 then 8378 (this server runs 8378; defaulting to
+    8377 alone would have silently fallen back to the stale snapshot).
+- **Model identity now comes from the protocol SDK, not a local heuristic.**
+  Where the names come from: `network.antseed.com/stats` →
+  `peers[].providers[].services[]` → `backend/sync-official.js` inserts each
+  string **verbatim** → `/api/services`. There is no normalization in that
+  path, and the payload really is unnormalized — live check found 6 spellings
+  of Opus 4.8 (`claude-opus-4-8`, `claude-opus-4.8`, `opus-4.8`, `opus-4-8`,
+  …), with one seller publishing three of them at once. The buyer node's
+  normalization is real but happens at *request routing* time, not in the
+  discovery payload this site reads.
+  So the dashboard must canonicalize for display — but it now does so with
+  `canonicalModelKey()` / `preferredModelDisplayName()` from `@antseed/node`
+  (already a dependency; computed in `parseService()` and exposed as
+  `canonicalKey` / `displayName` per row), i.e. the same functions routing
+  uses. The local `canonicalKey()`/`pickCanonicalLabel()` in
+  `src/lib/modelTaxonomy.js` were **deleted**: compared on live data they
+  disagreed on 42 pairs, always by over-merging things the protocol keeps
+  distinct (`deepseek-v4-flash` vs `-0731`, `e2ee-` TEE builds — different
+  prices, different products). `name` is still the seller's exact advertised
+  string, since that is the routing id a buyer passes. Don't reintroduce a
+  local canonicalizer; fix `packages/node/src/model-identity.ts` instead.
+  Live: 911 rows → 255 models; `-fast` stays separate; OpenRouter reference
+  match 117/255. NOTE `/api/reference-prices` caches 6h, so after changing
+  its shape you must restart the backend or the old cache serves rows
+  missing the new field (this briefly showed 0% match).
+- About gained a **"What's New"** changelog section (`src/data/changelog.js`,
+  rendered last in About, i18n'd in both locales). Scope is *this dashboard*,
+  not the protocol — protocol behavior belongs in the Protocol tab. Entry
+  dates were taken from the commit that shipped each change
+  (`git log --date=short`), not from memory; when adding entries, do the
+  same rather than rounding to a plausible-looking date. Entries are written
+  for a visitor (what changed and why it matters), not as commit subjects.
+- Overview > Epoch tab gained an **"Epoch ends in"** countdown card, ticking
+  once a second (`5h 1m 46s`, switching to `2d 3h 40m` when over a day out)
+  with the absolute end time underneath. Driven by wall-clock time against
+  the epoch's real `endTs` from `/api/stats` (epoch start + on-chain epoch
+  duration; cross-checked against genesis + `epochDuration` from
+  `/api/emissions/epoch-info` — they agree exactly). Not a locally
+  decremented counter, which would drift and would resume from a stale value
+  after the tab sleeps. Missing `endTs` renders `—` and an elapsed epoch
+  renders "Ending…", never a fabricated or negative time.
+- Price columns in that view condensed to one **Input / Output** cell, plus
+  a **OpenRouter list** reference price and a **vs list** delta, backed by a
+  new cached `GET /api/reference-prices` (6h TTL, stale-on-error, proxies
+  `openrouter.ai/api/v1/models` — public, no API key). Sellers only publish
+  their own price, so a comparison needs an outside rate; nothing is
+  hardcoded and a failed fetch renders `—` rather than a stale guess.
+  Deliberate calls, don't "fix" these without reading first:
+  - It is labelled **OpenRouter list price, not "official vendor price"** —
+    OpenRouter is itself a marketplace. Calling it official would be a claim
+    we can't back.
+  - **Both directions are shown as-is.** 17 models are *more expensive* than
+    the list rate and ~34 show ≥90% off. Hiding either would flatter AntSeed
+    by cherry-picking. The footnote states plainly that a huge discount is
+    the seller's own published price, not a verified-identical service.
+  - `:batch`/`:free` tier ids are skipped, so a discount tier can't be
+    mistaken for the standard rate.
+  - Coverage is ~116/233 models; the rest render `—`.
+- Two-level **company → model filter** for that view
+  (`src/lib/modelTaxonomy.js`): pick "OpenAI", then narrow to "GPT-5.6".
+  ~400 raw model names are unusable as a flat filter list. The taxonomy is
+  pattern-matched because sellers don't normalize names (`gpt-5.2`,
+  `gpt-52`, `openai-gpt-52` are all live), and is used **only** to decide
+  which rows are visible under a chip — it never merges price rows, alters
+  a displayed number, or invents a model no seller listed. Unrecognized
+  names fall to "Other" (16 of 398, all genuinely one-off services) rather
+  than being guessed into a brand. Verified against live data, including
+  that date-stamped names like `claude-sonnet-4-20250514` read as v4, not
+  v4.2.
+- Protocol tab: added an AntSeed vs Venice vs Orbio comparison table with
+  a sourced footnote (sources + check date named; no ORBIO price/market-cap
+  figures baked in, since those move constantly).
 
 ## Recently fixed (2026-09-16 session)
 

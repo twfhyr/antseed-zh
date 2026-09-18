@@ -1,6 +1,7 @@
 import db from './database.js';
 import fs from 'fs';
 import { readLatestSnapshot, readDailyMetrics } from './sync-history.js';
+import { fetchLocalBuyerCatalog } from './sync-local-buyer.js';
 
 // Real day-over-day growth (%) computed from the daily_metrics history table
 // (Antscan-sourced), comparing the latest closed day to the prior closed day.
@@ -29,6 +30,37 @@ async function fetchOfficialStats() {
 // sellers_onchain table (populated from Antscan's real earnedUsdc) by agentId.
 // Returns null (never a fabricated number) when no match is found, so the UI
 // can show "on-chain data unavailable" instead of a guessed figure.
+/**
+ * On-chain enrichment keyed by PEER ADDRESS rather than by agentId.
+ *
+ * The hosted snapshot embedded an `onChainStats` blob per peer; the local
+ * buyer node does not (it only knows what peers advertise over DHT). But a
+ * peerId IS the seller's EVM address, and `sellers_onchain` is already keyed
+ * by address, so the same figures can be recovered locally by joining on it.
+ * Without this, switching to the local node silently zeroed agent_id,
+ * total_earned, unique_buyers, total_requests and first_seen_at for every
+ * seller. Matches 52/53 live peers.
+ */
+function buildAddressToOnChainMap() {
+  const rows = db.prepare(`
+    SELECT address, agent_id, earned_usdc, request_count, unique_buyers, first_seen_at
+    FROM sellers_onchain WHERE address IS NOT NULL
+  `).all();
+  const map = new Map();
+  for (const r of rows) {
+    // Store under a bare lowercase hex key; peerIds arrive without `0x`.
+    const key = String(r.address).toLowerCase().replace(/^0x/, '');
+    map.set(key, {
+      agentId: r.agent_id != null ? String(r.agent_id) : null,
+      earnedUsdc: r.earned_usdc != null ? Number(r.earned_usdc) / 1e6 : null,
+      totalRequests: r.request_count != null ? String(r.request_count) : null,
+      uniqueBuyers: r.unique_buyers ?? null,
+      firstSeenAt: r.first_seen_at ?? null,
+    });
+  }
+  return map;
+}
+
 function buildAgentIdToEarnedMap() {
   const rows = db.prepare('SELECT agent_id, earned_usdc FROM sellers_onchain WHERE agent_id IS NOT NULL').all();
   const map = new Map();
@@ -38,22 +70,52 @@ function buildAgentIdToEarnedMap() {
   return map;
 }
 
+/**
+ * Provenance of the most recent catalog sync: which source answered
+ * (`local-buyer` | `network-stats` | `disk-cache`), how old the underlying
+ * observations were, and what was written. Null until the first sync.
+ */
+let lastCatalogSync = null;
+
+export function getLastCatalogSync() {
+  return lastCatalogSync;
+}
+
 export async function syncFromOfficialNetwork() {
-  console.log('Fetching official AntSeed network data...');
+  // PRIMARY SOURCE = the local buyer node's live DHT view.
+  // The hosted `network.antseed.com/stats` snapshot lags (measured 176 min
+  // stale vs 70 min for the local node, 400 vs 412 services), so it is now
+  // only a fallback for when no buyer node is reachable. Do not reverse this
+  // order without re-measuring freshness — see backend/sync-local-buyer.js.
   let data;
+  let catalogSource;
   try {
-    data = await fetchOfficialStats();
-  } catch (e) {
-    console.error('Network fetch failed, trying local cache...');
-    const local = fs.readFileSync('/tmp/antseed_stats.json', 'utf8');
-    data = JSON.parse(local);
+    console.log('Fetching live catalog from local buyer node...');
+    data = await fetchLocalBuyerCatalog();
+    catalogSource = 'local-buyer';
+    console.log(`Local buyer catalog: ${data.peers.length} peers, observed up to ${data.updatedAt}`);
+  } catch (localErr) {
+    console.warn(`Local buyer unavailable (${localErr.message}); falling back to hosted snapshot.`);
+    try {
+      data = await fetchOfficialStats();
+      catalogSource = 'network-stats';
+    } catch {
+      console.error('Hosted snapshot fetch failed, trying on-disk cache...');
+      const local = fs.readFileSync('/tmp/antseed_stats.json', 'utf8');
+      data = JSON.parse(local);
+      catalogSource = 'disk-cache';
+    }
   }
 
   const peers = data.peers || [];
+  // `totals` is an indexer-only enrichment (network-wide sellerCount etc.).
+  // The local node has no equivalent, so it is simply absent on that path;
+  // downstream COALESCEs keep the last real value instead of zeroing it.
   const totals = data.totals || {};
   const agentEarnedMap = buildAgentIdToEarnedMap();
+  const onChainByAddress = buildAddressToOnChainMap();
 
-  console.log(`Found ${peers.length} peers, ${totals.sellerCount || '?'} sellers`);
+  console.log(`[${catalogSource}] Found ${peers.length} peers, ${totals.sellerCount || '?'} sellers`);
 
   // Wipe old data
   db.prepare('DELETE FROM services').run();
@@ -80,14 +142,25 @@ export async function syncFromOfficialNetwork() {
       const peerId = peer.peerId || peer.displayName?.toLowerCase().replace(/\s+/g, '-');
       const displayName = peer.displayName || `Peer ${peerId?.substring(0, 8)}`;
       const providers = peer.providers || [];
-      const onChainStats = peer.onChainStats || null;
+      // Prefer the peer's embedded blob (hosted-snapshot path); when syncing
+      // from the local buyer node there is none, so recover the same figures
+      // from sellers_onchain by address. Never fabricated: if neither source
+      // has the seller, every derived column stays null.
+      const onChainStats = peer.onChainStats
+        || onChainByAddress.get(String(peerId || '').toLowerCase().replace(/^0x/, ''))
+        || null;
 
       // Real on-chain earned USDC, matched by agentId to Antscan's sellers
       // table (see sync-history.js). No fabricated formula: if we can't
       // resolve an agentId match, totalEarned stays null (UI shows "—"),
       // never a guessed number.
       const agentId = onChainStats?.agentId != null ? String(onChainStats.agentId) : null;
-      const totalEarnedUSDC = agentId && agentEarnedMap.has(agentId) ? agentEarnedMap.get(agentId) : null;
+      // agentId match first (hosted-snapshot path), then the address-keyed
+      // value resolved above. `?? null` keeps a real 0 distinguishable from
+      // "unknown"; both fall through to null rather than a guess.
+      const totalEarnedUSDC = (agentId && agentEarnedMap.has(agentId))
+        ? agentEarnedMap.get(agentId)
+        : (onChainStats?.earnedUsdc ?? null);
 
       const sellerName = displayName;
       const sellerId = `seller_${peerId}`;
@@ -128,8 +201,12 @@ export async function syncFromOfficialNetwork() {
         const servicePricing = provider.servicePricing || {};
         const serviceCategories = provider.serviceCategories || {};
         const serviceProtocols = provider.serviceApiProtocols || {};
-        const maxConcurrency = provider.maxConcurrency || 10;
-        const currentLoad = provider.currentLoad || 0;
+        // Not advertised by the local buyer's peer cache (and the old `|| 10`
+        // default invented a capacity for every service). Keep null when the
+        // source doesn't report it so the UI shows "—" instead of a made-up
+        // number; `?? null` preserves a real 0 rather than discarding it.
+        const maxConcurrency = provider.maxConcurrency ?? null;
+        const currentLoad = provider.currentLoad ?? null;
 
         for (const svcName of services) {
           const svcId = `svc_${svcName.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 40)}_${providerName.replace(/[^a-zA-Z0-9]/g, '_')}_${sellerId}`;
@@ -202,7 +279,10 @@ export async function syncFromOfficialNetwork() {
       uniqueSellers.size,
       totalServices,
       realVolumeUsd,
-      totals.settlementCount || 0,
+      // Indexer-only figure. On the local-buyer path `totals` is empty, and
+      // `|| 0` would overwrite the last real value with 0 (the COALESCE above
+      // can't save it, since 0 is not null). Pass null so it is preserved.
+      totals.settlementCount != null ? Number(totals.settlementCount) : null,
       buyerGrowth,
       sellerGrowth,
       serviceGrowth,
@@ -211,7 +291,16 @@ export async function syncFromOfficialNetwork() {
     );
 
     db.prepare('COMMIT').run();
-    console.log(`Synced ${uniqueSellers.size} sellers and ${totalServices} services from live network.`);
+    console.log(`Synced ${uniqueSellers.size} sellers and ${totalServices} services from ${catalogSource}.`);
+    // Record which source the catalog actually came from, so the UI can say
+    // so instead of implying every figure is equally live.
+    lastCatalogSync = {
+      source: catalogSource,
+      observedAt: data.updatedAt ?? null,
+      syncedAt: new Date().toISOString(),
+      peers: peers.length,
+      services: totalServices,
+    };
   } catch (e) {
     db.prepare('ROLLBACK').run();
     console.error('Sync failed:', e);

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import SellersList from './components/SellersList';
 import ServicesList from './components/ServicesList';
+import MarketplaceCompare from './components/MarketplaceCompare';
 import BuyersList from './components/BuyersList';
 import Protocol from './components/Protocol';
 import AntsTokenomics from './components/AntsTokenomics';
@@ -144,6 +145,13 @@ return (
             {t('nav.services')}
           </a>
           <a
+            href={tabHref('market')}
+            className={`tab ${activeTab === 'market' ? 'active' : ''}`}
+            onClick={(e) => { e.preventDefault(); setActiveTab('market'); }}
+          >
+            {t('nav.market')}
+          </a>
+          <a
             href={tabHref('protocol')}
             className={`tab ${activeTab === 'protocol' ? 'active' : ''}`}
             onClick={(e) => { e.preventDefault(); setActiveTab('protocol'); }}
@@ -183,6 +191,7 @@ return (
         {activeTab === 'buyers' && <BuyersList />}
         {activeTab === 'sellers' && <SellersList sellers={sellers} />}
         {activeTab === 'services' && <ServicesList services={services} />}
+        {activeTab === 'market' && <MarketplaceCompare services={services} />}
         {activeTab === 'protocol' && <Protocol />}
         {activeTab === 'tokenomics' && <AntsTokenomics defaultSubTab="supply" />}
         {activeTab === 'ants-info' && <AntsTokenomics defaultSubTab="rewards" />}

@@ -1,10 +1,11 @@
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { Interface, JsonRpcProvider, Contract } from 'ethers';
 import db from './database.js';
-import { syncFromOfficialNetwork } from './sync-official.js';
+import { syncFromOfficialNetwork, getLastCatalogSync } from './sync-official.js';
 import { readChainMetrics, updateChainMetrics, startChainPoller } from './chain-poller.js';
 import {
   runHistorySync, startHistorySync,
@@ -20,6 +21,18 @@ import {
   SellerRegistryClient, SellerRewardsPoolClient, StakingClient,
   resolveChainConfig, resolveLegacyContractAddresses, GATE_MINTERS, gateMinterId,
   previewPoolRewards, pendingEpochRewards,
+  // Model identity comes from the protocol SDK, NOT from a local heuristic.
+  // Sellers advertise the same model under many spellings (claude-opus-4-8,
+  // claude-opus-4.8, opus-4.8 — one seller publishes all three), and
+  // network.antseed.com/stats is the raw discovery payload, so the names
+  // arrive unnormalized. `canonicalModelKey` is the same function the buyer
+  // node uses to resolve a requested model to a seller, so grouping by it
+  // means this dashboard groups exactly the way routing does. Do not replace
+  // this with local string munging: a hand-rolled version over-merged
+  // distinct products (deepseek-v4-flash vs -0731, which are priced
+  // differently, and e2ee- encrypted variants), which silently puts two
+  // different services into one price comparison.
+  canonicalModelKey, preferredModelDisplayName,
 } from '@antseed/node';
 
 const PROVIDER_BASE = process.env.PROVIDER_BASE_URL || 'http://localhost:8377/v1';
@@ -93,6 +106,11 @@ function parseService(row) {
   const r = camelize(row);
   return {
     ...r,
+    // `name` stays exactly as the seller advertised it — it is the routing
+    // identifier a buyer passes as the model id, so it must never be
+    // rewritten. These two fields are derived display/grouping aids.
+    canonicalKey: canonicalModelKey(row.name),
+    displayName: preferredModelDisplayName(row.name),
     categories: JSON.parse(row.categories),
     protocols: JSON.parse(row.protocols),
     pricing: {
@@ -288,6 +306,244 @@ app.get('/api/services/:id', (req, res) => {
   const row = db.prepare('SELECT * FROM services WHERE id = ?').get(req.params.id);
   if (!row) return res.status(404).json({ error: 'Service not found' });
   res.json(parseService(row));
+});
+
+// --- Reference prices (OpenRouter) ------------------------------------------
+// Backs the "vs reference" column in the Services > By model view. Sellers
+// only publish their own price, so a comparison needs an outside rate; this
+// proxies OpenRouter's public model catalogue (no API key required).
+//
+// IMPORTANT FRAMING: OpenRouter is itself a marketplace, so what we get is a
+// LIST price, not "the vendor's official price". The UI must say
+// "OpenRouter list price" — calling it official would be a claim we can't
+// back. Nothing here is hardcoded: if the fetch fails we serve `{}` and the
+// column renders `—` rather than a stale or invented number.
+//
+// Proxied server-side (not fetched from the browser) so one cached copy
+// serves every visitor and the site doesn't depend on a third-party CORS
+// policy.
+const REFERENCE_TTL_MS = 6 * 60 * 60 * 1000; // vendor list prices move slowly
+let referenceCache = null;
+let referenceCacheAt = 0;
+let referenceInflight = null;
+
+async function fetchReferencePrices() {
+  const resp = await fetch('https://openrouter.ai/api/v1/models', {
+    headers: { accept: 'application/json' },
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (!resp.ok) throw new Error(`openrouter ${resp.status}`);
+  const body = await resp.json();
+  const models = Array.isArray(body?.data) ? body.data : [];
+  const out = {};
+  for (const m of models) {
+    // `:batch`, `:free`, `:thinking` etc. are pricing tiers of a model, not
+    // the model's standard rate — comparing a seller against a batch-discount
+    // price would overstate how expensive the seller is.
+    if (typeof m?.id !== 'string' || m.id.includes(':')) continue;
+    const input = Number(m?.pricing?.prompt) * 1e6;
+    const output = Number(m?.pricing?.completion) * 1e6;
+    // Free/unpriced entries carry 0 or non-numeric values — skip rather than
+    // treat as a real $0 reference, which would produce a bogus -100%.
+    if (!Number.isFinite(input) || !Number.isFinite(output) || input <= 0 || output <= 0) continue;
+    if (out[m.id]) continue;
+    // Canonicalize with the same protocol function used for service rows, so
+    // an OpenRouter id lines up with the advertised model it should be
+    // compared against without the client re-deriving keys.
+    out[m.id] = {
+      id: m.id,
+      canonicalKey: canonicalModelKey(m.id),
+      name: m.name ?? m.id,
+      inputUsdPerMillion: input,
+      outputUsdPerMillion: output,
+    };
+  }
+  return out;
+}
+
+app.get('/api/reference-prices', async (_req, res) => {
+  const fresh = referenceCache && Date.now() - referenceCacheAt < REFERENCE_TTL_MS;
+  if (fresh) {
+    return res.json({ source: 'openrouter', fetchedAt: referenceCacheAt, models: referenceCache });
+  }
+  try {
+    // Collapse concurrent misses into one upstream request.
+    referenceInflight = referenceInflight || fetchReferencePrices();
+    const models = await referenceInflight;
+    referenceInflight = null;
+    referenceCache = models;
+    referenceCacheAt = Date.now();
+    res.json({ source: 'openrouter', fetchedAt: referenceCacheAt, models });
+  } catch (err) {
+    referenceInflight = null;
+    // Serve a stale copy if we have one — an old list price is still a real
+    // number. With nothing cached, return empty so the UI shows `—`.
+    if (referenceCache) {
+      return res.json({ source: 'openrouter', fetchedAt: referenceCacheAt, stale: true, models: referenceCache });
+    }
+    console.error('[reference-prices]', err.message);
+    res.json({ source: 'openrouter', fetchedAt: null, error: err.message, models: {} });
+  }
+});
+
+// --- Marketplace comparison (Surplus Intelligence + Orbio) ------------------
+// Backs the "Inference Market" tab. Same caching pattern as
+// /api/reference-prices: proxied server-side, 6h TTL, in-flight dedup, serve
+// stale on failure. No number here is hardcoded — every figure comes from the
+// competitor's own public endpoint, or the field is null and the UI renders
+// `—`. Surplus/Orbio prices are marketplace prices (like OpenRouter's list
+// price), not official vendor rates, and the UI must say so.
+const MARKETPLACE_TTL_MS = 6 * 60 * 60 * 1000;
+let marketplaceCache = null;
+let marketplaceCacheAt = 0;
+let marketplaceInflight = null;
+
+// Shared normalization for OpenAI-style /v1/models payloads with per-token
+// pricing (both Surplus and Orbio use this shape). Identity still comes from
+// the protocol's canonicalModelKey — never local name munging (see the
+// import comment at the top of this file for why that matters).
+function catalogFromPerTokenPricing(list) {
+  const out = {};
+  for (const m of Array.isArray(list) ? list : []) {
+    if (typeof m?.id !== 'string' || m.id.includes(':')) continue;
+    const input = Number(m?.pricing?.prompt) * 1e6;
+    const output = Number(m?.pricing?.completion) * 1e6;
+    // Free/unpriced entries carry 0 or non-numeric values — skip rather than
+    // treat as a real $0 price (same reasoning as /api/reference-prices).
+    if (!Number.isFinite(input) || !Number.isFinite(output) || input <= 0 || output <= 0) continue;
+    if (out[m.id]) continue;
+    // Orbio prefixes some ids with `~` (its internal marker for unlisted
+    // models) — stripping that single character is mechanical, not model
+    // identity munging; canonicalModelKey does the actual identity work.
+    const rawId = m.id.replace(/^~/, '');
+    out[m.id] = {
+      id: m.id,
+      canonicalKey: canonicalModelKey(rawId),
+      name: m.name ?? m.id,
+      inputUsdPerMillion: input,
+      outputUsdPerMillion: output,
+    };
+  }
+  return out;
+}
+
+async function fetchSurplusCatalog() {
+  const resp = await fetch('https://api.surplusintelligence.ai/v1/models', {
+    headers: { accept: 'application/json' },
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (!resp.ok) throw new Error(`surplus ${resp.status}`);
+  const body = await resp.json();
+  const list = Array.isArray(body?.data) ? body.data : [];
+  const models = catalogFromPerTokenPricing(list);
+  return { modelCount: list.length, pricedCount: Object.keys(models).length, models };
+}
+
+async function fetchOrbioCatalog() {
+  const resp = await fetch('https://api.orbio.so/api/v1/models', {
+    headers: { accept: 'application/json' },
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (!resp.ok) throw new Error(`orbio models ${resp.status}`);
+  const body = await resp.json();
+  const list = Array.isArray(body?.data) ? body.data : [];
+  const models = catalogFromPerTokenPricing(list);
+
+  // Orbio's catalog lists OpenRouter list prices; what a buyer actually pays
+  // is discounted by resold credits (their liquidity book) plus a 5% platform
+  // fee on the discounted price (per orbio.so FAQ). The book is embedded in
+  // the homepage's Next.js payload as {"discountBps":3750,"microUsd":"…"}
+  // tiers. Best tier = highest discount, regardless of depth — the UI shows
+  // the tier's available credits so depth limits stay visible. If the parse
+  // fails, discount stays null and the UI shows the undiscounted list price
+  // labeled as such — the "37.5% less" marketing headline is never hardcoded.
+  let discount = null;
+  try {
+    const homeResp = await fetch('https://www.orbio.so/', {
+      headers: { accept: 'text/html' },
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (homeResp.ok) {
+      const html = await homeResp.text();
+      const tiers = new Map();
+      // Matches both raw and JSON-escaped (\\\") forms of the embedded pairs.
+      const re = /discountBps\\?":(\d+),\\?"microUsd\\?":\\?"(\d+)\\?"/g;
+      let m;
+      while ((m = re.exec(html)) !== null) {
+        const bps = Number(m[1]);
+        const creditsUsd = Number(m[2]) / 1e6;
+        if (Number.isFinite(bps) && bps > 0 && bps < 10_000 && Number.isFinite(creditsUsd)) {
+          tiers.set(bps, (tiers.get(bps) ?? 0) + creditsUsd);
+        }
+      }
+      if (tiers.size) {
+        const bestBps = Math.max(...tiers.keys());
+        discount = {
+          bps: bestBps,
+          creditsUsd: tiers.get(bestBps),
+          totalCreditsUsd: [...tiers.values()].reduce((s, v) => s + v, 0),
+        };
+      }
+    }
+  } catch (err) {
+    console.warn('[marketplace-compare] orbio discount parse failed:', err.message);
+  }
+
+  // Effective price = list × (1 − discount) × 1.05 (platform fee). Computed
+  // here so the frontend never has to redo Orbio's fee math.
+  if (discount) {
+    const factor = (1 - discount.bps / 10_000) * 1.05;
+    for (const entry of Object.values(models)) {
+      entry.effectiveInputUsdPerMillion = entry.inputUsdPerMillion * factor;
+      entry.effectiveOutputUsdPerMillion = entry.outputUsdPerMillion * factor;
+    }
+  }
+  return { modelCount: list.length, pricedCount: Object.keys(models).length, discount, models };
+}
+
+// AntSeed's own side of the comparison: aggregates over the live services
+// table (per-model prices stay client-side — the tab already receives the
+// same services array ServicesList uses).
+function antseedLocalMetrics() {
+  const rows = db.prepare('SELECT name, seller_id FROM services').all();
+  const modelKeys = new Set();
+  const sellers = new Set();
+  for (const r of rows) {
+    const key = canonicalModelKey(r.name);
+    if (key) modelKeys.add(key);
+    if (r.seller_id) sellers.add(r.seller_id);
+  }
+  return { listings: rows.length, models: modelKeys.size, sellers: sellers.size };
+}
+
+async function fetchMarketplaceCompare() {
+  // Per-source isolation: one competitor being down must not blank the
+  // other — each source resolves to data or { error }.
+  const [surplus, orbio] = await Promise.all([
+    fetchSurplusCatalog().catch(err => ({ error: err.message })),
+    fetchOrbioCatalog().catch(err => ({ error: err.message })),
+  ]);
+  return { fetchedAt: Date.now(), antseed: antseedLocalMetrics(), surplus, orbio };
+}
+
+app.get('/api/marketplace-compare', async (_req, res) => {
+  const fresh = marketplaceCache && Date.now() - marketplaceCacheAt < MARKETPLACE_TTL_MS;
+  if (fresh) return res.json(marketplaceCache);
+  try {
+    marketplaceInflight = marketplaceInflight || fetchMarketplaceCompare();
+    const payload = await marketplaceInflight;
+    marketplaceInflight = null;
+    marketplaceCache = payload;
+    marketplaceCacheAt = Date.now();
+    res.json(payload);
+  } catch (err) {
+    marketplaceInflight = null;
+    if (marketplaceCache) {
+      return res.json({ ...marketplaceCache, stale: true });
+    }
+    console.error('[marketplace-compare]', err.message);
+    res.json({ fetchedAt: null, error: err.message, antseed: null, surplus: null, orbio: null });
+  }
 });
 
 app.post('/api/services', requireAdminAuth, (req, res) => {
@@ -935,6 +1191,13 @@ app.post('/api/admin/force-chain-sync', requireAdminAuth, async (_req, res) => {
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
+});
+
+// Where the current catalog came from. Public and read-only: it reports
+// provenance (local buyer node vs hosted snapshot) and how old the underlying
+// observations are, so a stale fallback is visible rather than silent.
+app.get('/api/catalog-source', (_req, res) => {
+  res.json(getLastCatalogSync() ?? { source: null, note: 'no catalog sync has run yet' });
 });
 
 app.post('/api/admin/sync', requireAdminAuth, async (_req, res) => {
@@ -2037,6 +2300,34 @@ app.get('/api/rewards', async (req, res) => {
   }
 });
 
+// ============================================================
+// LOCAL ONLY — DO NOT COMMIT THIS BLOCK. Personal page (not project-
+// related), explicitly asked to stay off GitHub. Serves ../private/osaka/
+// (gitignored) at antseed-zh.com/osaka. If you're about to `git add -A` or
+// commit this file for unrelated work, exclude this hunk.
+const osakaDir = path.join(__dirname, '../private/osaka');
+if (fs.existsSync(osakaDir)) {
+  // Lets the checklist page (list/index.html) submit picks with a button
+  // instead of the picks only living in that browser's localStorage —
+  // writes to private/osaka/picks.json (gitignored, same as this whole
+  // directory) so they can just be read from disk, no messaging needed.
+  app.post('/osaka/api/picks', (req, res) => {
+    try {
+      const { picks } = req.body || {};
+      if (!Array.isArray(picks)) return res.status(400).json({ error: 'picks must be an array' });
+      fs.writeFileSync(
+        path.join(osakaDir, 'picks.json'),
+        JSON.stringify({ picks, submittedAt: new Date().toISOString() }, null, 2)
+      );
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+  app.use('/osaka', express.static(osakaDir));
+}
+// ============================================================
+
 // Two static builds share this backend: `dist` (base='/zh/', served behind
 // the 5.223.54.56:8088/zh path-prefix proxy) and `dist-root` (base='/',
 // served at antseed-zh.com root). Pick by Host header so nginx can just
@@ -2062,7 +2353,9 @@ app.listen(PORT, '0.0.0.0', async () => {
   // in SQLite — closed days are never re-fetched/overwritten) so the DHT
   // sync below can match sellers to real on-chain earnings by agentId.
   await runHistorySync().catch((e) => console.error('[history-sync] initial run failed:', e.message));
-  // Sync live peer/service list from the official AntSeed network API
+  // Sync the live peer/service catalog. Primary source is the LOCAL buyer
+  // node's DHT view (`/_antseed/peers`); the hosted network.antseed.com
+  // snapshot is only a fallback, because it lags well behind.
   await syncFromOfficialNetwork();
   // Start background poller for on-chain metrics (every 5 minutes)
   startChainPoller(300);

@@ -2,6 +2,7 @@ node_modules/
 dist/
 dist-root/
 public/build-id.json
+private/
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal

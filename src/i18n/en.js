@@ -4,6 +4,7 @@ export default {
   'nav.buyers': 'Buyers',
   'nav.sellers': 'Sellers',
   'nav.services': 'Services',
+  'nav.market': 'Inference Market',
   'nav.protocol': 'Protocol',
   'nav.antsTokenomics': 'ANTS & Tokenomics',
   'nav.claim': 'Claim ANTS',
@@ -62,7 +63,7 @@ export default {
   'overview.volume': 'Volume (USDC)',
   'overview.epochNote': 'Epoch 22 is the current (still-open) recognized-usage period; earlier epochs are final.',
   'overview.dayNote': 'Today is still in progress; earlier days are final.',
-  'overview.epochDailyNote': 'Day-by-day breakdown of just the current epoch’s ~7-day window. Today is still in progress.',
+  'overview.epochDailyNote': 'Day-by-day breakdown of just the current epoch’s ~7-day window. Days are UTC-midnight buckets while epochs start at the genesis offset (~09:54 UTC), so the first and last day shown may include a few hours from the neighboring epoch. Today is still in progress.',
   'overview.error': 'Failed to load chart data.',
   'overview.empty': 'No data yet.',
   'overview.loading': 'Loading history…',
@@ -88,6 +89,7 @@ export default {
   'about.nav.node': 'This Node',
   'about.nav.models': 'Available Models',
   'about.nav.start': 'Getting Started',
+  'about.nav.changelog': "What's New",
   'about.communityTitle': 'Open Source, Community-Built',
   'about.communityBody': 'antseed-zh is a community-built, open-source project run independently of the core AntSeed team — not an official AntSeed product. Anyone can read the source, open an issue, or submit a pull request.',
   'about.contributeCta': 'Contribute on GitHub',
@@ -116,6 +118,54 @@ export default {
   'about.owner': 'Owner',
   'about.noModels': 'No models found',
   'about.startTitle': 'Getting Started',
+
+  // --- Changelog (About > What's New) ---------------------------------------
+  // History of this dashboard, not of the AntSeed protocol. Every entry
+  // describes a change actually made in this repo; see src/data/changelog.js.
+  'about.changelogTitle': "What's New",
+  'about.changelogIntro': 'Changes to this dashboard, newest first. This is the site\'s own history — for how the AntSeed protocol itself works, see the Protocol tab.',
+  'about.changelogTag.feature': 'New',
+  'about.changelogTag.fix': 'Fix',
+  'about.changelogTag.data': 'Data',
+
+  'changelog.market.title': 'Inference Market: AntSeed vs. Surplus vs. Orbio',
+  'changelog.market.body': 'New Inference Market tab comparing AntSeed with Surplus Intelligence and Orbio, side by side. A mechanism matrix covers architecture, discovery, transport, settlement, custody, and fees with sourced facts only (no better/worse framing); below it, live catalog stats and a shared-models price table show all three markets\' prices for the same models, blended 3:1 output:input per 1M tokens, with the cheapest source highlighted. Orbio\'s effective price applies its best live credit-tier discount (read from its site, not hardcoded) plus its 5% platform fee; any figure that can\'t be fetched shows a dash.',
+
+  'changelog.epochChartEmpty.title': 'Fixed: empty epoch chart right after an epoch rolls over',
+  'changelog.epochChartEmpty.body': 'The Overview epoch chart used to show "No data yet" for the first ~14 hours of every new epoch. Daily rows are bucketed by UTC midnight but epochs start at the genesis offset (~09:54 UTC), so the epoch\'s first day was filtered out — and right after a rollover that day was the only day. The chart now includes any day overlapping the epoch window, with a note that the first and last day may include a few hours from the neighboring epoch.',
+
+  'changelog.epochCountdown.title': 'Live countdown to the end of the epoch',
+  'changelog.epochCountdown.body': 'The Overview epoch view now shows how long the current epoch has left, ticking every second, with the exact end time below it. It counts against the epoch\'s real end timestamp rather than running a local timer, so it stays correct after the tab has been asleep.',
+
+  'changelog.referencePrices.title': 'Price comparison against OpenRouter list prices',
+  'changelog.referencePrices.body': 'Each model now shows the OpenRouter list price for the same model alongside a Discount column. It is a marketplace reference rate, not the model vendor\'s official price, and it is shown in both directions — some sellers charge more than the list rate, and those are displayed as found rather than hidden. Models with no OpenRouter entry show a dash instead of a guess.',
+
+  'changelog.modelMerge.title': 'Fixed: one model split across several rows',
+  'changelog.modelMerge.body': 'Providers spell the same model differently (claude-opus-4-8 vs claude-opus-4.8), and the site used to treat each spelling as a separate model. Each of those rows ranked only the sellers who happened to use that spelling, so most of them named the wrong cheapest provider. Spellings are now merged into one model, with each provider\'s own name shown in its own column. Variants such as -fast or -mini are deliberately kept separate.',
+
+  'changelog.byModel.title': 'Cheapest providers, grouped by model',
+  'changelog.byModel.body': 'The Services tab now opens on a by-model view listing the five cheapest providers for each model, with a two-level filter (pick a company, then a model family) so you are not scrolling hundreds of model names. The full catalog is still one click away.',
+
+  'changelog.protocolTab.title': 'Protocol tab',
+  'changelog.protocolTab.body': 'A page explaining how an AntSeed request works end to end — discovery, request, response, payment and reputation — as a single animated diagram, plus a comparison with other decentralized-AI projects.',
+
+  'changelog.antsMerge.title': 'ANTS and Tokenomics merged into one tab',
+  'changelog.antsMerge.body': 'Token supply, allocation and rewards used to be split across two overlapping pages. They are now one tab with two sub-tabs, and the reward explanations are available in both languages.',
+
+  'changelog.autoReload.title': 'The page updates itself after a deploy',
+  'changelog.autoReload.body': 'When a newer version of the site is published, open tabs notice and reload themselves, so you are not left looking at a stale page.',
+
+  'changelog.rewardsFormula.title': 'Fixed: incorrect usage-share formula',
+  'changelog.rewardsFormula.body': 'The dynamic usage share was computed incorrectly, and staking and usage rewards were shown in a single column. The formula was corrected against the on-chain parameters and the two reward types are now listed separately.',
+
+  'changelog.epochData.title': 'Per-epoch data across the dashboard',
+  'changelog.epochData.body': 'Overview, Buyers and Sellers can each be viewed for the current epoch rather than all-time, so activity in the epoch being rewarded is visible on its own.',
+
+  'changelog.rewriteV2.title': 'Rebuild: real data everywhere, and a Chinese/English toggle',
+  'changelog.rewriteV2.body': 'The dashboard was rebuilt around AntSeed\'s own design language and made fully bilingual. Most importantly, several figures that had been estimated or hardcoded — including a per-seller uptime that was the same invented number for every provider, and a volume figure derived from a guessed price per request — were removed and replaced with real on-chain and network data. Where a real number is not available, the site now shows a dash instead of an estimate.',
+
+  'changelog.recognizedUsage.title': 'Recognized-usage rewards support',
+  'changelog.recognizedUsage.body': 'Reward lookups were updated for the recognized-usage era: five reward types, live allocation read from the chain, and a fix for an epoch whose rewards were split across two contracts and had been partly unclaimable.',
   'about.step1': 'Install the AntSeed CLI (requires Node.js 20+):',
   'about.step2': 'Start the local buyer proxy:',
   'about.step3': 'Fund your wallet with USDC on Base.',
@@ -168,6 +218,10 @@ export default {
   'overview.epochBuyersTip': 'Distinct buyer addresses with at least one settlement recognized in the current epoch.',
   'overview.epochSellersTip': 'Distinct sellers with at least one settlement recognized in the current epoch.',
   'overview.epochVolumeTip': 'USDC volume recognized (settled + policy-filtered) so far in the current, still-open epoch.',
+  'overview.epochRemaining': 'Epoch ends in',
+  'overview.epochRemainingTip': 'Live countdown to the end of the current epoch, computed from the epoch start plus the on-chain epoch duration (7 days). When it reaches zero the epoch closes, its rewards become claimable, and the next epoch begins.',
+  'overview.epochEndsAt': 'Ends {time}',
+  'overview.epochEnding': 'Ending…',
 
   // About — current-epoch data explainer
   'about.nav.epochData': 'Epoch Data',
@@ -202,6 +256,79 @@ export default {
   "protocol.anim.payment.body": "Like a worker ant carrying food home, the buyer sends a seed of USDC value to the seller — signed as a voucher, settled on Base.",
   'protocol.anim.reputation.title': '5. Reputation updates',
   "protocol.anim.reputation.body": "The outcome of this settlement becomes part of the seller's public track record — visible to the next buyer.",
+
+  // Comparison table — AntSeed vs. two other AI-token projects that get
+  // mentioned in the same breath: Venice (a centralized private-AI app with
+  // its own VVV/DIEM tokens) and Orbio.so / ORBIO (a token launched on
+  // Robinhood Chain that converts its own trading-fee volume into resold
+  // OpenRouter API credits). Sourced from venice.ai, docs.venice.ai,
+  // orbio.so / coingecko.com/en/coins/orbio-so, and this repo's own
+  // protocol docs — not a currency/price comparison, since ORBIO's price is
+  // a volatile memecoin-style market and would go stale immediately.
+  'protocol.compareTitle': 'AntSeed vs. Venice vs. Orbio (ORBIO)',
+  'protocol.compareIntro': "These three all put \"AI\" and a token in the same sentence, but they solve different problems. Venice is a centralized private-AI app that also issues tokens; Orbio (ORBIO) is a Robinhood Chain token whose trading fees get converted into resold OpenRouter credits; AntSeed is a peer-to-peer protocol for buyers and sellers of AI inference to transact directly.",
+  'protocol.compare.col.dimension': 'Dimension',
+  'protocol.compare.col.antseed': 'AntSeed',
+  'protocol.compare.col.venice': 'Venice',
+  'protocol.compare.col.orbio': 'Orbio (ORBIO)',
+
+  'protocol.compare.row.model': 'What it is',
+  'protocol.compare.antseed.model': 'Open P2P protocol: independent seller nodes and buyer nodes discover each other via a public DHT and transact directly — no company runs the network.',
+  'protocol.compare.venice.model': 'A centralized product (Venice.ai, Inc.) — a hosted chat/image/video app and API that routes to third-party models (Claude, GPT, DeepSeek, etc.) behind Venice\'s own privacy layer.',
+  'protocol.compare.orbio.model': 'A token launched on Robinhood Chain. Orbio runs a relay/gateway to OpenRouter models and a secondary marketplace where trading-fee-funded AI credits are resold at a discount.',
+
+  'protocol.compare.row.settlement': 'How you pay',
+  'protocol.compare.antseed.settlement': 'USDC on Base, settled per request via on-chain payment channels (ReserveAuth/SpendingAuth) — no subscription required.',
+  'protocol.compare.venice.settlement': 'Monthly USD subscription tiers (Free / Pro $18 / Pro+ $68 / Max $200) plus a bundled monthly credit allowance; no on-chain settlement for usage itself.',
+  'protocol.compare.orbio.settlement': 'ORBIO token trades carry a 1.5% fee; half is converted into OpenRouter credits distributed hourly to holders of 1,000+ ORBIO, who can resell them for USDG on Orbio\'s marketplace.',
+
+  'protocol.compare.row.routing': 'Who picks the provider',
+  'protocol.compare.antseed.routing': 'The buyer\'s own router selects among independently-run seller peers by price/reputation — no single company brokers every request.',
+  'protocol.compare.venice.routing': 'Venice\'s own infrastructure picks and hosts the model-serving path; the user chooses a model, Venice operates the backend.',
+  'protocol.compare.orbio.routing': "Orbio's own gateway relays every request to OpenRouter — a single company-operated relay in the middle, not a peer-to-peer network.",
+
+  'protocol.compare.row.identity': 'Provider diversity',
+  'protocol.compare.antseed.identity': 'Any operator can register as a seller — from a single GPU to a TEE-backed agent — verified via wallet signatures and optional domain/GitHub proof.',
+  'protocol.compare.venice.identity': 'One provider: Venice.ai. All requests are served through Venice\'s own product, not a marketplace of independent sellers.',
+  'protocol.compare.orbio.identity': 'One provider: the Orbio gateway. ORBIO holders are credit recipients/resellers, not independent AI sellers on a network.',
+
+  'protocol.compare.row.tokenRole': 'Role of the token',
+  'protocol.compare.antseed.tokenRole': '$ANTS is a separate reward layered on top of USDC-settled usage (recognized-usage points + staking) — it is not required to pay for a request.',
+  'protocol.compare.venice.tokenRole': 'VVV / DIEM are separate token products alongside the subscription business; not required to use Venice\'s core chat/API tiers.',
+  'protocol.compare.orbio.tokenRole': "ORBIO is required to participate in the credit-earning loop (must hold 1,000+ to receive hourly credit distributions); its price has been highly volatile (allocated a 950M max supply, and has moved roughly 10x within days of its September 2026 Robinhood Chain launch).",
+
+  'protocol.compareFootnote': 'Sourced from venice.ai, docs.venice.ai, orbio.so, and coingecko.com/en/coins/orbio-so (checked 2026-09-16). ORBIO figures (price, market cap, fee %) change constantly and are not repeated here as fixed numbers — check those sources directly for current data. This is a description of how each project works, not investment advice.',
+
+  // Services tab, "By model" view — deliberately a second view *inside* the
+  // Services tab rather than its own nav tab, since it's the same
+  // /api/services data grouped differently, and a separate top-level tab for
+  // a re-sort of one dataset is the duplication the rewrite plan's "curation
+  // over completeness" rule warns about. Groups per-seller listings by model
+  // name, ranks sellers cheapest-first, keeps the top 5. See
+  // ServicesList.jsx for the ranking heuristic (a 3:1 output:input weighted
+  // blend, used only for sorting — the displayed input/output prices are
+  // always the real, unblended figures from the network).
+  'services.view.listings': 'All listings',
+  'services.view.byModel': 'By model — cheapest first',
+  'services.byModel.title': 'Cheapest Providers by Model',
+  'services.byModel.searchPlaceholder': 'Search models...',
+  'services.byModel.filterCompany': 'Company',
+  'services.byModel.filterModel': 'Model',
+  'services.byModel.allCompanies': 'All',
+  'services.byModel.allModels': 'All models',
+  'services.byModel.clearFilter': 'Clear filter',
+  'services.byModel.intro': 'Every seller on the network sets its own price per model. This groups the live listings by model and shows the 5 cheapest sellers for each, ranked by a blended input+output cost (weighted toward output tokens, since a typical response uses far more output than input tokens).',
+  'services.byModel.noResults': 'No models found matching your search.',
+  'services.byModel.col.rank': 'Rank',
+  'services.byModel.col.provider': 'Provider',
+  'services.byModel.col.providerModelName': "Provider's model name",
+  'services.byModel.col.price': 'Input / Output (per 1M)',
+  'services.byModel.col.reference': 'OpenRouter list (per 1M)',
+  'services.byModel.col.discount': 'Discount',
+  'services.byModel.aliases': 'spellings',
+  'services.byModel.aliasHint': 'Providers list this same model under several different names. They are grouped here so the price comparison covers every seller offering it — the exact name each provider uses is in the "Provider\'s model name" column.',
+  'services.byModel.footnote': 'Ranked by a 3:1 output-weighted blended price, used only to sort — the input/output prices shown are the real, unblended figures each seller reports. Providers name the same model differently (claude-opus-4-8 vs claude-opus-4.8), so listings are grouped by model identity and headed with the most vendor-like name in use; the exact string each provider advertises — the one you send as the model id — is shown per row. Only formatting differences are merged: variants like -fast, -mini or -pro stay separate models. Prices are self-reported by sellers via signed PeerMetadata and can change at any time; only sellers with a real price for both input and output tokens are ranked.',
+  'services.byModel.referenceNote': '"OpenRouter list" is the public list price for the same model on OpenRouter, fetched live from its model API and refreshed every few hours. OpenRouter is itself a marketplace, so this is a market reference rate, not the model vendor\'s official price. "Discount" compares the two on the same 3:1 output-weighted basis: −40% means the seller is 40% cheaper than the list price, while +15% means it is 15% more expensive — the column reports both directions as found, and some sellers do charge more than the list rate. Models with no OpenRouter entry show —. A very large discount is the seller\'s own published price, not a verified equivalence: AntSeed providers run their own stacks (TEE, fine-tunes, quantized or self-hosted weights), so a same-named model is not guaranteed to be an identical service. Always check the provider before relying on the comparison.',
 
   // ANTS & Tokenomics — merged tab (was separate Tokenomics + $ANTS Info
   // tabs; see docs/PROTOCOL_SECTION_PLAN.md §2). The 'tokenomics.*' keys
@@ -286,4 +413,54 @@ export default {
   'ants.earnStaker.desc': 'Lock ANTS into a seller pool to earn staker rewards on your lANTS position. Power activates the next epoch.',
   'ants.earnReserve.title': 'Protocol Reserve',
   'ants.earnReserve.desc': 'Network fees (4% of settlements) flow to the reserve — not to a company — to strengthen the ecosystem.',
+
+  // Inference Market tab (AntSeed vs Surplus Intelligence vs Orbio).
+  // Matrix facts are sourced: AntSeed from the protocol docs, Surplus from
+  // surplusintelligence.ai/docs, Orbio from orbio.so — keep them neutral.
+  'market.matrix.title': 'How the Three Are Built',
+  'market.matrix.intro': 'Mechanism comparison of three inference marketplaces. Sources: AntSeed protocol docs, surplusintelligence.ai/docs, orbio.so.',
+  'market.matrix.col.dimension': 'Dimension',
+  'market.matrix.model.label': 'Architecture',
+  'market.matrix.model.antseed': 'Peer-to-peer: the buyer’s local proxy connects directly to seller nodes — no company sits in the middle.',
+  'market.matrix.model.surplus': 'Centralized exchange: one OpenAI-compatible API routes each request to the cheapest listed offer.',
+  'market.matrix.model.orbio': 'Credit-discount relay: requests pass through the Orbio gateway to its managed OpenRouter account.',
+  'market.matrix.discovery.label': 'Discovery',
+  'market.matrix.discovery.antseed': 'BitTorrent DHT (BEP 5) with signed peer metadata; anyone can query the network.',
+  'market.matrix.discovery.surplus': 'Central model registry and seller order book on the platform.',
+  'market.matrix.discovery.orbio': 'Central catalog mirroring the OpenRouter model list.',
+  'market.matrix.transport.label': 'Transport',
+  'market.matrix.transport.antseed': 'End-to-end encrypted P2P (X25519 + AES-256-GCM over TCP, WebRTC fallback); requests are not relayed through third parties.',
+  'market.matrix.transport.surplus': 'TLS to api.surplusintelligence.ai; the gateway forwards requests to sellers.',
+  'market.matrix.transport.orbio': 'TLS to the Orbio gateway, which forwards to OpenRouter; prompts are not stored (per its FAQ).',
+  'market.matrix.settlement.label': 'Settlement',
+  'market.matrix.settlement.antseed': 'USDC on Base via non-custodial payment channels (ReserveAuth / SpendingAuth); the buyer never needs gas.',
+  'market.matrix.settlement.surplus': 'USDC on Base; additional x402, MPP (Tempo) and fiat payment rails.',
+  'market.matrix.settlement.orbio': 'Fiat card purchase of prepaid credits ($5 minimum).',
+  'market.matrix.custody.label': 'Custody',
+  'market.matrix.custody.antseed': 'Non-custodial: funds sit in on-chain contracts controlled by the parties.',
+  'market.matrix.custody.surplus': 'Marketplace-mediated settlement, executed and verifiable on-chain.',
+  'market.matrix.custody.orbio': 'Custodial prepaid credit balance; credits are not redeemable for cash.',
+  'market.matrix.sellers.label': 'Who sells',
+  'market.matrix.sellers.antseed': 'Independent provider nodes offering differentiated services (TEE, agents, fine-tuned or local models).',
+  'market.matrix.sellers.surplus': 'Anyone listing an OpenAI-compatible endpoint, setting their own price.',
+  'market.matrix.sellers.orbio': 'ORBIO token holders reselling unused credit at a discount.',
+  'market.matrix.fees.label': 'Fees',
+  'market.matrix.fees.antseed': '4% network fee on settlements, paid to the Protocol Reserve.',
+  'market.matrix.fees.surplus': 'No percentage markup at present (fee multiplier 1.0×, per its docs).',
+  'market.matrix.fees.orbio': '5% platform fee on the discounted credit price.',
+  'market.matrix.identity.label': 'Identity & reputation',
+  'market.matrix.identity.antseed': 'Wallet = peer id; ERC-8004 identity and reputation registries on Base.',
+  'market.matrix.identity.surplus': 'Platform accounts with provider verification and a seller-domain allowlist.',
+  'market.matrix.identity.orbio': 'Platform accounts.',
+  'market.live.title': 'Live Metrics',
+  'market.live.methodology': 'Sources: AntSeed from this node’s live catalog; Surplus from api.surplusintelligence.ai/v1/models; Orbio from api.orbio.so/api/v1/models plus the credit liquidity book embedded on orbio.so. Orbio effective price = list × (1 − best discount) × 1.05 platform fee. All prices are blended 3:1 output:input per 1M tokens. Failed sources show —.',
+  'market.live.antseedStats': '{sellers} sellers · {models} models · {listings} listings',
+  'market.live.catalogStats': '{models} priced models',
+  'market.live.orbioStats': '{models} priced models',
+  'market.live.orbioDiscount': 'Best credit tier: {pct}% off ({credits} available · {total} total)',
+  'market.live.discountUnavailable': 'Credit discount could not be read — showing list prices.',
+  'market.live.col.model': 'Model',
+  'market.live.col.antseed': 'AntSeed (cheapest)',
+  'market.live.col.openrouter': 'OpenRouter (list)',
+  'market.live.footnote': 'Prices are per-1M-token blended (3:1 output:input) from each marketplace’s public API, last fetched {fetchedAt}. Cached server-side for 6h; a — means that source has no real number for the model.',
 };

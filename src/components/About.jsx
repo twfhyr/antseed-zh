@@ -2,6 +2,15 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Github } from 'lucide-react';
 import { fetchProviderModels } from '../api';
 import { useI18n } from '../i18n/index.jsx';
+import { CHANGELOG } from '../data/changelog';
+
+// Tag colors mirror the palette already used for category chips elsewhere,
+// so "New"/"Fix"/"Data" read as the same visual family as the rest of the UI.
+const CHANGELOG_TAG_COLORS = {
+  feature: { bg: 'rgba(16,185,129,0.15)', color: '#10b981' },
+  fix: { bg: 'rgba(245,158,11,0.15)', color: '#f59e0b' },
+  data: { bg: 'rgba(59,130,246,0.15)', color: '#3b82f6' },
+};
 
 const MY_PEER_ID = '412282c48584073c5aee6a79945f105a7777e194';
 
@@ -9,7 +18,7 @@ const MY_PEER_ID = '412282c48584073c5aee6a79945f105a7777e194';
 // defines both nav order and page order. Kept flat/simple on purpose (no
 // "Part 1 / Part 2" grouping): visitors just pick whatever they're curious
 // about and jump straight there.
-const SECTIONS = ['whatIs', 'layers', 'provide', 'payments', 'epochData', 'community', 'node', 'models', 'start'];
+const SECTIONS = ['whatIs', 'layers', 'provide', 'payments', 'epochData', 'community', 'node', 'models', 'start', 'changelog'];
 
 function About() {
   const { t } = useI18n();
@@ -203,6 +212,65 @@ function About() {
             <li>{t('about.step3')}</li>
             <li>{t('about.step4')} <code>antseed buyer connection set --peer {MY_PEER_ID}</code></li>
           </ol>
+        </div>
+
+        {/* Site changelog. Last section on purpose: it's reference material
+            for returning visitors, not part of the explanation a newcomer
+            reads top-to-bottom. Entries live in src/data/changelog.js. */}
+        <div className="table-container about-section" data-section="changelog" ref={setRef('changelog')}>
+          <h3>{t('about.changelogTitle')}</h3>
+          <p style={{ color: 'var(--text-secondary)', fontSize: '0.875rem' }}>
+            {t('about.changelogIntro')}
+          </p>
+
+          <div style={{ marginTop: '1.25rem' }}>
+            {CHANGELOG.map((entry, i) => {
+              const tagColor = CHANGELOG_TAG_COLORS[entry.tag] ?? CHANGELOG_TAG_COLORS.feature;
+              // Only label the date once per group of same-day entries, so a
+              // day that shipped several changes reads as one dated block.
+              const isNewDate = i === 0 || CHANGELOG[i - 1].date !== entry.date;
+              return (
+                <div
+                  key={`${entry.date}-${entry.titleKey}`}
+                  style={{
+                    display: 'flex',
+                    gap: '1rem',
+                    paddingTop: isNewDate && i > 0 ? '1.25rem' : '0.5rem',
+                    paddingBottom: '0.5rem',
+                    borderTop: isNewDate && i > 0 ? '1px solid var(--border)' : 'none',
+                  }}
+                >
+                  <div style={{ width: '5.5rem', flexShrink: 0, paddingTop: '0.1rem' }}>
+                    {isNewDate && (
+                      <time
+                        dateTime={entry.date}
+                        style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', fontFamily: 'monospace' }}
+                      >
+                        {entry.date}
+                      </time>
+                    )}
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                      <span
+                        style={{
+                          fontSize: '0.68rem', fontWeight: 700, textTransform: 'uppercase',
+                          letterSpacing: '0.04em', padding: '0.12rem 0.45rem', borderRadius: '999px',
+                          background: tagColor.bg, color: tagColor.color, whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {t(`about.changelogTag.${entry.tag}`)}
+                      </span>
+                      <strong style={{ fontSize: '0.9rem' }}>{t(entry.titleKey)}</strong>
+                    </div>
+                    <p style={{ margin: '0.35rem 0 0', color: 'var(--text-secondary)', fontSize: '0.83rem', lineHeight: 1.6 }}>
+                      {t(entry.bodyKey)}
+                    </p>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
       </div>
     </div>

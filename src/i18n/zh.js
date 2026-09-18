@@ -4,6 +4,7 @@ export default {
   'nav.buyers': '买家',
   'nav.sellers': '卖家',
   'nav.services': '服务',
+  'nav.market': '推理市场',
   'nav.protocol': '协议',
   'nav.antsTokenomics': 'ANTS 与代币经济',
   'nav.claim': '领取 ANTS',
@@ -62,7 +63,7 @@ export default {
   'overview.volume': '交易量（USDC）',
   'overview.epochNote': '第 22 纪元是当前（尚未结束）的认可使用周期；此前的纪元均已结算完毕。',
   'overview.dayNote': '今天的数据仍在更新；此前的日期均已结算完毕。',
-  'overview.epochDailyNote': '仅展示当前纪元约 7 天窗口内的每日明细。今天的数据仍在更新中。',
+  'overview.epochDailyNote': '仅展示当前纪元约 7 天窗口内的每日明细。日数据按 UTC 零点划分，而纪元起始点在 ~09:54 UTC，因此窗口首尾的当天可能包含相邻纪元的几个小时。今天的数据仍在更新中。',
   'overview.error': '图表数据加载失败。',
   'overview.empty': '暂无数据。',
   'overview.loading': '正在加载历史数据…',
@@ -85,6 +86,7 @@ export default {
   'about.nav.node': '关于本节点',
   'about.nav.models': '可用模型',
   'about.nav.start': '快速开始',
+  'about.nav.changelog': '更新日志',
   'about.communityTitle': '开源社区项目',
   'about.communityBody': 'antseed-zh 是一个由社区独立构建和维护的开源项目，并非 AntSeed 官方团队出品。任何人都可以阅读源码、提交 issue 或发起 pull request 参与贡献。',
   'about.contributeCta': '在 GitHub 上参与贡献',
@@ -113,6 +115,54 @@ export default {
   'about.owner': '提供方',
   'about.noModels': '未找到模型',
   'about.startTitle': '快速开始',
+
+  // --- 更新日志（关于 > 更新日志）---------------------------------------
+  // 这里记录的是本站自身的变更，不是 AntSeed 协议的变更。每条都对应本仓库
+  // 真实发生过的改动，详见 src/data/changelog.js。
+  'about.changelogTitle': '更新日志',
+  'about.changelogIntro': '本站的变更记录，由新到旧。这里只记录网站自身的历史；关于 AntSeed 协议本身如何运作，请看"协议"标签页。',
+  'about.changelogTag.feature': '新增',
+  'about.changelogTag.fix': '修复',
+  'about.changelogTag.data': '数据',
+
+  'changelog.market.title': '推理市场：AntSeed 与 Surplus、Orbio 对比',
+  'changelog.market.body': '新增"推理市场"标签页，将 AntSeed 与 Surplus Intelligence、Orbio 并排对比。机制矩阵基于可溯源的事实客观呈现架构、发现机制、传输、结算、托管与手续费（不作优劣评判）；下方为实时目录统计与同模型价格对照表，按 3:1 输出:输入混合价（每百万 token）展示三个市场对同一模型的报价，并高亮最低价来源。Orbio 的有效价格按其官网实时读取的最高额度档位折扣（非写死数值）叠加 5% 平台费计算；无法获取的数据一律显示为短横线。',
+
+  'changelog.epochChartEmpty.title': '修复：纪元刚切换时图表显示"暂无数据"',
+  'changelog.epochChartEmpty.body': '此前总览页的纪元图表在每个新纪元开始后的约 14 小时内一直显示"暂无数据"。原因是日数据按 UTC 零点分桶，而纪元起始点在 ~09:54 UTC，纪元的第一天会被过滤掉——而纪元刚切换时这一天是唯一的一天。现在图表会包含与纪元窗口有重叠的所有日期，并在下方注明窗口首尾的当天可能包含相邻纪元的几个小时。',
+
+  'changelog.epochCountdown.title': '纪元结束实时倒计时',
+  'changelog.epochCountdown.body': '总览的纪元视图现在会显示当前纪元还剩多少时间，每秒刷新，下方标注确切的结束时间。它以纪元真实的结束时间戳为准计算，而不是本地计时器，因此标签页休眠后再打开依然准确。',
+
+  'changelog.referencePrices.title': '与 OpenRouter 标价的价格对比',
+  'changelog.referencePrices.body': '每个模型现在会同时显示该模型在 OpenRouter 上的公开标价，以及一列"折扣"。这是市场参考价，并非模型厂商的官方定价，并且两个方向都如实展示——确实有卖家报价高于标价，这类情况照实显示而不会隐藏。在 OpenRouter 上没有对应条目的模型显示为短横线，而不是猜一个值。',
+
+  'changelog.modelMerge.title': '修复：同一个模型被拆成多行',
+  'changelog.modelMerge.body': '不同服务商对同一模型的写法不同（如 claude-opus-4-8 与 claude-opus-4.8），此前本站把每种写法当成不同的模型。这样每一行只对使用该写法的卖家排序，因此大多数行给出的"最便宜服务商"其实是错的。现在各种写法已归并为同一个模型，每家服务商自己使用的名称单列一栏展示。-fast、-mini 这类变体仍有意保持为不同模型。',
+
+  'changelog.byModel.title': '按模型查看最便宜的服务商',
+  'changelog.byModel.body': '"服务"标签页现在默认按模型展示，列出每个模型最便宜的 5 家服务商，并提供两级筛选（先选厂商，再选模型系列），不必在数百个模型名里翻找。完整目录仍然只需点一下即可切换。',
+
+  'changelog.protocolTab.title': '协议标签页',
+  'changelog.protocolTab.body': '用一张动画图完整讲解一次 AntSeed 请求的全流程——发现、请求、响应、支付与信誉，并附上与其他去中心化 AI 项目的对比。',
+
+  'changelog.antsMerge.title': 'ANTS 与经济模型合并为一个标签页',
+  'changelog.antsMerge.body': '代币供应、分配与奖励此前分散在两个内容重叠的页面，现已合并为一个标签页下的两个子页，奖励相关说明也补齐了中英双语。',
+
+  'changelog.autoReload.title': '发布新版本后页面自动更新',
+  'changelog.autoReload.body': '站点发布新版本时，已打开的标签页会自动察觉并刷新，不会让你停留在旧页面上。',
+
+  'changelog.rewardsFormula.title': '修复：使用份额公式计算有误',
+  'changelog.rewardsFormula.body': '动态使用份额的计算此前有误，且质押奖励与使用奖励被合并显示在同一列。现已依据链上参数修正公式，并将两类奖励分开列出。',
+
+  'changelog.epochData.title': '全站支持按纪元查看数据',
+  'changelog.epochData.body': '总览、买家、卖家都可以切换为只看当前纪元，而不是全部历史，从而单独观察正在计奖的这个纪元内的活动。',
+
+  'changelog.rewriteV2.title': '重构：全站使用真实数据，并支持中英切换',
+  'changelog.rewriteV2.body': '本站按 AntSeed 的设计语言重构，并实现完整的中英双语。更重要的是，若干此前靠估算或写死的数字被移除，改用真实的链上与网络数据——其中包括对每个服务商都显示同一个虚构数值的"在线率"，以及由猜测的单次请求价格推算出的交易量。当拿不到真实数值时，站点现在显示短横线，而不是给出一个估算值。',
+
+  'changelog.recognizedUsage.title': '支持 recognized-usage 奖励体系',
+  'changelog.recognizedUsage.body': '奖励查询已更新至 recognized-usage 时代：五类奖励、从链上实时读取分配比例，并修复了某个纪元奖励分散在两份合约、此前有一部分无法领取的问题。',
   'about.step1': '安装 AntSeed CLI（需要 Node.js 20 及以上）：',
   'about.step2': '启动本地买家代理：',
   'about.step3': '在 Base 网络上为钱包充值 USDC。',
@@ -165,6 +215,10 @@ export default {
   'overview.epochBuyersTip': '本纪元内至少有一笔认可结算的买家地址数（去重）。',
   'overview.epochSellersTip': '本纪元内至少有一笔认可结算的卖家数（去重）。',
   'overview.epochVolumeTip': '当前（尚未结束）纪元内已认可（结算并经策略过滤）的 USDC 交易量。',
+  'overview.epochRemaining': '本纪元剩余',
+  'overview.epochRemainingTip': '距当前纪元结束的实时倒计时，由纪元开始时间加上链上纪元时长（7 天）计算得出。归零时本纪元结束，其奖励变为可领取，下一纪元开始。',
+  'overview.epochEndsAt': '结束于 {time}',
+  'overview.epochEnding': '即将结束…',
 
   // 关于页面 —— 当前纪元数据说明
   'about.nav.epochData': '纪元数据',
@@ -198,6 +252,75 @@ export default {
   'protocol.anim.payment.body': '就像工蚁把食物带回巢穴一样，买家把一粒代表 USDC 价值的"种子"送给卖家——签署为凭证，并在 Base 上结算。',
   'protocol.anim.reputation.title': '5. 声誉更新',
   'protocol.anim.reputation.body': '这次结算的结果会计入卖家的公开信誉记录，供下一位买家参考。',
+
+  // 对比表格 —— AntSeed 与另外两个常被相提并论的 AI + 代币项目：Venice
+  // （一个中心化的隐私 AI 应用，附带自己的 VVV/DIEM 代币）和
+  // Orbio.so / ORBIO（在 Robinhood Chain 上发行的代币，把自身交易手续费
+  // 转换为可转售的 OpenRouter API 额度）。信息来源：venice.ai、
+  // docs.venice.ai、orbio.so、coingecko.com/en/coins/orbio-so ——
+  // 不是价格对比，因为 ORBIO 的价格是高波动的迷因币式市场，写死会立刻过时。
+  'protocol.compareTitle': 'AntSeed 对比 Venice 与 Orbio（ORBIO）',
+  'protocol.compareIntro': '这三者都把"AI"和"代币"放进同一句话里，但解决的是不同的问题。Venice 是一个附带发行代币的中心化隐私 AI 应用；Orbio（ORBIO）是 Robinhood Chain 上的一个代币，把交易手续费转换成可转售的 OpenRouter 额度；AntSeed 则是一个让 AI 推理的买卖双方直接交易的点对点协议。',
+  'protocol.compare.col.dimension': '维度',
+  'protocol.compare.col.antseed': 'AntSeed',
+  'protocol.compare.col.venice': 'Venice',
+  'protocol.compare.col.orbio': 'Orbio（ORBIO）',
+
+  'protocol.compare.row.model': '是什么',
+  'protocol.compare.antseed.model': '开放的点对点协议：独立的卖家节点与买家节点通过公开 DHT 互相发现并直接交易——没有公司运营这个网络。',
+  'protocol.compare.venice.model': '一个中心化产品（Venice.ai, Inc.）——托管的聊天/图像/视频应用与 API，在 Venice 自己的隐私层之后路由到第三方模型（Claude、GPT、DeepSeek 等）。',
+  'protocol.compare.orbio.model': '在 Robinhood Chain 上发行的代币。Orbio 运营一个到 OpenRouter 模型的中转网关，以及一个二级市场，将手续费换来的 AI 额度打折转售。',
+
+  'protocol.compare.row.settlement': '如何付费',
+  'protocol.compare.antseed.settlement': '在 Base 上以 USDC 结算，通过链上支付通道（ReserveAuth/SpendingAuth）按次结算——无需订阅。',
+  'protocol.compare.venice.settlement': '按月订阅美元套餐（Free / Pro $18 / Pro+ $68 / Max $200），附带每月额度；用量本身不做链上结算。',
+  'protocol.compare.orbio.settlement': 'ORBIO 代币交易收取 1.5% 手续费，其中一半换成 OpenRouter 额度，每小时分发给持有 1,000 枚以上 ORBIO 的地址，持有者可在 Orbio 的市场上换成 USDG 转售。',
+
+  'protocol.compare.row.routing': '谁来选服务商',
+  'protocol.compare.antseed.routing': '买家自己的路由器根据价格/信誉在独立运营的卖家节点之间选择——没有单一公司充当每次请求的中间人。',
+  'protocol.compare.venice.routing': 'Venice 自己的基础设施决定并托管模型服务路径；用户选择模型，Venice 运营后端。',
+  'protocol.compare.orbio.routing': 'Orbio 自己的网关把每个请求中转到 OpenRouter——是单一公司运营的中转，而非点对点网络。',
+
+  'protocol.compare.row.identity': '服务商多样性',
+  'protocol.compare.antseed.identity': '任何运营者都可以注册成为卖家——从单张 GPU 到 TEE 支持的智能体——通过钱包签名及可选的域名/GitHub 验证。',
+  'protocol.compare.venice.identity': '只有一个服务商：Venice.ai。所有请求都通过 Venice 自己的产品提供，而非一个由独立卖家组成的市场。',
+  'protocol.compare.orbio.identity': '只有一个服务商：Orbio 网关。ORBIO 持有者是额度的接收者/转售者，而非网络中的独立 AI 卖家。',
+
+  'protocol.compare.row.tokenRole': '代币的作用',
+  'protocol.compare.antseed.tokenRole': '$ANTS 是叠加在 USDC 结算用量之上的独立奖励（认可用量积分 + 质押）——支付请求本身不需要它。',
+  'protocol.compare.venice.tokenRole': 'VVV / DIEM 是与订阅业务并行的独立代币产品；使用 Venice 的核心聊天/API 套餐并不需要它们。',
+  'protocol.compare.orbio.tokenRole': '要参与额度获取循环就必须持有 ORBIO（需持有 1,000 枚以上才能收到每小时的额度分发）；其价格波动极大（最大供应量 9.5 亿枚，自 2026 年 9 月在 Robinhood Chain 上线以来，数日内涨跌幅一度接近 10 倍）。',
+
+  'protocol.compareFootnote': '信息来源：venice.ai、docs.venice.ai、orbio.so、coingecko.com/en/coins/orbio-so（核对于 2026-09-16）。ORBIO 的具体数字（价格、市值、手续费比例等）持续变动，此处不作为固定数值重复列出——请直接查阅上述来源获取最新数据。本表仅描述各项目的运作方式，不构成投资建议。',
+
+  // "服务"标签页的"按模型"视图 —— 刻意做成服务标签页内部的第二个视图，而
+  // 不是独立的导航标签：它用的是同一份 /api/services 数据，只是换了一种分组
+  // 方式，为同一份数据的重新排序单开一个顶级标签，正是重写计划中"精选优于
+  // 大而全"所要避免的重复。按模型名称对各卖家的服务列表分组，按价格从低到高
+  // 排序，只保留最便宜的 5 家。排序方式见 ServicesList.jsx（输出:输入按 3:1
+  // 加权的混合价格，仅用于排序——表格中展示的输入/输出价格始终是网络上报的
+  // 真实、未加权数值）。
+  'services.view.listings': '全部列表',
+  'services.view.byModel': '按模型——最便宜优先',
+  'services.byModel.title': '各模型最便宜的服务商',
+  'services.byModel.searchPlaceholder': '搜索模型...',
+  'services.byModel.filterCompany': '厂商',
+  'services.byModel.filterModel': '模型',
+  'services.byModel.allCompanies': '全部',
+  'services.byModel.allModels': '全部模型',
+  'services.byModel.clearFilter': '清除筛选',
+  'services.byModel.intro': '网络上的每个卖家都会为每个模型自行设定价格。这里按模型对实时列表进行分组，并展示每个模型最便宜的 5 家卖家，排序依据是输入+输出的加权综合成本（偏向输出 token，因为一次典型的回复所用的输出 token 通常远多于输入 token）。',
+  'services.byModel.noResults': '没有找到匹配的模型。',
+  'services.byModel.col.rank': '排名',
+  'services.byModel.col.provider': '服务商',
+  'services.byModel.col.providerModelName': '服务商使用的模型名',
+  'services.byModel.col.price': '输入 / 输出（每百万）',
+  'services.byModel.col.reference': 'OpenRouter 标价（每百万）',
+  'services.byModel.col.discount': '折扣',
+  'services.byModel.aliases': '种写法',
+  'services.byModel.aliasHint': '不同服务商用不同的名称列出同一个模型。这里已将它们归并，以便价格对比覆盖所有提供该模型的卖家——每个服务商实际使用的名称见"服务商使用的模型名"一列。',
+  'services.byModel.footnote': '排序依据是输出:输入按 3:1 加权的综合价格，仅用于排序——表格中展示的输入/输出价格是每个卖家上报的真实、未加权数值。不同服务商对同一模型的命名不同（如 claude-opus-4-8 与 claude-opus-4.8），因此这里按模型身份归并，并以最接近官方写法的名称作为标题；每个服务商实际对外使用的名称（也就是调用时要填的 model id）在各行中单独列出。归并只针对写法差异：-fast、-mini、-pro 等变体仍作为不同模型分开展示。价格由卖家通过签名的 PeerMetadata 自行上报，可能随时变化；只有同时上报了输入和输出真实价格的卖家才会被纳入排名。',
+  'services.byModel.referenceNote': '"OpenRouter 标价"是同一模型在 OpenRouter 上的公开标价，通过其模型 API 实时获取并每隔数小时刷新。OpenRouter 本身也是一个模型市场，因此这是市场参考价，而非模型厂商的官方定价。"折扣"按同样的 3:1 输出加权口径比较：−40% 表示卖家比标价便宜 40%，+15% 则表示比标价贵 15%——两个方向都如实展示，确实有卖家报价高于标价。在 OpenRouter 上没有对应条目的模型显示为 —。折扣幅度很大时，那只是卖家自己公布的价格，并不代表已验证两者等价：AntSeed 的服务商各自运行自己的技术栈（TEE、微调、量化或自建权重），同名模型不保证是完全相同的服务。依据该对比做决定前，请先自行核实服务商。',
 
   // ANTS 与代币经济 —— 合并后的标签页（原为独立的"代币经济"与"ANTS 详情"
   // 两个标签页，详见 docs/PROTOCOL_SECTION_PLAN.md 第 2 节）。上方的
@@ -282,4 +405,54 @@ export default {
   'ants.earnStaker.desc': '将 ANTS 锁定进某个卖家资金池，即可从你的 lANTS 仓位中获得质押奖励。权重在下一个纪元生效。',
   'ants.earnReserve.title': '协议储备金',
   'ants.earnReserve.desc': '网络手续费（结算额的 4%）将流入储备金 —— 而非某家公司 —— 用于增强整个生态系统。',
+
+  // Inference Market 标签页（AntSeed vs Surplus Intelligence vs Orbio）。
+  // 矩阵事实来源：AntSeed 协议文档、surplusintelligence.ai/docs、orbio.so，
+  // 措辞保持中立客观。
+  'market.matrix.title': '实现方式对比',
+  'market.matrix.intro': '三个推理市场的机制差异。来源：AntSeed 协议文档、surplusintelligence.ai/docs、orbio.so。',
+  'market.matrix.col.dimension': '维度',
+  'market.matrix.model.label': '架构',
+  'market.matrix.model.antseed': '点对点：买方本地代理直接连接卖方节点，中间没有平台方。',
+  'market.matrix.model.surplus': '中心化撮合：一个 OpenAI 兼容 API，把每个请求路由到当前最便宜的报价。',
+  'market.matrix.model.orbio': '积分折扣转发：请求经 Orbio 网关发往其托管的 OpenRouter 账户。',
+  'market.matrix.discovery.label': '发现机制',
+  'market.matrix.discovery.antseed': 'BitTorrent DHT（BEP 5）+ 签名的节点元数据，任何人都可以查询网络。',
+  'market.matrix.discovery.surplus': '平台集中的模型注册表与卖方订单簿。',
+  'market.matrix.discovery.orbio': '集中式目录，镜像 OpenRouter 的模型列表。',
+  'market.matrix.transport.label': '传输',
+  'market.matrix.transport.antseed': '端到端加密的 P2P 连接（TCP 上 X25519 + AES-256-GCM，WebRTC 兜底），请求不经第三方转发。',
+  'market.matrix.transport.surplus': 'TLS 连接至 api.surplusintelligence.ai，由网关转发给卖方。',
+  'market.matrix.transport.orbio': 'TLS 连接至 Orbio 网关再转发至 OpenRouter；据其 FAQ 不存储提示词内容。',
+  'market.matrix.settlement.label': '结算',
+  'market.matrix.settlement.antseed': 'Base 上的 USDC，走非托管支付通道（ReserveAuth / SpendingAuth），买方无需 Gas。',
+  'market.matrix.settlement.surplus': 'Base 上的 USDC，另支持 x402、MPP（Tempo）与法币支付通道。',
+  'market.matrix.settlement.orbio': '法币刷卡购买预付积分（最低 $5）。',
+  'market.matrix.custody.label': '托管方式',
+  'market.matrix.custody.antseed': '非托管：资金在双方控制的链上合约中。',
+  'market.matrix.custody.surplus': '由市场撮合，链上结算、可公开验证。',
+  'market.matrix.custody.orbio': '托管式预付积分余额；积分不可兑换回现金。',
+  'market.matrix.sellers.label': '卖方是谁',
+  'market.matrix.sellers.antseed': '运行节点的独立提供商，提供差异化服务（TEE、智能体、微调或本地模型）。',
+  'market.matrix.sellers.surplus': '任何人上架 OpenAI 兼容端点，自行定价。',
+  'market.matrix.sellers.orbio': 'ORBIO 持币者折价转售未使用的额度。',
+  'market.matrix.fees.label': '费用',
+  'market.matrix.fees.antseed': '结算额的 4% 作为网络费用进入协议储备金。',
+  'market.matrix.fees.surplus': '目前无百分比加价（据其文档，费率系数 1.0×）。',
+  'market.matrix.fees.orbio': '折后价加收 5% 平台费。',
+  'market.matrix.identity.label': '身份与信誉',
+  'market.matrix.identity.antseed': '钱包即节点 ID；Base 上的 ERC-8004 身份与信誉注册表。',
+  'market.matrix.identity.surplus': '平台账户，含提供商验证与卖方域名白名单。',
+  'market.matrix.identity.orbio': '平台账户。',
+  'market.live.title': '实时数据',
+  'market.live.methodology': '数据来源：AntSeed 取本节点实时目录；Surplus 取 api.surplusintelligence.ai/v1/models；Orbio 取 api.orbio.so/api/v1/models 及 orbio.so 内嵌的积分流动性簿。Orbio 有效价 = 目录价 ×（1 − 最优折扣）× 1.05 平台费。价格均为每百万 token 按 3:1（输出:输入）加权。拉取失败的来源显示 —。',
+  'market.live.antseedStats': '{sellers} 个卖方 · {models} 个模型 · {listings} 条服务',
+  'market.live.catalogStats': '{models} 个有价模型',
+  'market.live.orbioStats': '{models} 个有价模型',
+  'market.live.orbioDiscount': '最优积分档位：{pct}% 折扣（该档可用 {credits} · 总计 {total}）',
+  'market.live.discountUnavailable': '未能读取积分折扣 —— 显示目录原价。',
+  'market.live.col.model': '模型',
+  'market.live.col.antseed': 'AntSeed（最低价）',
+  'market.live.col.openrouter': 'OpenRouter（目录价）',
+  'market.live.footnote': '价格来自各市场公开 API，按每百万 token 3:1（输出:输入）加权，最近更新 {fetchedAt}。服务端缓存 6 小时；— 表示该来源没有此模型的真实数据。',
 };
