@@ -10,6 +10,7 @@ export default {
   'nav.claim': '领取 ANTS',
   'nav.channels': '支付通道',
   'nav.stake': '质押 ANTS',
+  'nav.town': '小镇公告板',
   'nav.about': '关于',
 
   // 页头

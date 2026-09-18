@@ -10,6 +10,7 @@ export default {
   'nav.claim': 'Claim ANTS',
   'nav.channels': 'Channels',
   'nav.stake': 'Stake ANTS',
+  'nav.town': 'Town Board',
   'nav.about': 'About',
 
   // Header
