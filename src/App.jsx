@@ -4,6 +4,7 @@ import ServicesList from './components/ServicesList';
 import BuyersList from './components/BuyersList';
 import TokenomicsTab from './components/TokenomicsTab';
 import ANTSInfo from './components/ANTSInfo';
+import StakeANTS from './components/StakeANTS';
 import Overview from './components/Overview';
 import About from './components/About';
 import Header from './components/Header';
@@ -157,14 +158,20 @@ return (
           >
             {t('nav.antsInfo')}
           </a>
-          {/* Claim ANTS / Channels tabs and the header wallet-connect button
-              are deliberately not surfaced — both need a connected wallet,
-              which reads as "this site wants access to my funds" on a site
-              most visitors land on to browse read-only, and asking for a
-              wallet connection is sensitive to prompt for by default. The
-              components (ClaimANTS.jsx, ChannelsView.jsx) and their backend
-              endpoints are untouched, kept for if/when this comes back —
-              see notes/dev-plan.md. */}
+          {/* Stake ANTS deliberately reverses the earlier "no wallet-connect
+              UI by default" decision (see notes/dev-plan.md) — explicit call
+              by the site owner 2026-09-18, not a default. ClaimANTS.jsx /
+              ChannelsView.jsx (the other 3 reward buckets: staker, legacy,
+              locked) stay hidden — StakeANTS.jsx only covers the epoch-22+
+              recognized-usage buckets (buyer/seller usage), which is all
+              this tab was asked to surface. */}
+          <a
+            href={tabHref('stake')}
+            className={`tab ${activeTab === 'stake' ? 'active' : ''}`}
+            onClick={(e) => { e.preventDefault(); setActiveTab('stake'); }}
+          >
+            {t('nav.stake')}
+          </a>
           <a
             href={tabHref('about')}
             className={`tab ${activeTab === 'about' ? 'active' : ''}`}
@@ -180,6 +187,7 @@ return (
         {activeTab === 'services' && <ServicesList services={services} />}
         {activeTab === 'tokenomics' && <TokenomicsTab />}
         {activeTab === 'ants-info' && <ANTSInfo />}
+        {activeTab === 'stake' && <StakeANTS />}
         {activeTab === 'about' && <About />}
       </main>
       <DepositModal isOpen={depositOpen} onClose={() => setDepositOpen(false)} buyerAddress={buyerAddress} />

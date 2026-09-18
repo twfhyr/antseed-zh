@@ -8,6 +8,7 @@ export default {
   'nav.antsInfo': 'ANTS 详情',
   'nav.claim': '领取 ANTS',
   'nav.channels': '支付通道',
+  'nav.stake': '质押 ANTS',
   'nav.about': '关于',
 
   // 页头
