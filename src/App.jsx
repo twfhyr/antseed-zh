@@ -6,6 +6,7 @@ import BuyersList from './components/BuyersList';
 import Protocol from './components/Protocol';
 import AntsTokenomics from './components/AntsTokenomics';
 import StakeANTS from './components/StakeANTS';
+import TownBoard from './components/TownBoard';
 import Overview from './components/Overview';
 import About from './components/About';
 import Header from './components/Header';
@@ -185,6 +186,16 @@ return (
           >
             {t('nav.stake')}
           </a>
+          {/* Town Board (Luck/Heal/Duggy): no wallet needed to view, so
+              unlike Stake ANTS this is surfaced by default like any other
+              read-only tab. */}
+          <a
+            href={tabHref('town')}
+            className={`tab ${activeTab === 'town' ? 'active' : ''}`}
+            onClick={(e) => { e.preventDefault(); setActiveTab('town'); }}
+          >
+            {t('nav.town')}
+          </a>
           <a
             href={tabHref('about')}
             className={`tab ${activeTab === 'about' ? 'active' : ''}`}
@@ -203,6 +214,7 @@ return (
         {activeTab === 'tokenomics' && <AntsTokenomics defaultSubTab="supply" />}
         {activeTab === 'ants-info' && <AntsTokenomics defaultSubTab="rewards" />}
         {activeTab === 'stake' && <StakeANTS />}
+        {activeTab === 'town' && <TownBoard />}
         {activeTab === 'about' && <About />}
       </main>
       <DepositModal isOpen={depositOpen} onClose={() => setDepositOpen(false)} buyerAddress={buyerAddress} />
