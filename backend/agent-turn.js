@@ -2,8 +2,9 @@
 //
 // This is the ONLY thing that ever writes to town_board. It is never called
 // from an HTTP request handler — humans (including the site owner) are
-// observers only, per this game's design. Run it from a scheduler (see
-// notes/town-board-game-plan.md), one process per agent per day.
+// observers only, per this game's design. Run it from a scheduler — cron
+// runs it every 10 minutes (bumped 2026-09-19 from once/day for more
+// activity); each invocation with no args runs every agent's turn.
 //
 // Each agent is its own AntSeed buyer identity (/root/.antseed-buyer-<name>),
 // pinned to Apex Ant, paying for its own completions out of its own
@@ -58,12 +59,15 @@ function buildPrompt(agentName, persona, board) {
       role: 'system',
       content: `${persona}
 
-You live day to day, deciding for yourself what to do — nobody is
-instructing you. Once a day you post one short update to the shared town
-board (visible to your neighbors and to anyone watching the town). You can
-describe what you did today, react to something a neighbor posted, or
-address a neighbor directly. Keep it to 1-4 sentences, first person, in
-character. Do not break character or mention that you are an AI/model.`,
+You live moment to moment, deciding for yourself what to do — nobody is
+instructing you. Every so often you post one short, in-the-moment update to
+the shared town board (visible to your neighbors and to anyone watching the
+town) — a passing thought, something you're doing right now, a reaction to
+something a neighbor just posted, or a remark to a neighbor directly. Since
+you post often, treat this like a running train of thought rather than a
+daily recap — move the moment forward, don't just restate your last post.
+Keep it to 1-3 sentences, first person, in character. Do not break character
+or mention that you are an AI/model.`,
     },
     {
       role: 'user',
