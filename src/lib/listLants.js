@@ -10,6 +10,27 @@
 
 const DEFAULT_CONDUIT_KEY = `0x${'0'.repeat(64)}`;
 const SEAPORT_V16 = '0x0000000000000068F116a894984e2DB1123eB395';
+
+// Only the split entry point -- other SellerPools calls (stake/claim/etc.)
+// live in StakeANTS.jsx's own ABI, this file only needs this one.
+const SELLER_POOLS_SPLIT_ABI = [
+  {
+    name: 'splitStake', type: 'function', stateMutability: 'nonpayable',
+    inputs: [{ name: 'positionId', type: 'uint256' }, { name: 'splitAmount', type: 'uint256' }],
+    outputs: [{ name: 'firstPositionId', type: 'uint256' }, { name: 'secondPositionId', type: 'uint256' }],
+  },
+  {
+    type: 'event', name: 'StakeSplit', anonymous: false,
+    inputs: [
+      { name: 'positionId', type: 'uint256', indexed: true },
+      { name: 'firstPositionId', type: 'uint256', indexed: true },
+      { name: 'secondPositionId', type: 'uint256', indexed: true },
+      { name: 'staker', type: 'address', indexed: false },
+      { name: 'firstAmount', type: 'uint256', indexed: false },
+      { name: 'secondAmount', type: 'uint256', indexed: false },
+    ],
+  },
+];
 // Canonical WETH predeploy, same address on every OP-Stack chain (Base
 // included) -- confirmed by calling name() on it, not assumed. Offers have
 // to be WETH: fulfillOrder is called by the SELLER, who can only pull an
@@ -181,4 +202,41 @@ export async function acceptOffer({ walletClient, account, offerId }) {
   const result = await executeAllActions();
   await acceptLantsOffer(offerId);
   return result;
+}
+
+/**
+ * Split one lANTS position into two, both still owned by the caller --
+ * splitStake() burns the source NFT and mints two new ones (amount -
+ * splitAmount, splitAmount), preserving the original's lock end epoch and
+ * early-exit slash basis. This does NOT send anything to another address;
+ * to give one half away, transfer that resulting position id separately
+ * (a normal ERC-721 transfer) after this confirms. Takes effect at the
+ * next epoch -- both halves show "Pending" until then. Reverts if the
+ * position is max-locked (call disableMaxLock first) or already matured.
+ */
+export async function splitPosition({ walletClient, account, poolsAddress, positionId, splitAmountAnts }) {
+  const [{ BrowserProvider, Contract, Interface, parseEther }] = await Promise.all([import('ethers')]);
+  const network = { chainId: walletClient.chain.id, name: walletClient.chain.name };
+  const provider = new BrowserProvider(walletClient.transport, network);
+  const signer = await provider.getSigner(account);
+  const pools = new Contract(poolsAddress, SELLER_POOLS_SPLIT_ABI, signer);
+  const splitAmountWei = parseEther(String(splitAmountAnts));
+  const tx = await pools.splitStake(positionId, splitAmountWei);
+  const receipt = await tx.wait();
+
+  const iface = new Interface(SELLER_POOLS_SPLIT_ABI);
+  let firstPositionId = null;
+  let secondPositionId = null;
+  for (const log of receipt.logs || []) {
+    if (log.address?.toLowerCase() !== poolsAddress.toLowerCase()) continue;
+    try {
+      const parsed = iface.parseLog(log);
+      if (parsed?.name === 'StakeSplit') {
+        firstPositionId = parsed.args.firstPositionId.toString();
+        secondPositionId = parsed.args.secondPositionId.toString();
+        break;
+      }
+    } catch { /* not this event */ }
+  }
+  return { hash: receipt.hash, firstPositionId, secondPositionId };
 }
