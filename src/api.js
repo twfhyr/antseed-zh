@@ -110,9 +110,26 @@ export async function cancelLantsOffer({ offerId, message, signature }) {
 }
 
 /** Records that an offer was accepted -- call this after the on-chain
- *  fulfillOrder() tx confirms, not before. */
-export async function acceptLantsOffer(offerId) {
-  return post('/lants/offer/accept', { offerId });
+ *  fulfillOrder() tx confirms, not before. `seller` is the accepting
+ *  (current owner's) wallet, recorded into the trade history. */
+export async function acceptLantsOffer(offerId, seller) {
+  return post('/lants/offer/accept', { offerId, seller });
+}
+
+/** Records a completed listing purchase for the History tab -- call after
+ *  the buyer's fulfillOrder() tx confirms. */
+export async function postLantsTrade(body) {
+  return post('/lants/trade', body);
+}
+
+/** Paginated trade history (listing buys + accepted offers), newest first. */
+export async function fetchLantsTrades(params = {}) {
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== null && v !== undefined && v !== '') qs.set(k, v);
+  }
+  const q = qs.toString();
+  return get(`/lants/trades${q ? `?${q}` : ''}`);
 }
 
 export async function fetchDepositsConfig() {

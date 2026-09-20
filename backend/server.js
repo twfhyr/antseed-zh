@@ -22,6 +22,7 @@ import {
   WETH_BASE, saveOffer, getOffer, offersForToken, offererForOffer,
   cancelOffer, markOfferAccepted, cancelOtherOffers,
 } from './lants-offers.js';
+import { recordTrade, listTrades } from './lants-trades.js';
 import {
   EmissionsClient, ANTSTokenClient, DepositsClient, RegistryClient, EmissionsGateClient,
   UsageAccountingClient, UsageRewardsClient, SellerPoolsClient, SellerPoolsRewardsClient,
@@ -1387,6 +1388,8 @@ async function computeLantsMarket(extraIds = []) {
   const currentEpoch = chain?.emissions?.currentEpoch ?? null;
   const genesis = chain?.emissions?.genesis ?? null;
   const epochDuration = chain?.emissions?.epochDuration ?? null;
+  const totalSupply = chain?.ants?.totalSupply ?? null;
+  const maxSupply = chain?.ants?.maxSupply ?? null;
   const names = sellerNameByAgentId();
 
   const [os, antscan] = await Promise.all([
@@ -1438,15 +1441,30 @@ async function computeLantsMarket(extraIds = []) {
   for (const id of localListings.keys()) ids.add(id);
   for (const id of extraIds) ids.add(Number(id));
 
-  const missing = [...ids].filter((id) => !byAntscan.has(id));
+  // ensureIds ids force a real on-chain read even when Antscan already
+  // knows the id -- needed after a direct Seaport buy, which transfers the
+  // NFT with no call into this backend at all, so a listing's cached owner
+  // (from Antscan) can still say "seller" for a while after a real sale.
+  // Without this, a sold-but-not-yet-reindexed listing keeps showing as
+  // for-sale (and fulfillable) indefinitely for anyone whose Antscan sync
+  // hasn't caught up.
+  const missing = [...ids].filter((id) => !byAntscan.has(id) || extraIds.includes(id));
   // Ids the caller already knows about (e.g. the two positions minted by a
-  // splitStake() tx that just confirmed) always get a real on-chain read,
-  // even past the cap below -- otherwise a freshly split/staked position
-  // would stay invisible until Antscan's own indexer catches up.
+  // splitStake() tx that just confirmed, or a listing just bought) always
+  // get a real on-chain read, even past the cap below -- otherwise a
+  // freshly split/staked/sold position would stay stale until Antscan's
+  // own indexer catches up.
   const capped = missing.length <= 40 ? missing : missing.filter((id) => extraIds.includes(id));
   if (capped.length > 0) {
     const extra = await Promise.all(capped.map((id) => loadOnChainPosition(id)));
-    for (const p of extra) if (p) byAntscan.set(p.id, p);
+    capped.forEach((id, i) => {
+      const p = extra[i];
+      if (p) byAntscan.set(p.id, p);
+      // A null read for an explicitly-ensured id that already had a (now
+      // stale) cached entry means it's genuinely gone on-chain -- drop the
+      // stale entry rather than leaving it in place unrefreshed.
+      else if (extraIds.includes(id)) byAntscan.delete(id);
+    });
   }
 
   // Persist every known position's metadata locally -- subsequent requests
@@ -1491,6 +1509,12 @@ async function computeLantsMarket(extraIds = []) {
     if (listing?.usd != null && amount != null && amount > 0) {
       perAntUsd = listing.usd / amount;
     }
+    // Implied market cap / fully diluted valuation if the whole supply
+    // traded at this listing's price-per-ANT -- a reference figure only,
+    // exactly like the floor-per-ANT price it's derived from: never an
+    // assumed token price, always this specific listing's real one.
+    const impliedMcUsd = perAntUsd != null && totalSupply != null ? perAntUsd * totalSupply : null;
+    const impliedFdvUsd = perAntUsd != null && maxSupply != null ? perAntUsd * maxSupply : null;
     const agentId = pos?.agentId ?? null;
     const startEpoch = pos?.stakeStartEpoch ?? null;
     const endEpoch = pos?.stakeEndEpoch ?? null;
@@ -1517,7 +1541,7 @@ async function computeLantsMarket(extraIds = []) {
       daysRemaining,
       listed: !!listing,
       listing: listing
-        ? { usd: listing.usd, unit: listing.unit, symbol: listing.symbol, perAntUsd }
+        ? { usd: listing.usd, unit: listing.unit, symbol: listing.symbol, perAntUsd, mcUsd: impliedMcUsd, fdvUsd: impliedFdvUsd }
         : null,
       fulfillableHere: !!(local && listing),
       offerCount: offersForToken(id).length,
@@ -1638,6 +1662,41 @@ app.get('/api/lants/order/:tokenId', (req, res) => {
   res.json(listing);
 });
 
+// Records a completed listing purchase for the History tab -- called by the
+// buyer's browser right after their fulfillOrder() tx confirms. Like
+// offer/accept, this does no on-chain verification of its own; the
+// transaction the buyer just sent is what actually moved the NFT/ETH.
+app.post('/api/lants/trade', async (req, res) => {
+  try {
+    const { tokenId, seller, buyer, priceWei, currency, txHash } = req.body || {};
+    const id = Number(tokenId);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'tokenId required' });
+    if (!seller || !buyer || !priceWei) return res.status(400).json({ error: 'seller, buyer, priceWei required' });
+    const pos = await loadOnChainPosition(id).catch(() => null);
+    recordTrade({
+      tokenId: id, seller, buyer, priceWei,
+      currency: currency || 'ETH', tradeType: 'listing', txHash,
+      amount: pos?.amount ?? null, agentId: pos?.agentId ?? null,
+    });
+    lantsMarketCache = null;
+    lantsMarketCacheAt = 0;
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/lants/trades', (req, res) => {
+  try {
+    const page = Number(req.query.page) || 1;
+    const pageSize = Number(req.query.pageSize) || 20;
+    const { rows, total } = listTrades({ page, pageSize });
+    res.json({ trades: rows, total, page, pageSize });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Every state-changing lants/* action below other than list/offer (which
 // carry their own Seaport signature) requires a short signed message so
 // only the real owner/offerer can cancel their own listing/offer -- these
@@ -1736,8 +1795,8 @@ app.post('/api/lants/offer/cancel', (req, res) => {
 // its own (the transaction itself is what actually moved the NFT/WETH);
 // it just records which offer was accepted and retires the others on the
 // same token, since only one buyer can end up owning it.
-app.post('/api/lants/offer/accept', (req, res) => {
-  const { offerId } = req.body || {};
+app.post('/api/lants/offer/accept', async (req, res) => {
+  const { offerId, seller } = req.body || {};
   const id = Number(offerId);
   if (!Number.isFinite(id)) return res.status(400).json({ error: 'offerId required' });
   const offer = getOffer(id);
@@ -1745,6 +1804,14 @@ app.post('/api/lants/offer/accept', (req, res) => {
   markOfferAccepted(id);
   cancelOtherOffers(offer.tokenId, id);
   invalidateListing(offer.tokenId); // the position just changed hands -- any listing on it is stale
+  if (seller) {
+    const pos = await loadOnChainPosition(offer.tokenId).catch(() => null);
+    recordTrade({
+      tokenId: offer.tokenId, seller, buyer: offer.offerer, priceWei: offer.priceWei,
+      currency: 'WETH', tradeType: 'offer', txHash: null,
+      amount: pos?.amount ?? null, agentId: pos?.agentId ?? null,
+    });
+  }
   lantsMarketCache = null;
   lantsMarketCacheAt = 0;
   res.json({ ok: true });

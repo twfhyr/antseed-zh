@@ -100,6 +100,22 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_lants_offers_token ON lants_offers(token_id);
 
+  CREATE TABLE IF NOT EXISTS lants_trades (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    token_id INTEGER NOT NULL,
+    seller TEXT NOT NULL,
+    buyer TEXT NOT NULL,
+    price_wei TEXT NOT NULL,
+    currency TEXT NOT NULL, -- 'ETH' (listing fulfillment) or 'WETH' (offer accept)
+    trade_type TEXT NOT NULL, -- 'listing' | 'offer'
+    tx_hash TEXT,
+    amount REAL, -- ANTS locked in the position at trade time, for context
+    agent_id INTEGER,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_lants_trades_token ON lants_trades(token_id);
+  CREATE INDEX IF NOT EXISTS idx_lants_trades_created ON lants_trades(created_at);
+
   CREATE TABLE IF NOT EXISTS stats (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     total_buyers INTEGER DEFAULT 0,
