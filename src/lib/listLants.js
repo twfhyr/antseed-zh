@@ -118,7 +118,13 @@ export async function fulfillListing({ walletClient, account, tokenId }) {
     order,
     accountAddress: account,
   });
-  return executeAllActions();
+  const tx = await executeAllActions();
+  const receipt = typeof tx?.wait === 'function' ? await tx.wait() : tx;
+  return {
+    hash: receipt?.hash || tx?.hash || null,
+    seller: stored.orderParameters?.offerer || null,
+    priceWei: stored.orderParameters?.consideration?.[0]?.startAmount ?? null,
+  };
 }
 
 /** Unlist: removes antseed-zh's own copy of the order. Nothing was ever
@@ -200,7 +206,7 @@ export async function acceptOffer({ walletClient, account, offerId }) {
   const order = { parameters: stored.orderParameters, signature: stored.signature };
   const { executeAllActions } = await seaport.fulfillOrder({ order, accountAddress: account });
   const result = await executeAllActions();
-  await acceptLantsOffer(offerId);
+  await acceptLantsOffer(offerId, account);
   return result;
 }
 

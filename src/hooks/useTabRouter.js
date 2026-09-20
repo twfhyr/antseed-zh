@@ -78,7 +78,7 @@ export function useTabRouter() {
 // market is itself a shareable/bookmarkable link. Bare /stake (no second
 // segment) stays a valid alias for the default sub-tab, same pattern as
 // 'ants-info' above for the top-level tabs.
-const MARKET_TAB_PATHS = { listed: 'sales', all: 'iants', mine: 'mine' };
+const MARKET_TAB_PATHS = { listed: 'sales', all: 'iants', mine: 'mine', history: 'history' };
 const MARKET_PATH_TABS = Object.fromEntries(
   Object.entries(MARKET_TAB_PATHS).map(([tab, p]) => [p, tab])
 );
