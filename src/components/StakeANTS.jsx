@@ -124,12 +124,17 @@ const formatUsd = (n) => {
   if (abs >= 0.01) return `$${n.toLocaleString(undefined, { maximumFractionDigits: 4 })}`;
   return `$${n.toPrecision(3)}`;
 };
+// Listings are paid in native ETH (Seaport's consideration for every
+// listing this site creates), so the listed price itself should read in
+// ETH, not the USD conversion -- USD only makes sense for the per-ANT
+// reference price below, where it's comparable across listings priced at
+// different ETH amounts.
 const formatListing = (listing) => {
   if (!listing) return '—';
-  if (listing.usd != null) return formatUsd(listing.usd);
   if (listing.unit != null && listing.symbol) {
     return `${listing.unit.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${listing.symbol}`;
   }
+  if (listing.usd != null) return formatUsd(listing.usd);
   return '—';
 };
 
