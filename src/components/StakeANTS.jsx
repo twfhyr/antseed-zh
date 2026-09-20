@@ -210,7 +210,7 @@ async function readLantsPositions(publicClient, poolsAddress, owner) {
 }
 
 function StakeANTS() {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const { address, isConnected } = useAccount();
   const publicClient = usePublicClient();
   const { data: walletClient } = useWalletClient();
@@ -612,6 +612,7 @@ function StakeANTS() {
                       epochDuration={market.epochDuration}
                       poolsAddress={poolsAddress}
                       t={t}
+                      lang={lang}
                       listing={p.listing}
                       openseaUrl={p.openseaUrl}
                       listForm={listForm}
@@ -738,6 +739,7 @@ function StakeANTS() {
                     epochDuration={market?.epochDuration}
                     poolsAddress={poolsAddress}
                     t={t}
+                    lang={lang}
                     openseaUrl={poolsAddress ? `https://opensea.io/item/base/${poolsAddress}/${p.id}` : null}
                     listForm={listForm}
                     setListForm={setListForm}
@@ -802,7 +804,7 @@ function StakeANTS() {
   );
 }
 
-function LantsNftCard({ position: p, seller, currentEpoch, genesis, epochDuration, t, listing, openseaUrl, listForm, setListForm, onList, canList, onBuy, canBuy, buyState, activation }) {
+function LantsNftCard({ position: p, seller, currentEpoch, genesis, epochDuration, t, lang, listing, openseaUrl, listForm, setListForm, onList, canList, onBuy, canBuy, buyState, activation }) {
   const sellerName = seller?.name || (p.agentId != null ? t('stake.agent', { id: p.agentId }) : '—');
   const state = (p.stakeStartEpoch != null && p.stakeEndEpoch != null) ? positionState(p, currentEpoch) : null;
   const dates = epochDates(p.stakeStartEpoch, p.stakeEndEpoch, genesis, epochDuration);
@@ -828,6 +830,7 @@ function LantsNftCard({ position: p, seller, currentEpoch, genesis, epochDuratio
         startDate={startDate}
         endDate={endDate}
         t={t}
+        lang={lang}
         listingLabel={listing ? formatListing(listing) : null}
       />
       <figcaption className="lants-nft__caption">
@@ -908,10 +911,11 @@ function LantsNftCard({ position: p, seller, currentEpoch, genesis, epochDuratio
   );
 }
 
-const dateFmt = (d) => (d ? new Date(d).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '—');
+const localeForLang = (lang) => (lang === 'en' ? 'en-US' : 'zh-CN');
+const dateFmt = (d, lang) => (d ? new Date(d).toLocaleDateString(localeForLang(lang), { month: 'short', day: 'numeric', year: 'numeric' }) : '—');
 
 /** Uniswap-V3-style position NFT: unique blobs per id, items printed on the card. */
-function LantsNftArt({ position: p, sellerName, state, lockDays, daysRemaining, startDate, endDate, t, listingLabel }) {
+function LantsNftArt({ position: p, sellerName, state, lockDays, daysRemaining, startDate, endDate, t, lang, listingLabel }) {
   const uid = `lants-${p.id}`;
   const palette = nftPalette(p.agentId, p.id);
   const name = fitName(sellerName, 18);
@@ -963,27 +967,24 @@ function LantsNftArt({ position: p, sellerName, state, lockDays, daysRemaining, 
       <text x="28" y="358" fill="#D79627" fontSize="22" fontWeight="700" fontFamily="Geist, system-ui, sans-serif">
         {`${formatAnts(p.amount)} ANTS`}
       </text>
-      <text x="28" y="386" fill="rgba(255,255,255,0.55)" fontSize="11" fontFamily="Geist, system-ui, sans-serif" letterSpacing="0.12em">
-        {t('stake.lock').toUpperCase()}
-      </text>
-      {/* Calendar-style date range instead of an epoch progress line. */}
-      <g transform="translate(28, 396)">
-        <rect width="106" height="34" rx="8" fill="rgba(255,255,255,0.08)" />
-        <text x="53" y="14" fill="rgba(255,255,255,0.5)" fontSize="8" fontFamily="Geist, system-ui, sans-serif" letterSpacing="0.1em" textAnchor="middle">{t('stake.calStart').toUpperCase()}</text>
-        <text x="53" y="27" fill="#ffffff" fontSize="10.5" fontFamily="Geist Mono, ui-monospace, monospace" textAnchor="middle">{dateFmt(startDate)}</text>
-        <text x="122" y="21" fill="rgba(255,255,255,0.4)" fontSize="13" textAnchor="middle">→</text>
-        <rect x="140" width="106" height="34" rx="8" fill="rgba(255,255,255,0.08)" />
-        <text x="193" y="14" fill="rgba(255,255,255,0.5)" fontSize="8" fontFamily="Geist, system-ui, sans-serif" letterSpacing="0.1em" textAnchor="middle">{t('stake.calEnd').toUpperCase()}</text>
-        <text x="193" y="27" fill="#ffffff" fontSize="10.5" fontFamily="Geist Mono, ui-monospace, monospace" textAnchor="middle">{dateFmt(endDate)}</text>
-      </g>
-      <text x="28" y="448" fill="rgba(255,255,255,0.75)" fontSize="13" fontFamily="Geist, system-ui, sans-serif">
+      <text x="28" y="400" fill="rgba(255,255,255,0.75)" fontSize="13" fontFamily="Geist, system-ui, sans-serif">
         {lockDays != null
           ? `${t('stake.lockedForDays', { n: lockDays })}, ${remainingLabel}`
           : (listingLabel || '—')}
       </text>
-      <text x="262" y="448" fill={stateColor(state)} fontSize="12" fontWeight="600" fontFamily="Geist, system-ui, sans-serif" textAnchor="end">
+      <text x="262" y="400" fill={stateColor(state)} fontSize="12" fontWeight="600" fontFamily="Geist, system-ui, sans-serif" textAnchor="end">
         {stateLabel.toUpperCase()}
       </text>
+      {/* Uniswap-LP-style range: one pole is the start date, the other the end date. */}
+      <g transform="translate(28, 424)">
+        <line x1="6" y1="8" x2="228" y2="8" stroke="rgba(255,255,255,0.25)" strokeWidth="2" />
+        <circle cx="6" cy="8" r="6" fill={palette.a} stroke="#0a0a0c" strokeWidth="2" />
+        <circle cx="228" cy="8" r="6" fill={palette.b} stroke="#0a0a0c" strokeWidth="2" />
+        <text x="0" y="30" fill="rgba(255,255,255,0.5)" fontSize="8" fontFamily="Geist, system-ui, sans-serif" letterSpacing="0.08em">{t('stake.calStart').toUpperCase()}</text>
+        <text x="0" y="42" fill="#ffffff" fontSize="10.5" fontFamily="Geist Mono, ui-monospace, monospace">{dateFmt(startDate, lang)}</text>
+        <text x="234" y="30" fill="rgba(255,255,255,0.5)" fontSize="8" fontFamily="Geist, system-ui, sans-serif" letterSpacing="0.08em" textAnchor="end">{t('stake.calEnd').toUpperCase()}</text>
+        <text x="234" y="42" fill="#ffffff" fontSize="10.5" fontFamily="Geist Mono, ui-monospace, monospace" textAnchor="end">{dateFmt(endDate, lang)}</text>
+      </g>
     </svg>
   );
 }
