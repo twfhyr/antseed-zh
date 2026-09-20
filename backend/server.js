@@ -1467,14 +1467,14 @@ async function computeLantsMarket(extraIds = []) {
     });
   }
 
-  // Correct ownership against our own trade log -- Antscan's indexer can
-  // report the old owner for a position long after a real sale (it can lag
-  // far more than the 90s market-cache TTL), and this whole map gets
-  // rebuilt from Antscan on every refresh, so without this a sold
-  // position's ownership silently reverts to the seller again on the very
-  // next refresh cycle. A trade we recorded ourselves (right after the
-  // buyer's own fulfillOrder() tx confirmed) is ground truth.
-  for (const [id, trade] of latestOwners()) {
+  // Correct ownership against our own trade log + the Ponder indexer's
+  // on-chain Transfer events -- Antscan's indexer can report the old owner
+  // for a position long after a real sale (it can lag far more than the
+  // 90s market-cache TTL), and this whole map gets rebuilt from Antscan on
+  // every refresh, so without this a sold position's ownership silently
+  // reverts to the seller again on the very next refresh cycle. See
+  // lants-trades.js's latestOwners() for the trust ordering.
+  for (const [id, trade] of await latestOwners()) {
     const entry = byAntscan.get(id);
     if (entry) entry.owner = trade.owner;
   }
@@ -1698,11 +1698,11 @@ app.post('/api/lants/trade', async (req, res) => {
   }
 });
 
-app.get('/api/lants/trades', (req, res) => {
+app.get('/api/lants/trades', async (req, res) => {
   try {
     const page = Number(req.query.page) || 1;
     const pageSize = Number(req.query.pageSize) || 20;
-    const { rows, total } = listTrades({ page, pageSize });
+    const { rows, total } = await listTrades({ page, pageSize });
     res.json({ trades: rows, total, page, pageSize });
   } catch (e) {
     res.status(500).json({ error: e.message });
