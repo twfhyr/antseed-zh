@@ -10,6 +10,7 @@ const TAB_PATHS = {
   tokenomics: 'tokenomics',
   'ants-info': 'ants-info',
   stake: 'stake',
+  rewards: 'rewards',
   about: 'about',
 };
 const PATH_TABS = Object.fromEntries(
@@ -70,4 +71,56 @@ export function useTabRouter() {
   }, []);
 
   return [activeTab, setActiveTab];
+}
+
+// ─── Stake tab's market sub-tab (/stake/sales, /stake/iants, /stake/mine) ───
+// A second path segment under 'stake' only, so a filtered view of the lANTS
+// market is itself a shareable/bookmarkable link. Bare /stake (no second
+// segment) stays a valid alias for the default sub-tab, same pattern as
+// 'ants-info' above for the top-level tabs.
+const MARKET_TAB_PATHS = { listed: 'sales', all: 'iants', mine: 'mine' };
+const MARKET_PATH_TABS = Object.fromEntries(
+  Object.entries(MARKET_TAB_PATHS).map(([tab, p]) => [p, tab])
+);
+const MARKET_DEFAULT_TAB = 'listed';
+
+function marketTabFromLocation() {
+  const path = window.location.pathname;
+  const rel = path.startsWith(BASE) ? path.slice(BASE.length) : path.replace(/^\//, '');
+  const [first, second] = rel.split('/');
+  if (first !== 'stake') return null;
+  return MARKET_PATH_TABS[second] || null;
+}
+
+export function marketTabHref(tab) {
+  const segment = MARKET_TAB_PATHS[tab] || MARKET_TAB_PATHS[MARKET_DEFAULT_TAB];
+  return `${BASE}stake/${segment}`;
+}
+
+/**
+ * Drives the lANTS market's tab (For sale / All NFTs / Mine) from the URL's
+ * second path segment, same shareable-link rationale as useTabRouter. Only
+ * meaningful while the Stake tab itself is mounted -- StakeANTS.jsx only
+ * exists in the tree when activeTab === 'stake', so every call here is
+ * implicitly scoped to that.
+ */
+export function useMarketTabRouter() {
+  const [marketTab, setMarketTabState] = useState(() => marketTabFromLocation() || MARKET_DEFAULT_TAB);
+
+  useEffect(() => {
+    const onPopState = () => setMarketTabState(marketTabFromLocation() || MARKET_DEFAULT_TAB);
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
+
+  const setMarketTab = useCallback((tab) => {
+    if (!MARKET_TAB_PATHS[tab]) return;
+    setMarketTabState(tab);
+    const url = marketTabHref(tab);
+    if (window.location.pathname !== url) {
+      window.history.pushState(null, '', url);
+    }
+  }, []);
+
+  return [marketTab, setMarketTab];
 }

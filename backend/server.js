@@ -1358,7 +1358,13 @@ async function loadOnChainPosition(id) {
   if (!sellerPoolsClient) return null;
   try {
     const p = await sellerPoolsClient.position(id);
-    if (!p || p.withdrawn) return null;
+    // closedAtEpoch != 0 means this id was closed by a restructure (split/
+    // merge/move) -- the NFT itself is burned on-chain, distinct from a
+    // natural-maturity position (which stays open, closedAtEpoch == 0,
+    // until someone calls withdrawStake). Treat it the same as withdrawn:
+    // dead, never tradable, regardless of what the stale `positions[id]`
+    // mapping entry still says about owner/amount.
+    if (!p || p.withdrawn || p.closedAtEpoch) return null;
     return {
       id: p.id,
       owner: p.owner,
@@ -1375,7 +1381,7 @@ async function loadOnChainPosition(id) {
   }
 }
 
-async function computeLantsMarket() {
+async function computeLantsMarket(extraIds = []) {
   const contract = emissionsCfg.sellerPoolsAddress;
   const chain = readChainMetrics();
   const currentEpoch = chain?.emissions?.currentEpoch ?? null;
@@ -1421,10 +1427,16 @@ async function computeLantsMarket() {
   // picked up yet. Always union both sources now.
   const ids = new Set([...byAntscan.keys(), ...osItems.map((i) => i.id)]);
   for (const id of localListings.keys()) ids.add(id);
+  for (const id of extraIds) ids.add(Number(id));
 
   const missing = [...ids].filter((id) => !byAntscan.has(id));
-  if (missing.length > 0 && missing.length <= 40) {
-    const extra = await Promise.all(missing.map((id) => loadOnChainPosition(id)));
+  // Ids the caller already knows about (e.g. the two positions minted by a
+  // splitStake() tx that just confirmed) always get a real on-chain read,
+  // even past the cap below -- otherwise a freshly split/staked position
+  // would stay invisible until Antscan's own indexer catches up.
+  const capped = missing.length <= 40 ? missing : missing.filter((id) => extraIds.includes(id));
+  if (capped.length > 0) {
+    const extra = await Promise.all(capped.map((id) => loadOnChainPosition(id)));
     for (const p of extra) if (p) byAntscan.set(p.id, p);
   }
 
@@ -1539,9 +1551,9 @@ async function computeLantsMarket() {
   };
 }
 
-function refreshLantsMarket() {
+function refreshLantsMarket(extraIds = []) {
   if (lantsMarketRefreshing) return lantsMarketRefreshing;
-  lantsMarketRefreshing = computeLantsMarket()
+  lantsMarketRefreshing = computeLantsMarket(extraIds)
     .then((data) => {
       lantsMarketCache = data;
       lantsMarketCacheAt = Date.now();
@@ -1756,7 +1768,15 @@ function paginateMarketItems(items, query) {
 
 app.get('/api/lants-market', async (req, res) => {
   try {
-    const fresh = lantsMarketCache && Date.now() - lantsMarketCacheAt < LANTS_MARKET_TTL_MS;
+    // ensureIds: ids the caller already knows exist (e.g. just minted by a
+    // splitStake() tx) -- forces a synchronous fresh compute, same as
+    // wait=1, so they're guaranteed to show up in THIS response rather than
+    // waiting for the next 90s refresh cycle (which itself might still miss
+    // them if Antscan hasn't indexed them yet -- see computeLantsMarket).
+    const ensureIds = String(req.query.ensureIds || '')
+      .split(',').map((s) => Number(s.trim())).filter(Number.isFinite);
+    const forceFresh = req.query.wait === '1' || ensureIds.length > 0;
+    const fresh = !forceFresh && lantsMarketCache && Date.now() - lantsMarketCacheAt < LANTS_MARKET_TTL_MS;
     let base;
     let stale;
     let fetchedAt;
@@ -1765,11 +1785,11 @@ app.get('/api/lants-market', async (req, res) => {
     } else {
       const persisted = !lantsMarketCache ? readPayloadCache('lants-market') : null;
       const cached = lantsMarketCache || persisted?.data || null;
-      if (cached && req.query.wait !== '1') {
+      if (cached && !forceFresh) {
         refreshLantsMarket().catch(() => {});
         base = cached; stale = true; fetchedAt = lantsMarketCacheAt || persisted?.fetchedAt || cached.fetchedAt;
       } else {
-        base = await refreshLantsMarket(); stale = false; fetchedAt = base.fetchedAt;
+        base = await refreshLantsMarket(ensureIds); stale = false; fetchedAt = base.fetchedAt;
       }
     }
     const page = paginateMarketItems(base.items, req.query);

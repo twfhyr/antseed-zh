@@ -5,6 +5,7 @@ import BuyersList from './components/BuyersList';
 import TokenomicsTab from './components/TokenomicsTab';
 import ANTSInfo from './components/ANTSInfo';
 import StakeANTS from './components/StakeANTS';
+import RewardsANTS from './components/RewardsANTS';
 import Overview from './components/Overview';
 import About from './components/About';
 import Header from './components/Header';
@@ -172,6 +173,13 @@ return (
             {t('nav.stake')}
           </a>
           <a
+            href={tabHref('rewards')}
+            className={`tab ${activeTab === 'rewards' ? 'active' : ''}`}
+            onClick={(e) => { e.preventDefault(); setActiveTab('rewards'); }}
+          >
+            {t('nav.rewards')}
+          </a>
+          <a
             href={tabHref('about')}
             className={`tab ${activeTab === 'about' ? 'active' : ''}`}
             onClick={(e) => { e.preventDefault(); setActiveTab('about'); }}
@@ -187,6 +195,7 @@ return (
         {activeTab === 'tokenomics' && <TokenomicsTab />}
         {activeTab === 'ants-info' && <ANTSInfo />}
         {activeTab === 'stake' && <StakeANTS />}
+        {activeTab === 'rewards' && <RewardsANTS />}
         {activeTab === 'about' && <About />}
       </main>
       <DepositModal isOpen={depositOpen} onClose={() => setDepositOpen(false)} buyerAddress={buyerAddress} />
