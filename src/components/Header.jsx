@@ -6,7 +6,7 @@ import { useI18n } from '../i18n/index.jsx';
 // Wallet connect was hidden 2026-09 (reads as "this site wants access to my
 // funds" to first-time visitors on an otherwise read-only dashboard — see
 // notes/dev-plan.md) but re-added 2026-09-18, explicit call by the site
-// owner, for the new Stake ANTS tab (App.jsx). Claim ANTS / Channels stay
+// owner, for the Staking tab (App.jsx). Claim ANTS / Channels stay
 // unlinked from the nav; this button doesn't change that.
 function Header() {
 const { lang, setLang, t } = useI18n();

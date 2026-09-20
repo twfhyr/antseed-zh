@@ -1375,3 +1375,114 @@ text-decoration: underline;
   font-weight: 500;
   color: var(--text-secondary);
 }
+
+/* lANTS position NFTs on the Staking tab (Uniswap-V3-style cards). */
+.lants-nft-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 1.25rem;
+  margin: 0.25rem 0 1.5rem;
+}
+.lants-nft {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.lants-nft__svg {
+  width: 100%;
+  height: auto;
+  display: block;
+  border-radius: 24px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45);
+  transition: transform 0.2s var(--ease), box-shadow 0.2s var(--ease);
+}
+.lants-nft:hover .lants-nft__svg {
+  transform: translateY(-4px);
+  box-shadow: 0 22px 48px rgba(0, 0, 0, 0.55);
+}
+.lants-nft__caption {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+.lants-nft__caption a {
+  color: var(--info);
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+.lants-nft__caption a:hover {
+  text-decoration: underline;
+}
+.lants-nft__price {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  color: var(--clay);
+  font-weight: 600;
+  margin-bottom: 0.25rem;
+}
+.lants-nft__links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+}
+.lants-nft__listbtn {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 0.25rem 0.7rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.lants-nft__listform {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+  margin-top: 0.6rem;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+.lants-nft__listform label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+.lants-nft__listform input {
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.35rem 0.5rem;
+  color: var(--text-primary);
+  font-size: 0.8125rem;
+}
+.lants-nft__listform button {
+  border-radius: 6px;
+  padding: 0.35rem 0.6rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.3rem;
+}
+.lants-nft__listform button:first-of-type {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .lants-nft__svg,
+  .lants-nft:hover .lants-nft__svg {
+    transition: none;
+    transform: none;
+  }
+}

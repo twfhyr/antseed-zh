@@ -171,13 +171,12 @@ return (
           >
             {t('nav.antsTokenomics')}
           </a>
-          {/* Stake ANTS deliberately reverses the earlier "no wallet-connect
-              UI by default" decision (see notes/dev-plan.md) — explicit call
-              by the site owner 2026-09-18, not a default. ClaimANTS.jsx /
-              ChannelsView.jsx (the other 3 reward buckets: staker, legacy,
-              locked) stay hidden — StakeANTS.jsx only covers the epoch-22+
-              recognized-usage buckets (buyer/seller usage), which is all
-              this tab was asked to surface. */}
+          {/* Staking (was Stake ANTS) deliberately reverses the earlier
+              "no wallet-connect UI by default" decision (see notes/dev-plan.md)
+              — explicit call by the site owner 2026-09-18, not a default.
+              ClaimANTS.jsx / ChannelsView.jsx stay hidden. StakeANTS.jsx now
+              shows lANTS position NFTs for a connected or searched address,
+              plus the epoch-22+ usage-reward claim/stake flow. */}
           <a
             href={tabHref('stake')}
             className={`tab ${activeTab === 'stake' ? 'active' : ''}`}
