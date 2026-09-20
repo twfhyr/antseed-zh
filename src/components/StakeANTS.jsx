@@ -958,6 +958,26 @@ function LantsNftArt({ position: p, sellerName, state, lockDays, daysRemaining, 
       <text x="262" y="42" fill="rgba(255,255,255,0.7)" fontSize="13" fontFamily="Geist Mono, ui-monospace, monospace" textAnchor="end">
         {`#${p.id}`}
       </text>
+      {/* Uniswap-LP-style: a curve from the start-date pole (top-left) to
+          the end-date pole (bottom-right), on a faint x/y axis -- fills
+          the card's previously-blank middle, sitting above the name. */}
+      <g>
+        <line x1="30" y1="86" x2="30" y2="254" stroke="rgba(255,255,255,0.15)" strokeWidth="1" />
+        <line x1="30" y1="254" x2="260" y2="254" stroke="rgba(255,255,255,0.15)" strokeWidth="1" />
+        <path
+          d="M 34 118 C 110 150, 180 200, 256 238"
+          fill="none"
+          stroke="rgba(255,255,255,0.6)"
+          strokeWidth="2.5"
+          strokeLinecap="round"
+        />
+        <circle cx="34" cy="118" r="6" fill={palette.a} stroke="#0a0a0c" strokeWidth="2" />
+        <circle cx="256" cy="238" r="6" fill={palette.b} stroke="#0a0a0c" strokeWidth="2" />
+        <text x="34" y="100" fill="rgba(255,255,255,0.5)" fontSize="8" fontFamily="Geist, system-ui, sans-serif" letterSpacing="0.08em">{t('stake.calStart').toUpperCase()}</text>
+        <text x="34" y="112" fill="#ffffff" fontSize="10.5" fontFamily="Geist Mono, ui-monospace, monospace">{dateFmt(startDate, lang)}</text>
+        <text x="256" y="260" fill="rgba(255,255,255,0.5)" fontSize="8" fontFamily="Geist, system-ui, sans-serif" letterSpacing="0.08em" textAnchor="end">{t('stake.calEnd').toUpperCase()}</text>
+        <text x="256" y="272" fill="#ffffff" fontSize="10.5" fontFamily="Geist Mono, ui-monospace, monospace" textAnchor="end">{dateFmt(endDate, lang)}</text>
+      </g>
       <text x="28" y="300" fill="#ffffff" fontSize={name.length > 14 ? 20 : 24} fontWeight="700" fontFamily="Geist, system-ui, sans-serif">
         {name}
       </text>
@@ -975,16 +995,6 @@ function LantsNftArt({ position: p, sellerName, state, lockDays, daysRemaining, 
       <text x="262" y="400" fill={stateColor(state)} fontSize="12" fontWeight="600" fontFamily="Geist, system-ui, sans-serif" textAnchor="end">
         {stateLabel.toUpperCase()}
       </text>
-      {/* Uniswap-LP-style range: one pole is the start date, the other the end date. */}
-      <g transform="translate(28, 424)">
-        <line x1="6" y1="8" x2="228" y2="8" stroke="rgba(255,255,255,0.25)" strokeWidth="2" />
-        <circle cx="6" cy="8" r="6" fill={palette.a} stroke="#0a0a0c" strokeWidth="2" />
-        <circle cx="228" cy="8" r="6" fill={palette.b} stroke="#0a0a0c" strokeWidth="2" />
-        <text x="0" y="30" fill="rgba(255,255,255,0.5)" fontSize="8" fontFamily="Geist, system-ui, sans-serif" letterSpacing="0.08em">{t('stake.calStart').toUpperCase()}</text>
-        <text x="0" y="42" fill="#ffffff" fontSize="10.5" fontFamily="Geist Mono, ui-monospace, monospace">{dateFmt(startDate, lang)}</text>
-        <text x="234" y="30" fill="rgba(255,255,255,0.5)" fontSize="8" fontFamily="Geist, system-ui, sans-serif" letterSpacing="0.08em" textAnchor="end">{t('stake.calEnd').toUpperCase()}</text>
-        <text x="234" y="42" fill="#ffffff" fontSize="10.5" fontFamily="Geist Mono, ui-monospace, monospace" textAnchor="end">{dateFmt(endDate, lang)}</text>
-      </g>
     </svg>
   );
 }
