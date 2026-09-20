@@ -65,10 +65,20 @@ const bust = bustCache ? '&bust=1' : '';
 return get(`/rewards?address=${address}${bust}`);
 }
 
-/** OpenSea listings for lANTS NFTs plus on-chain stake size (floor per ANT). */
-export async function fetchLantsMarket(bustCache = false) {
-  const bust = bustCache ? '?wait=1' : '';
-  return get(`/lants-market${bust}`);
+/**
+ * lANTS NFT market, paginated/filtered/sorted server-side. `params` may
+ * include: page, pageSize, sort ('id'|'amount'|'lockDays'|'daysRemaining'|
+ * 'price'), dir ('asc'|'desc'), owner, agentId, minAmount, maxAmount,
+ * minLockDays, maxLockDays, listed ('1' for listed-only), wait ('1' to
+ * force a synchronous refresh instead of stale-while-revalidate).
+ */
+export async function fetchLantsMarket(params = {}) {
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== null && v !== undefined && v !== '') qs.set(k, v);
+  }
+  const q = qs.toString();
+  return get(`/lants-market${q ? `?${q}` : ''}`);
 }
 
 export async function postLantsListing(body) {

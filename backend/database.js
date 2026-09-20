@@ -58,6 +58,22 @@ db.exec(`
     status TEXT NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS lants_positions (
+    id INTEGER PRIMARY KEY,
+    owner TEXT NOT NULL,
+    agent_id INTEGER,
+    amount REAL,
+    weight_amount REAL,
+    stake_start_epoch INTEGER,
+    stake_end_epoch INTEGER,
+    closed_at_epoch INTEGER,
+    withdrawn INTEGER NOT NULL DEFAULT 0,
+    synced_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_lants_positions_owner ON lants_positions(owner);
+  CREATE INDEX IF NOT EXISTS idx_lants_positions_agent ON lants_positions(agent_id);
+  CREATE INDEX IF NOT EXISTS idx_lants_positions_withdrawn ON lants_positions(withdrawn);
+
   CREATE TABLE IF NOT EXISTS lants_listings (
     token_id INTEGER PRIMARY KEY,
     offerer TEXT NOT NULL,

@@ -18,6 +18,7 @@ import {
 import { fetchOpenSeaLantsMarket, openseaItemUrl, OPENSEA_COLLECTION_URL, isProviderActivationStake } from './opensea-lants.js';
 import { postSeaportListing, resolveOpenSeaApiKey, SEAPORT_V16 } from './opensea-list.js';
 import { saveListing, getListing, allActiveListings, invalidateListing } from './lants-listings.js';
+import { upsertPositions } from './lants-positions.js';
 import {
   EmissionsClient, ANTSTokenClient, DepositsClient, RegistryClient, EmissionsGateClient,
   UsageAccountingClient, UsageRewardsClient, SellerPoolsClient, SellerPoolsRewardsClient,
@@ -1597,6 +1598,14 @@ async function ethUsdPrice() {
   return ethUsdCache;
 }
 
+// epoch N starts at genesis + N * epochDuration (both in seconds, on-chain
+// values already exposed via readChainMetrics()). Used to show real lock
+// dates/durations instead of raw epoch numbers.
+function epochToDate(epoch, genesis, epochDuration) {
+  if (epoch == null || genesis == null || !epochDuration) return null;
+  return new Date((Number(genesis) + Number(epoch) * Number(epochDuration)) * 1000).toISOString();
+}
+
 function sellerNameByAgentId() {
   const rows = db.prepare('SELECT agent_id, name FROM sellers WHERE agent_id IS NOT NULL').all();
   const map = new Map();
@@ -1629,6 +1638,8 @@ async function computeLantsMarket() {
   const contract = emissionsCfg.sellerPoolsAddress;
   const chain = readChainMetrics();
   const currentEpoch = chain?.emissions?.currentEpoch ?? null;
+  const genesis = chain?.emissions?.genesis ?? null;
+  const epochDuration = chain?.emissions?.epochDuration ?? null;
   const names = sellerNameByAgentId();
 
   const [os, antscan] = await Promise.all([
@@ -1657,7 +1668,17 @@ async function computeLantsMarket() {
   const localListings = new Map(allActiveListings().map((l) => [l.tokenId, l]));
   const ethUsd = localListings.size ? await ethUsdPrice() : null;
 
-  const ids = new Set(osItems.length ? osItems.map((i) => i.id) : [...byAntscan.keys()]);
+  // Real bug fixed 2026-09-20: this used to be osItems.length ? osItems ids
+  // : antscan ids -- i.e. antscan-known positions were silently dropped
+  // from the whole market list whenever OpenSea's scrape returned ANYTHING,
+  // even one item, because JS truthiness picked the (possibly incomplete,
+  // e.g. not-yet-indexed-by-OpenSea) OpenSea id list over the fuller
+  // antscan one instead of merging both. This is exactly the kind of gap
+  // that made a real position (sg-01's stake, since re-confirmed as staked
+  // to antseed-aggregator not antseed-zh -- a different, non-bug mixup)
+  // invisible on the market page for anyone whose position OpenSea hadn't
+  // picked up yet. Always union both sources now.
+  const ids = new Set([...byAntscan.keys(), ...osItems.map((i) => i.id)]);
   for (const id of localListings.keys()) ids.add(id);
 
   const missing = [...ids].filter((id) => !byAntscan.has(id));
@@ -1665,6 +1686,11 @@ async function computeLantsMarket() {
     const extra = await Promise.all(missing.map((id) => loadOnChainPosition(id)));
     for (const p of extra) if (p) byAntscan.set(p.id, p);
   }
+
+  // Persist every known position's metadata locally -- subsequent requests
+  // (pagination, filtering, the "mine" tab) read this instead of hitting
+  // antscan/chain again; only this periodic refresh does.
+  if (byAntscan.size) upsertPositions([...byAntscan.values()]);
 
   const osById = new Map(osItems.map((i) => [i.id, i]));
   const items = [];
@@ -1694,6 +1720,16 @@ async function computeLantsMarket() {
       perAntUsd = listing.usd / amount;
     }
     const agentId = pos?.agentId ?? null;
+    const startEpoch = pos?.stakeStartEpoch ?? null;
+    const endEpoch = pos?.stakeEndEpoch ?? null;
+    const startDate = epochToDate(startEpoch, genesis, epochDuration);
+    const endDate = epochToDate(endEpoch, genesis, epochDuration);
+    const lockDays = (startEpoch != null && endEpoch != null && epochDuration)
+      ? Math.round((endEpoch - startEpoch) * epochDuration / 86400)
+      : null;
+    const daysRemaining = endDate != null
+      ? Math.max(0, Math.ceil((new Date(endDate).getTime() - Date.now()) / 86400000))
+      : null;
     items.push({
       id,
       owner: pos?.owner || sea?.owner || null,
@@ -1701,8 +1737,12 @@ async function computeLantsMarket() {
       sellerName: agentId != null ? (names.get(String(agentId)) || null) : null,
       amount,
       weightAmount: pos?.weightAmount ?? null,
-      stakeStartEpoch: pos?.stakeStartEpoch ?? null,
-      stakeEndEpoch: pos?.stakeEndEpoch ?? null,
+      stakeStartEpoch: startEpoch,
+      stakeEndEpoch: endEpoch,
+      startDate,
+      endDate,
+      lockDays,
+      daysRemaining,
       listed: !!listing,
       listing: listing
         ? { usd: listing.usd, unit: listing.unit, symbol: listing.symbol, perAntUsd }
@@ -1729,10 +1769,18 @@ async function computeLantsMarket() {
   const floorPerAntUsd = priced.length ? Math.min(...priced.map((i) => i.listing.perAntUsd)) : null;
   const floorItem = priced.find((i) => i.listing.perAntUsd === floorPerAntUsd) || null;
 
+  const sellerMap = new Map();
+  for (const i of tradable) {
+    if (i.agentId == null || sellerMap.has(i.agentId)) continue;
+    sellerMap.set(i.agentId, { agentId: i.agentId, name: i.sellerName || null });
+  }
+
   return {
     collectionUrl: OPENSEA_COLLECTION_URL,
     contract,
     currentEpoch,
+    genesis,
+    epochDuration,
     totalNfts: tradable.length,
     listedCount: tradable.filter((i) => i.listed).length,
     activationHidden,
@@ -1743,6 +1791,7 @@ async function computeLantsMarket() {
     openseaRelayEnabled: !!(await resolveOpenSeaApiKey()),
     floorPerAntUsd,
     floorTokenId: floorItem ? floorItem.id : null,
+    sellers: [...sellerMap.values()].sort((a, b) => a.agentId - b.agentId),
     source: os.source,
     fetchedAt: Date.now(),
     items: tradable,
@@ -1817,18 +1866,61 @@ app.get('/api/lants/order/:tokenId', (req, res) => {
   res.json(listing);
 });
 
+// Applies page/filter/sort to an already-computed items array -- no chain
+// or antscan calls here, this only ever touches the cached/DB-backed data
+// computeLantsMarket() already gathered.
+function paginateMarketItems(items, query) {
+  let rows = items;
+  const owner = query.owner ? String(query.owner).toLowerCase() : null;
+  if (owner) rows = rows.filter((i) => i.owner && i.owner.toLowerCase() === owner);
+  if (query.agentId != null && query.agentId !== '') {
+    const wanted = Number(query.agentId);
+    rows = rows.filter((i) => i.agentId === wanted);
+  }
+  if (query.minAmount) rows = rows.filter((i) => i.amount != null && i.amount >= Number(query.minAmount));
+  if (query.maxAmount) rows = rows.filter((i) => i.amount != null && i.amount <= Number(query.maxAmount));
+  if (query.minLockDays) rows = rows.filter((i) => i.lockDays != null && i.lockDays >= Number(query.minLockDays));
+  if (query.maxLockDays) rows = rows.filter((i) => i.lockDays != null && i.lockDays <= Number(query.maxLockDays));
+  if (query.listed === '1') rows = rows.filter((i) => i.listed);
+
+  const sort = query.sort || 'id';
+  const dir = query.dir === 'desc' ? -1 : 1;
+  const sorters = {
+    id: (a, b) => (a.id - b.id) * dir,
+    amount: (a, b) => ((a.amount || 0) - (b.amount || 0)) * dir,
+    lockDays: (a, b) => ((a.lockDays || 0) - (b.lockDays || 0)) * dir,
+    daysRemaining: (a, b) => ((a.daysRemaining ?? -1) - (b.daysRemaining ?? -1)) * dir,
+    price: (a, b) => ((a.listing?.perAntUsd ?? Infinity) - (b.listing?.perAntUsd ?? Infinity)) * dir,
+  };
+  rows = [...rows].sort(sorters[sort] || sorters.id);
+
+  const total = rows.length;
+  const pageSize = Math.max(1, Math.min(100, Number(query.pageSize) || 10));
+  const page = Math.max(1, Number(query.page) || 1);
+  const start = (page - 1) * pageSize;
+  return { items: rows.slice(start, start + pageSize), total, page, pageSize };
+}
+
 app.get('/api/lants-market', async (req, res) => {
   try {
     const fresh = lantsMarketCache && Date.now() - lantsMarketCacheAt < LANTS_MARKET_TTL_MS;
-    if (fresh) return res.json({ ...lantsMarketCache, stale: false });
-    const persisted = !lantsMarketCache ? readPayloadCache('lants-market') : null;
-    const cached = lantsMarketCache || persisted?.data || null;
-    if (cached && req.query.wait !== '1') {
-      refreshLantsMarket().catch(() => {});
-      return res.json({ ...cached, stale: true, fetchedAt: lantsMarketCacheAt || persisted?.fetchedAt || cached.fetchedAt });
+    let base;
+    let stale;
+    let fetchedAt;
+    if (fresh) {
+      base = lantsMarketCache; stale = false; fetchedAt = lantsMarketCacheAt;
+    } else {
+      const persisted = !lantsMarketCache ? readPayloadCache('lants-market') : null;
+      const cached = lantsMarketCache || persisted?.data || null;
+      if (cached && req.query.wait !== '1') {
+        refreshLantsMarket().catch(() => {});
+        base = cached; stale = true; fetchedAt = lantsMarketCacheAt || persisted?.fetchedAt || cached.fetchedAt;
+      } else {
+        base = await refreshLantsMarket(); stale = false; fetchedAt = base.fetchedAt;
+      }
     }
-    const data = await refreshLantsMarket();
-    res.json({ ...data, stale: false });
+    const page = paginateMarketItems(base.items, req.query);
+    res.json({ ...base, ...page, stale, fetchedAt });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

@@ -226,7 +226,12 @@ function StakeANTS() {
   const [market, setMarket] = useState(null);
   const [marketLoading, setMarketLoading] = useState(true);
   const [marketError, setMarketError] = useState(false);
-  const [marketFilter, setMarketFilter] = useState('listed');
+  const [marketTab, setMarketTab] = useState('listed'); // 'listed' | 'all' | 'mine'
+  const [marketPage, setMarketPage] = useState(1);
+  const [marketSort, setMarketSort] = useState('id');
+  const [marketFilters, setMarketFilters] = useState({ agentId: '', minAmount: '', maxAmount: '', minLockDays: '', maxLockDays: '' });
+  const [filterDraft, setFilterDraft] = useState(marketFilters);
+  const MARKET_PAGE_SIZE = 10;
   const [listForm, setListForm] = useState(null); // { id, price, days, phase, message }
   const [buyState, setBuyState] = useState(null); // { id, phase, message }
 
@@ -305,15 +310,29 @@ function StakeANTS() {
     loadData(address);
   }, [isConnected, address, loadData]);
 
+  const marketQuery = useMemo(() => ({
+    page: marketPage,
+    pageSize: MARKET_PAGE_SIZE,
+    sort: marketSort,
+    listed: marketTab === 'listed' ? '1' : undefined,
+    owner: marketTab === 'mine' ? address : undefined,
+    agentId: marketFilters.agentId || undefined,
+    minAmount: marketFilters.minAmount || undefined,
+    maxAmount: marketFilters.maxAmount || undefined,
+    minLockDays: marketFilters.minLockDays || undefined,
+    maxLockDays: marketFilters.maxLockDays || undefined,
+  }), [marketPage, marketSort, marketTab, address, marketFilters]);
+
   useEffect(() => {
+    if (marketTab === 'mine' && !address) return;
     let cancelled = false;
     setMarketLoading(true);
     setMarketError(false);
-    fetchLantsMarket()
+    fetchLantsMarket(marketQuery)
       .then((data) => {
         if (cancelled) return;
         setMarket(data);
-        if ((data?.listedCount || 0) === 0) setMarketFilter('all');
+        if (marketTab === 'listed' && (data?.listedCount || 0) === 0) setMarketTab('all');
       })
       .catch((e) => {
         console.error('Failed to load lANTS market:', e);
@@ -324,7 +343,14 @@ function StakeANTS() {
       })
       .finally(() => { if (!cancelled) setMarketLoading(false); });
     return () => { cancelled = true; };
-  }, []);
+  }, [marketQuery, marketTab, address]);
+
+  // Any filter/tab/sort change should snap back to page 1 -- otherwise a
+  // narrower result set can leave the view on a now-empty page.
+  const resetToFirstPage = (fn) => (...args) => { setMarketPage(1); fn(...args); };
+  const setMarketTabAndReset = resetToFirstPage(setMarketTab);
+  const setMarketSortAndReset = resetToFirstPage(setMarketSort);
+  const setMarketFiltersAndReset = resetToFirstPage(setMarketFilters);
 
   const handleSearch = async (e) => {
     e?.preventDefault();
@@ -348,11 +374,10 @@ function StakeANTS() {
     () => (rewards?.sellerUsage?.epochs || []).filter((e) => e.amount > 0 && !e.claimed).sort((a, b) => b.epoch - a.epoch),
     [rewards]
   );
-  const marketItems = useMemo(() => {
-    const rows = (market?.items || []).filter((i) => !isProviderActivationStake(i.amount));
-    if (marketFilter === 'listed') return rows.filter((i) => i.listed);
-    return rows;
-  }, [market, marketFilter]);
+  // Filtering, sorting, pagination, and activation-stake exclusion all
+  // happen server-side now (backend/server.js paginateMarketItems) -- this
+  // is already exactly the page to show.
+  const marketItems = market?.items || [];
 
   const doList = async (position) => {
     const contract = market?.contract || rewards?.contracts?.sellerPools;
@@ -376,7 +401,7 @@ function StakeANTS() {
         durationDays: listForm?.days || 30,
       });
       setListForm({ id: position.id, price: String(price), days: listForm?.days || 30, phase: 'done', message: t('stake.listedOk') });
-      fetchLantsMarket(true).then(setMarket).catch(() => {});
+      fetchLantsMarket({ ...marketQuery, wait: '1' }).then(setMarket).catch(() => {});
     } catch (e) {
       setListForm((f) => ({ ...f, phase: 'error', message: e.shortMessage || e.message }));
     }
@@ -391,7 +416,7 @@ function StakeANTS() {
       setBuyState({ id: position.id, phase: 'buying', message: t('stake.buying') });
       await fulfillListing({ walletClient, account: address, tokenId: position.id });
       setBuyState({ id: position.id, phase: 'done', message: t('stake.boughtOk') });
-      fetchLantsMarket(true).then(setMarket).catch(() => {});
+      fetchLantsMarket({ ...marketQuery, wait: '1' }).then(setMarket).catch(() => {});
     } catch (e) {
       setBuyState({ id: position.id, phase: 'error', message: e.shortMessage || e.message });
     }
@@ -516,10 +541,65 @@ function StakeANTS() {
                   {t('stake.noneListed')}
                 </div>
               )}
-              <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem' }}>
-                <FilterChip active={marketFilter === 'listed'} onClick={() => setMarketFilter('listed')} label={t('stake.filterListed')} />
-                <FilterChip active={marketFilter === 'all'} onClick={() => setMarketFilter('all')} label={t('stake.filterAll')} />
+              <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
+                <FilterChip active={marketTab === 'listed'} onClick={() => setMarketTabAndReset('listed')} label={t('stake.filterListed')} />
+                <FilterChip active={marketTab === 'all'} onClick={() => setMarketTabAndReset('all')} label={t('stake.filterAll')} />
+                {isConnected && address && (
+                  <FilterChip active={marketTab === 'mine'} onClick={() => setMarketTabAndReset('mine')} label={t('stake.filterMine')} />
+                )}
               </div>
+
+              <div className="lants-filters">
+                <label>
+                  {t('stake.filterSeller')}
+                  <select
+                    value={filterDraft.agentId}
+                    onChange={(e) => setFilterDraft({ ...filterDraft, agentId: e.target.value })}
+                  >
+                    <option value="">{t('stake.filterAnySeller')}</option>
+                    {(market.sellers || []).map((s) => (
+                      <option key={s.agentId} value={s.agentId}>{s.name || t('stake.agent', { id: s.agentId })}</option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  {t('stake.filterAmount')}
+                  <div className="lants-filters__range">
+                    <input type="number" min="0" placeholder={t('stake.min')} value={filterDraft.minAmount}
+                      onChange={(e) => setFilterDraft({ ...filterDraft, minAmount: e.target.value })} />
+                    <input type="number" min="0" placeholder={t('stake.max')} value={filterDraft.maxAmount}
+                      onChange={(e) => setFilterDraft({ ...filterDraft, maxAmount: e.target.value })} />
+                  </div>
+                </label>
+                <label>
+                  {t('stake.filterLockDays')}
+                  <div className="lants-filters__range">
+                    <input type="number" min="0" placeholder={t('stake.min')} value={filterDraft.minLockDays}
+                      onChange={(e) => setFilterDraft({ ...filterDraft, minLockDays: e.target.value })} />
+                    <input type="number" min="0" placeholder={t('stake.max')} value={filterDraft.maxLockDays}
+                      onChange={(e) => setFilterDraft({ ...filterDraft, maxLockDays: e.target.value })} />
+                  </div>
+                </label>
+                <label>
+                  {t('stake.sortBy')}
+                  <select value={marketSort} onChange={(e) => setMarketSortAndReset(e.target.value)}>
+                    <option value="id">{t('stake.sortId')}</option>
+                    <option value="amount">{t('stake.sortAmount')}</option>
+                    <option value="lockDays">{t('stake.sortLockDays')}</option>
+                    <option value="daysRemaining">{t('stake.sortRemaining')}</option>
+                    <option value="price">{t('stake.sortPrice')}</option>
+                  </select>
+                </label>
+                <button type="button" className="lants-filters__apply" onClick={() => setMarketFiltersAndReset(filterDraft)}>
+                  {t('stake.filterApply')}
+                </button>
+              </div>
+
+              {marketItems.length === 0 && (
+                <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', margin: '1rem 0' }}>
+                  {marketTab === 'mine' ? t('stake.mineEmpty') : t('stake.noneMatch')}
+                </div>
+              )}
               {marketItems.length > 0 && (
                 <div className="lants-nft-grid">
                   {marketItems.map((p) => (
@@ -528,6 +608,8 @@ function StakeANTS() {
                       position={p}
                       seller={p.sellerName ? { name: p.sellerName } : sellerForAgent(sellers, p.agentId)}
                       currentEpoch={market.currentEpoch ?? currentEpoch}
+                      genesis={market.genesis}
+                      epochDuration={market.epochDuration}
                       poolsAddress={poolsAddress}
                       t={t}
                       listing={p.listing}
@@ -542,6 +624,15 @@ function StakeANTS() {
                     />
                   ))}
                 </div>
+              )}
+              {market.total > MARKET_PAGE_SIZE && (
+                <MarketPager
+                  page={marketPage}
+                  pageSize={MARKET_PAGE_SIZE}
+                  total={market.total}
+                  onChange={setMarketPage}
+                  t={t}
+                />
               )}
             </>
           )}
@@ -643,6 +734,8 @@ function StakeANTS() {
                     position={p}
                     seller={sellerForAgent(sellers, p.agentId)}
                     currentEpoch={currentEpoch}
+                    genesis={market?.genesis}
+                    epochDuration={market?.epochDuration}
                     poolsAddress={poolsAddress}
                     t={t}
                     openseaUrl={poolsAddress ? `https://opensea.io/item/base/${poolsAddress}/${p.id}` : null}
@@ -709,18 +802,14 @@ function StakeANTS() {
   );
 }
 
-function LantsNftCard({ position: p, seller, currentEpoch, poolsAddress, t, listing, openseaUrl, listForm, setListForm, onList, canList, onBuy, canBuy, buyState, activation }) {
+function LantsNftCard({ position: p, seller, currentEpoch, genesis, epochDuration, t, listing, openseaUrl, listForm, setListForm, onList, canList, onBuy, canBuy, buyState, activation }) {
   const sellerName = seller?.name || (p.agentId != null ? t('stake.agent', { id: p.agentId }) : '—');
   const state = (p.stakeStartEpoch != null && p.stakeEndEpoch != null) ? positionState(p, currentEpoch) : null;
-  const lockEpochs = (p.stakeStartEpoch != null && p.stakeEndEpoch != null)
-    ? p.stakeEndEpoch - p.stakeStartEpoch
-    : null;
-  const remaining = (currentEpoch == null || p.stakeEndEpoch == null)
-    ? null
-    : Math.max(0, p.stakeEndEpoch - currentEpoch);
-  const explorer = poolsAddress
-    ? `https://basescan.org/nft/${poolsAddress}/${p.id}`
-    : (p.owner ? `https://basescan.org/address/${p.owner}` : null);
+  const dates = epochDates(p.stakeStartEpoch, p.stakeEndEpoch, genesis, epochDuration);
+  const lockDays = p.lockDays ?? dates.lockDays;
+  const daysRemaining = p.daysRemaining ?? dates.daysRemaining;
+  const startDate = p.startDate ?? dates.startDate;
+  const endDate = p.endDate ?? dates.endDate;
   const sea = openseaUrl || (poolsAddress ? `https://opensea.io/item/base/${poolsAddress}/${p.id}` : null);
   const perAnt = listing?.perAntUsd != null
     ? t('stake.perAnt', { price: formatUsd(listing.perAntUsd) })
@@ -734,8 +823,10 @@ function LantsNftCard({ position: p, seller, currentEpoch, poolsAddress, t, list
         position={p}
         sellerName={sellerName}
         state={state}
-        lockEpochs={lockEpochs}
-        remaining={remaining}
+        lockDays={lockDays}
+        daysRemaining={daysRemaining}
+        startDate={startDate}
+        endDate={endDate}
         t={t}
         listingLabel={listing ? formatListing(listing) : null}
       />
@@ -773,12 +864,6 @@ function LantsNftCard({ position: p, seller, currentEpoch, poolsAddress, t, list
           {sea && (
             <a href={sea} target="_blank" rel="noopener noreferrer">
               {listing ? t('stake.buyOnOpensea') : t('stake.sellOnOpensea')}
-              <ExternalLink size={11} />
-            </a>
-          )}
-          {explorer && (
-            <a href={explorer} target="_blank" rel="noopener noreferrer">
-              {t('stake.viewOnExplorer')}
               <ExternalLink size={11} />
             </a>
           )}
@@ -823,18 +908,19 @@ function LantsNftCard({ position: p, seller, currentEpoch, poolsAddress, t, list
   );
 }
 
+const dateFmt = (d) => (d ? new Date(d).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '—');
+
 /** Uniswap-V3-style position NFT: unique blobs per id, items printed on the card. */
-function LantsNftArt({ position: p, sellerName, state, lockEpochs, remaining, t, listingLabel }) {
+function LantsNftArt({ position: p, sellerName, state, lockDays, daysRemaining, startDate, endDate, t, listingLabel }) {
   const uid = `lants-${p.id}`;
   const palette = nftPalette(p.agentId, p.id);
   const name = fitName(sellerName, 18);
   const stateLabel = state ? t(`stake.state.${state}`) : '—';
-  const remainingLabel = remaining == null
+  const remainingLabel = daysRemaining == null
     ? '—'
-    : remaining === 0
+    : daysRemaining === 0
       ? t('stake.unlocked')
-      : t('stake.remaining', { n: remaining });
-  const curve = lockCurve(p.id, p.agentId);
+      : t('stake.daysLeft', { n: daysRemaining });
 
   return (
     <svg
@@ -857,17 +943,10 @@ function LantsNftArt({ position: p, sellerName, state, lockEpochs, remaining, t,
       </defs>
       <g clipPath={`url(#${uid}-clip)`}>
         <rect width="290" height="470" fill={`url(#${uid}-bg)`} />
-        <circle cx={curve.cx1} cy={curve.cy1} r="120" fill={palette.a} filter={`url(#${uid}-blur)`} opacity="0.85" />
-        <circle cx={curve.cx2} cy={curve.cy2} r="100" fill={palette.b} filter={`url(#${uid}-blur)`} opacity="0.75" />
-        <circle cx={curve.cx3} cy={curve.cy3} r="90" fill={palette.c} filter={`url(#${uid}-blur)`} opacity="0.7" />
+        <circle cx="90" cy="120" r="120" fill={palette.a} filter={`url(#${uid}-blur)`} opacity="0.85" />
+        <circle cx="200" cy="150" r="100" fill={palette.b} filter={`url(#${uid}-blur)`} opacity="0.75" />
+        <circle cx="150" cy="210" r="90" fill={palette.c} filter={`url(#${uid}-blur)`} opacity="0.7" />
         <rect width="290" height="470" fill="rgba(0,0,0,0.18)" />
-        <path
-          d={curve.d}
-          fill="none"
-          stroke="rgba(255,255,255,0.55)"
-          strokeWidth="3"
-          strokeLinecap="round"
-        />
       </g>
       <text x="28" y="42" fill="rgba(255,255,255,0.7)" fontSize="13" fontFamily="Geist, system-ui, sans-serif" letterSpacing="0.18em">
         lANTS
@@ -887,17 +966,22 @@ function LantsNftArt({ position: p, sellerName, state, lockEpochs, remaining, t,
       <text x="28" y="386" fill="rgba(255,255,255,0.55)" fontSize="11" fontFamily="Geist, system-ui, sans-serif" letterSpacing="0.12em">
         {t('stake.lock').toUpperCase()}
       </text>
-      <text x="28" y="408" fill="#ffffff" fontSize="14" fontFamily="Geist Mono, ui-monospace, monospace">
-        {p.stakeStartEpoch != null && p.stakeEndEpoch != null
-          ? t('stake.lockRange', { start: p.stakeStartEpoch, end: p.stakeEndEpoch })
-          : '—'}
-      </text>
-      <text x="28" y="428" fill="rgba(255,255,255,0.75)" fontSize="13" fontFamily="Geist, system-ui, sans-serif">
-        {lockEpochs != null
-          ? `${t('stake.lockLength', { n: lockEpochs })}, ${remainingLabel}`
+      {/* Calendar-style date range instead of an epoch progress line. */}
+      <g transform="translate(28, 396)">
+        <rect width="106" height="34" rx="8" fill="rgba(255,255,255,0.08)" />
+        <text x="53" y="14" fill="rgba(255,255,255,0.5)" fontSize="8" fontFamily="Geist, system-ui, sans-serif" letterSpacing="0.1em" textAnchor="middle">{t('stake.calStart').toUpperCase()}</text>
+        <text x="53" y="27" fill="#ffffff" fontSize="10.5" fontFamily="Geist Mono, ui-monospace, monospace" textAnchor="middle">{dateFmt(startDate)}</text>
+        <text x="122" y="21" fill="rgba(255,255,255,0.4)" fontSize="13" textAnchor="middle">→</text>
+        <rect x="140" width="106" height="34" rx="8" fill="rgba(255,255,255,0.08)" />
+        <text x="193" y="14" fill="rgba(255,255,255,0.5)" fontSize="8" fontFamily="Geist, system-ui, sans-serif" letterSpacing="0.1em" textAnchor="middle">{t('stake.calEnd').toUpperCase()}</text>
+        <text x="193" y="27" fill="#ffffff" fontSize="10.5" fontFamily="Geist Mono, ui-monospace, monospace" textAnchor="middle">{dateFmt(endDate)}</text>
+      </g>
+      <text x="28" y="448" fill="rgba(255,255,255,0.75)" fontSize="13" fontFamily="Geist, system-ui, sans-serif">
+        {lockDays != null
+          ? `${t('stake.lockedForDays', { n: lockDays })}, ${remainingLabel}`
           : (listingLabel || '—')}
       </text>
-      <text x="262" y="428" fill={stateColor(state)} fontSize="12" fontWeight="600" fontFamily="Geist, system-ui, sans-serif" textAnchor="end">
+      <text x="262" y="448" fill={stateColor(state)} fontSize="12" fontWeight="600" fontFamily="Geist, system-ui, sans-serif" textAnchor="end">
         {stateLabel.toUpperCase()}
       </text>
     </svg>
@@ -916,17 +1000,14 @@ function nftPalette(agentId, positionId) {
   };
 }
 
-function lockCurve(positionId, agentId) {
-  const seed = (positionId * 17 + agentId * 3) % 100;
-  const cx1 = 60 + (seed % 40);
-  const cy1 = 90 + (seed % 50);
-  const cx2 = 210 - (seed % 35);
-  const cy2 = 70 + ((seed * 3) % 60);
-  const cx3 = 140 + ((seed * 5) % 40);
-  const cy3 = 180 + (seed % 40);
-  const peak = 110 + (seed % 50);
-  const d = `M 24 230 C 80 ${peak}, 210 ${peak + 40}, 266 230`;
-  return { cx1, cy1, cx2, cy2, cx3, cy3, d };
+/** epoch N starts at genesis + N*epochDuration (seconds) -- mirrors backend/server.js's epochToDate. */
+function epochDates(startEpoch, endEpoch, genesis, epochDuration) {
+  if (genesis == null || !epochDuration) return { startDate: null, endDate: null, lockDays: null, daysRemaining: null };
+  const startDate = startEpoch != null ? new Date((Number(genesis) + startEpoch * epochDuration) * 1000).toISOString() : null;
+  const endDate = endEpoch != null ? new Date((Number(genesis) + endEpoch * epochDuration) * 1000).toISOString() : null;
+  const lockDays = (startEpoch != null && endEpoch != null) ? Math.round((endEpoch - startEpoch) * epochDuration / 86400) : null;
+  const daysRemaining = endDate != null ? Math.max(0, Math.ceil((new Date(endDate).getTime() - Date.now()) / 86400000)) : null;
+  return { startDate, endDate, lockDays, daysRemaining };
 }
 
 function fitName(name, max) {
@@ -1103,6 +1184,21 @@ function FilterChip({ active, onClick, label }) {
     >
       {label}
     </button>
+  );
+}
+
+function MarketPager({ page, pageSize, total, onChange, t }) {
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  return (
+    <div className="lants-pager">
+      <button type="button" onClick={() => onChange(Math.max(1, page - 1))} disabled={page <= 1}>
+        {t('stake.pagePrev')}
+      </button>
+      <span>{t('stake.pageOf', { page, count: pageCount })}</span>
+      <button type="button" onClick={() => onChange(Math.min(pageCount, page + 1))} disabled={page >= pageCount}>
+        {t('stake.pageNext')}
+      </button>
+    </div>
   );
 }
 
