@@ -8,6 +8,7 @@ import {
   Loader2,
   AlertCircle,
   ExternalLink,
+  X,
 } from 'lucide-react';
 import { fetchSellers, fetchLantsMarket, fetchLantsOffers, postLantsTrade, fetchLantsTrades } from '../api';
 import { useI18n } from '../i18n/index.jsx';
@@ -182,7 +183,7 @@ function StakeANTS() {
   const doList = async (position) => {
     const contract = market?.contract;
     if (!walletClient || !address || !contract) {
-      setListForm((f) => ({ ...(f || { id: position.id, price: '', days: 30 }), phase: 'error', message: t('stake.listNeedWallet') }));
+      setListForm((f) => ({ ...(f || { position, price: '', days: 30 }), phase: 'error', message: t('stake.listNeedWallet') }));
       return;
     }
     const price = Number(listForm?.price);
@@ -200,7 +201,7 @@ function StakeANTS() {
         priceEth: price,
         durationDays: listForm?.days || 30,
       });
-      setListForm({ id: position.id, price: String(price), days: listForm?.days || 30, phase: 'done', message: t('stake.listedOk') });
+      setListForm({ position, price: String(price), days: listForm?.days || 30, phase: 'done', message: t('stake.listedOk') });
       fetchLantsMarket({ ...marketQuery, wait: '1' }).then(setMarket).catch(() => {});
     } catch (e) {
       setListForm((f) => ({ ...f, phase: 'error', message: e.shortMessage || e.message }));
@@ -250,7 +251,7 @@ function StakeANTS() {
   const doSplit = async (position) => {
     const poolsAddr = market?.contract;
     if (!walletClient || !address || !poolsAddr) {
-      setSplitForm((f) => ({ ...(f || { id: position.id, amount: '' }), phase: 'error', message: t('stake.buyNeedWallet') }));
+      setSplitForm((f) => ({ ...(f || { position, amount: '' }), phase: 'error', message: t('stake.buyNeedWallet') }));
       return;
     }
     const amount = Number(splitForm?.amount);
@@ -264,7 +265,7 @@ function StakeANTS() {
         walletClient, account: address, poolsAddress: poolsAddr,
         positionId: position.id, splitAmountAnts: amount,
       });
-      setSplitForm({ id: position.id, amount: String(amount), phase: 'done', message: t('stake.splitOk'), result });
+      setSplitForm({ position, amount: String(amount), phase: 'done', message: t('stake.splitOk'), result });
       // The two new position ids won't be in Antscan's cache yet -- pass
       // them explicitly so the backend fetches them on-chain right now
       // instead of waiting for Antscan to catch up (see /api/lants-market's
@@ -279,7 +280,7 @@ function StakeANTS() {
   const doMakeOffer = async (position) => {
     const contract = market?.contract;
     if (!walletClient || !address || !contract) {
-      setOfferForm((f) => ({ ...(f || { id: position.id, price: '', days: 30 }), phase: 'error', message: t('stake.buyNeedWallet') }));
+      setOfferForm((f) => ({ ...(f || { position, price: '', days: 30 }), phase: 'error', message: t('stake.buyNeedWallet') }));
       return;
     }
     const price = Number(offerForm?.price);
@@ -293,8 +294,12 @@ function StakeANTS() {
         walletClient, account: address, contract, tokenId: position.id,
         priceEth: price, durationDays: offerForm?.days || 30,
       });
-      setOfferForm({ id: position.id, price: String(price), days: offerForm?.days || 30, phase: 'done', message: t('stake.offeredOk') });
-      if (offersOpenFor === position.id) loadOffers(position.id, true);
+      setOfferForm({ position, price: String(price), days: offerForm?.days || 30, phase: 'done', message: t('stake.offeredOk') });
+      // Both needed: loadOffers refreshes the expandable list (if open),
+      // but the closed "Offers (N)" button's count comes from the market
+      // item's own offerCount field -- only a market refetch updates that.
+      loadOffers(position.id, true);
+      fetchLantsMarket({ ...marketQuery, wait: '1' }).then(setMarket).catch(() => {});
     } catch (e) {
       setOfferForm((f) => ({ ...f, phase: 'error', message: e.shortMessage || e.message }));
     }
@@ -317,6 +322,23 @@ function StakeANTS() {
     if (next != null) loadOffers(next);
   };
 
+  // Background refresh so a page left passively open -- e.g. a seller
+  // waiting to see whether an offer comes in -- picks up new activity on
+  // its own, without needing a hard reload or even a tab switch. Plain
+  // fetch (no wait=1), same stale-while-revalidate path the initial load
+  // already uses: this never forces a synchronous full recompute, it just
+  // nudges the server's own background refresh along and reads back
+  // whatever it already has.
+  useEffect(() => {
+    if (marketTab === 'history') return;
+    if (marketTab === 'mine' && !address) return;
+    const interval = setInterval(() => {
+      fetchLantsMarket(marketQuery).then(setMarket).catch(() => {});
+      if (offersOpenFor != null) loadOffers(offersOpenFor, true);
+    }, 30_000);
+    return () => clearInterval(interval);
+  }, [marketQuery, marketTab, address, offersOpenFor, loadOffers]);
+
   const doAcceptOffer = async (offer) => {
     if (!walletClient || !address) return;
     try {
@@ -337,6 +359,7 @@ function StakeANTS() {
       await cancelOffer({ walletClient, account: address, offerId: offer.id });
       setOfferActionState({ offerId: offer.id, phase: 'done', message: t('stake.cancelledOk') });
       loadOffers(offer.tokenId, true);
+      fetchLantsMarket({ ...marketQuery, wait: '1' }).then(setMarket).catch(() => {});
     } catch (e) {
       setOfferActionState({ offerId: offer.id, phase: 'error', message: e.shortMessage || e.message });
     }
@@ -487,9 +510,7 @@ function StakeANTS() {
                       t={t}
                       lang={lang}
                       listing={p.listing}
-                      listForm={listForm}
                       setListForm={setListForm}
-                      onList={() => doList(p)}
                       canList={!!(isConnected && address && p.owner && address.toLowerCase() === p.owner.toLowerCase() && !p.listed && !isProviderActivationStake(p.amount))}
                       onBuy={() => doBuy(p)}
                       canBuy={!!(isConnected && address && p.owner && address.toLowerCase() !== p.owner.toLowerCase() && p.listed && p.fulfillableHere)}
@@ -498,9 +519,7 @@ function StakeANTS() {
                       address={address}
                       onCancel={doCancel}
                       cancelState={cancelState?.id === p.id ? cancelState : null}
-                      offerForm={offerForm}
                       setOfferForm={setOfferForm}
-                      onMakeOffer={doMakeOffer}
                       canOffer={marketTab !== 'mine' && !!(isConnected && address && p.owner && address.toLowerCase() !== p.owner.toLowerCase() && !isProviderActivationStake(p.amount))}
                       offersOpen={offersOpenFor === p.id}
                       offers={offersById[p.id]}
@@ -508,9 +527,7 @@ function StakeANTS() {
                       onAcceptOffer={doAcceptOffer}
                       onCancelOffer={doCancelOffer}
                       offerActionState={offerActionState}
-                      splitForm={splitForm}
                       setSplitForm={setSplitForm}
-                      onSplit={() => doSplit(p)}
                       canSplit={!!(isConnected && address && p.owner && address.toLowerCase() === p.owner.toLowerCase() && !p.listed && !isProviderActivationStake(p.amount) && p.amount > 1)}
                     />
                   ))}
@@ -532,15 +549,18 @@ function StakeANTS() {
         </div>
 
       </div>
+      <ListModal form={listForm} setForm={setListForm} onConfirm={doList} t={t} />
+      <OfferModal form={offerForm} setForm={setOfferForm} onConfirm={doMakeOffer} t={t} />
+      <SplitModal form={splitForm} setForm={setSplitForm} onConfirm={doSplit} t={t} />
     </div>
   );
 }
 
 function LantsNftCard({
-  position: p, seller, currentEpoch, genesis, epochDuration, t, lang, listing, listForm, setListForm, onList, canList, onBuy, canBuy, buyState,
-  activation, isOwner, address, onCancel, cancelState, offerForm, setOfferForm, onMakeOffer, canOffer,
+  position: p, seller, currentEpoch, genesis, epochDuration, t, lang, listing, setListForm, canList, onBuy, canBuy, buyState,
+  activation, isOwner, address, onCancel, cancelState, setOfferForm, canOffer,
   offersOpen, offers, onToggleOffers, onAcceptOffer, onCancelOffer, offerActionState,
-  splitForm, setSplitForm, onSplit, canSplit,
+  setSplitForm, canSplit,
 }) {
   const sellerName = seller?.name || (p.agentId != null ? t('stake.agent', { id: p.agentId }) : '—');
   const state = (p.stakeStartEpoch != null && p.stakeEndEpoch != null) ? positionState(p, currentEpoch) : null;
@@ -552,20 +572,8 @@ function LantsNftCard({
   const perAnt = listing?.perAntUsd != null
     ? t('stake.perAnt', { price: formatUsd(listing.perAntUsd) })
     : null;
-  const open = listForm?.id === p.id;
-  const listingBusy = open && listForm?.phase === 'listing';
-  const offerOpen = offerForm?.id === p.id;
-  const offerBusy = offerOpen && offerForm?.phase === 'offering';
   const cancelBusy = cancelState?.id === p.id && cancelState?.phase === 'cancelling';
   const canCancel = isOwner && p.listed && p.fulfillableHere;
-  const splitOpen = splitForm?.id === p.id;
-  const splitBusy = splitOpen && splitForm?.phase === 'splitting';
-  const splitAmountNum = Number(splitForm?.amount);
-  // Either resulting half landing on exactly 1 ANT can't be listed here --
-  // the market view hides 1-ANT positions as provider-activation stakes,
-  // and there's no on-chain way to tell those apart from a deliberate split.
-  const splitWouldMakeUnlistable = splitOpen && splitAmountNum > 0 && splitAmountNum < p.amount
-    && (isProviderActivationStake(splitAmountNum) || isProviderActivationStake(p.amount - splitAmountNum));
 
   return (
     <figure className="lants-nft">
@@ -611,7 +619,7 @@ function LantsNftCard({
             <button
               type="button"
               className="lants-nft__listbtn"
-              onClick={() => setListForm(open ? null : { id: p.id, price: '', days: 30, phase: null, message: null })}
+              onClick={() => setListForm({ position: p, price: '', days: 30, phase: null, message: null })}
             >
               {t('stake.listOnSite')}
             </button>
@@ -642,7 +650,7 @@ function LantsNftCard({
             <button
               type="button"
               className="lants-nft__listbtn"
-              onClick={() => setOfferForm(offerOpen ? null : { id: p.id, price: '', days: 30, phase: null, message: null })}
+              onClick={() => setOfferForm({ position: p, price: '', days: 30, phase: null, message: null })}
             >
               {t('stake.makeOffer')}
             </button>
@@ -656,7 +664,7 @@ function LantsNftCard({
             <button
               type="button"
               className="lants-nft__listbtn"
-              onClick={() => setSplitForm(splitOpen ? null : { id: p.id, amount: '', phase: null, message: null, result: null })}
+              onClick={() => setSplitForm({ position: p, amount: '', phase: null, message: null, result: null })}
             >
               {t('stake.splitPosition')}
             </button>
@@ -670,101 +678,6 @@ function LantsNftCard({
         {buyState?.message && (
           <div style={{ color: buyState.phase === 'error' ? 'var(--danger)' : 'var(--text-secondary)', fontSize: '0.8rem', marginTop: '0.25rem' }}>
             {buyState.message}
-          </div>
-        )}
-        {open && canList && (
-          <div className="lants-nft__listform">
-            <label>
-              {t('stake.listPrice')}
-              <input
-                type="number" min="0" step="0.0001"
-                value={listForm.price}
-                onChange={(e) => setListForm({ ...listForm, price: e.target.value, phase: null })}
-              />
-            </label>
-            <label>
-              {t('stake.listDays')}
-              <input
-                type="number" min="1" max="365"
-                value={listForm.days}
-                onChange={(e) => setListForm({ ...listForm, days: Number(e.target.value) || 30, phase: null })}
-              />
-            </label>
-            <button type="button" onClick={onList} disabled={listingBusy}>
-              {listingBusy ? <Loader2 size={12} className="spin" /> : null}
-              {t('stake.listConfirm')}
-            </button>
-            <button type="button" onClick={() => setListForm(null)}>{t('stake.listCancel')}</button>
-            {listForm.message && (
-              <div style={{ color: listForm.phase === 'error' ? 'var(--danger)' : 'var(--text-secondary)', gridColumn: '1 / -1' }}>
-                {listForm.message}
-              </div>
-            )}
-          </div>
-        )}
-        {offerOpen && canOffer && (
-          <div className="lants-nft__listform">
-            <label>
-              {t('stake.offerPrice')}
-              <input
-                type="number" min="0" step="0.0001"
-                value={offerForm.price}
-                onChange={(e) => setOfferForm({ ...offerForm, price: e.target.value, phase: null })}
-              />
-            </label>
-            <label>
-              {t('stake.listDays')}
-              <input
-                type="number" min="1" max="365"
-                value={offerForm.days}
-                onChange={(e) => setOfferForm({ ...offerForm, days: Number(e.target.value) || 30, phase: null })}
-              />
-            </label>
-            <button type="button" onClick={() => onMakeOffer(p)} disabled={offerBusy}>
-              {offerBusy ? <Loader2 size={12} className="spin" /> : null}
-              {t('stake.offerConfirm')}
-            </button>
-            <button type="button" onClick={() => setOfferForm(null)}>{t('stake.listCancel')}</button>
-            {offerForm.message && (
-              <div style={{ color: offerForm.phase === 'error' ? 'var(--danger)' : 'var(--text-secondary)', gridColumn: '1 / -1' }}>
-                {offerForm.message}
-              </div>
-            )}
-          </div>
-        )}
-        {splitOpen && canSplit && (
-          <div className="lants-nft__listform">
-            <label>
-              {t('stake.splitAmount')}
-              <input
-                type="number" min="0" step="0.000001" max={p.amount}
-                value={splitForm.amount}
-                onChange={(e) => setSplitForm({ ...splitForm, amount: e.target.value, phase: null })}
-              />
-            </label>
-            <button type="button" onClick={onSplit} disabled={splitBusy}>
-              {splitBusy ? <Loader2 size={12} className="spin" /> : null}
-              {t('stake.splitConfirm')}
-            </button>
-            <button type="button" onClick={() => setSplitForm(null)}>{t('stake.listCancel')}</button>
-            <div style={{ gridColumn: '1 / -1', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-              {t('stake.splitHint', { remaining: formatAnts((p.amount || 0) - splitAmountNum) })}
-            </div>
-            {splitWouldMakeUnlistable && (
-              <div style={{ gridColumn: '1 / -1', fontSize: '0.75rem', color: 'var(--warning)' }}>
-                {t('stake.splitUnlistableWarning')}
-              </div>
-            )}
-            {splitForm.message && (
-              <div style={{ color: splitForm.phase === 'error' ? 'var(--danger)' : 'var(--text-secondary)', gridColumn: '1 / -1' }}>
-                {splitForm.message}
-              </div>
-            )}
-            {splitForm.result?.firstPositionId != null && (
-              <div style={{ gridColumn: '1 / -1', color: 'var(--text-secondary)', fontSize: '0.8rem' }}>
-                {t('stake.splitResult', { first: splitForm.result.firstPositionId, second: splitForm.result.secondPositionId })}
-              </div>
-            )}
           </div>
         )}
         {offersOpen && (
@@ -803,6 +716,147 @@ function LantsNftCard({
         )}
       </figcaption>
     </figure>
+  );
+}
+
+function ActionModal({ titleKey, position, onClose, children, t }) {
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <h2>{t(titleKey)} — #{position.id}</h2>
+          <button type="button" className="modal-close" onClick={onClose}>
+            <X size={18} />
+          </button>
+        </div>
+        <div className="modal-body">
+          {children}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ListModal({ form, setForm, onConfirm, t }) {
+  if (!form) return null;
+  const busy = form.phase === 'listing';
+  return (
+    <ActionModal titleKey="stake.listOnSite" position={form.position} onClose={() => setForm(null)} t={t}>
+      <div className="lants-nft__listform">
+        <label>
+          {t('stake.listPrice')}
+          <input
+            type="number" min="0" step="0.0001"
+            value={form.price}
+            onChange={(e) => setForm({ ...form, price: e.target.value, phase: null })}
+          />
+        </label>
+        <label>
+          {t('stake.listDays')}
+          <input
+            type="number" min="1" max="365"
+            value={form.days}
+            onChange={(e) => setForm({ ...form, days: Number(e.target.value) || 30, phase: null })}
+          />
+        </label>
+        <button type="button" onClick={() => onConfirm(form.position)} disabled={busy}>
+          {busy ? <Loader2 size={12} className="spin" /> : null}
+          {t('stake.listConfirm')}
+        </button>
+        <button type="button" onClick={() => setForm(null)}>{t('stake.listCancel')}</button>
+        {form.message && (
+          <div style={{ color: form.phase === 'error' ? 'var(--danger)' : 'var(--text-secondary)', gridColumn: '1 / -1' }}>
+            {form.message}
+          </div>
+        )}
+      </div>
+    </ActionModal>
+  );
+}
+
+function OfferModal({ form, setForm, onConfirm, t }) {
+  if (!form) return null;
+  const busy = form.phase === 'offering';
+  return (
+    <ActionModal titleKey="stake.makeOffer" position={form.position} onClose={() => setForm(null)} t={t}>
+      <div className="lants-nft__listform">
+        <label>
+          {t('stake.offerPrice')}
+          <input
+            type="number" min="0" step="0.0001"
+            value={form.price}
+            onChange={(e) => setForm({ ...form, price: e.target.value, phase: null })}
+          />
+        </label>
+        <label>
+          {t('stake.listDays')}
+          <input
+            type="number" min="1" max="365"
+            value={form.days}
+            onChange={(e) => setForm({ ...form, days: Number(e.target.value) || 30, phase: null })}
+          />
+        </label>
+        <button type="button" onClick={() => onConfirm(form.position)} disabled={busy}>
+          {busy ? <Loader2 size={12} className="spin" /> : null}
+          {t('stake.offerConfirm')}
+        </button>
+        <button type="button" onClick={() => setForm(null)}>{t('stake.listCancel')}</button>
+        {form.message && (
+          <div style={{ color: form.phase === 'error' ? 'var(--danger)' : 'var(--text-secondary)', gridColumn: '1 / -1' }}>
+            {form.message}
+          </div>
+        )}
+      </div>
+    </ActionModal>
+  );
+}
+
+function SplitModal({ form, setForm, onConfirm, t }) {
+  if (!form) return null;
+  const busy = form.phase === 'splitting';
+  const p = form.position;
+  const splitAmountNum = Number(form.amount);
+  // Either resulting half landing on exactly 1 ANT can't be listed here --
+  // the market view hides 1-ANT positions as provider-activation stakes,
+  // and there's no on-chain way to tell those apart from a deliberate split.
+  const splitWouldMakeUnlistable = splitAmountNum > 0 && splitAmountNum < p.amount
+    && (isProviderActivationStake(splitAmountNum) || isProviderActivationStake(p.amount - splitAmountNum));
+  return (
+    <ActionModal titleKey="stake.splitPosition" position={p} onClose={() => setForm(null)} t={t}>
+      <div className="lants-nft__listform">
+        <label>
+          {t('stake.splitAmount')}
+          <input
+            type="number" min="0" step="0.000001" max={p.amount}
+            value={form.amount}
+            onChange={(e) => setForm({ ...form, amount: e.target.value, phase: null })}
+          />
+        </label>
+        <button type="button" onClick={() => onConfirm(p)} disabled={busy}>
+          {busy ? <Loader2 size={12} className="spin" /> : null}
+          {t('stake.splitConfirm')}
+        </button>
+        <button type="button" onClick={() => setForm(null)}>{t('stake.listCancel')}</button>
+        <div style={{ gridColumn: '1 / -1', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+          {t('stake.splitHint', { remaining: formatAnts((p.amount || 0) - splitAmountNum) })}
+        </div>
+        {splitWouldMakeUnlistable && (
+          <div style={{ gridColumn: '1 / -1', fontSize: '0.75rem', color: 'var(--warning)' }}>
+            {t('stake.splitUnlistableWarning')}
+          </div>
+        )}
+        {form.message && (
+          <div style={{ color: form.phase === 'error' ? 'var(--danger)' : 'var(--text-secondary)', gridColumn: '1 / -1' }}>
+            {form.message}
+          </div>
+        )}
+        {form.result?.firstPositionId != null && (
+          <div style={{ gridColumn: '1 / -1', color: 'var(--text-secondary)', fontSize: '0.8rem' }}>
+            {t('stake.splitResult', { first: form.result.firstPositionId, second: form.result.secondPositionId })}
+          </div>
+        )}
+      </div>
+    </ActionModal>
   );
 }
 

@@ -22,7 +22,7 @@ import {
   WETH_BASE, saveOffer, getOffer, offersForToken, offererForOffer,
   cancelOffer, markOfferAccepted, cancelOtherOffers,
 } from './lants-offers.js';
-import { recordTrade, listTrades } from './lants-trades.js';
+import { recordTrade, listTrades, latestOwners } from './lants-trades.js';
 import {
   EmissionsClient, ANTSTokenClient, DepositsClient, RegistryClient, EmissionsGateClient,
   UsageAccountingClient, UsageRewardsClient, SellerPoolsClient, SellerPoolsRewardsClient,
@@ -1465,6 +1465,18 @@ async function computeLantsMarket(extraIds = []) {
       // stale entry rather than leaving it in place unrefreshed.
       else if (extraIds.includes(id)) byAntscan.delete(id);
     });
+  }
+
+  // Correct ownership against our own trade log -- Antscan's indexer can
+  // report the old owner for a position long after a real sale (it can lag
+  // far more than the 90s market-cache TTL), and this whole map gets
+  // rebuilt from Antscan on every refresh, so without this a sold
+  // position's ownership silently reverts to the seller again on the very
+  // next refresh cycle. A trade we recorded ourselves (right after the
+  // buyer's own fulfillOrder() tx confirmed) is ground truth.
+  for (const [id, trade] of latestOwners()) {
+    const entry = byAntscan.get(id);
+    if (entry) entry.owner = trade.owner;
   }
 
   // Persist every known position's metadata locally -- subsequent requests

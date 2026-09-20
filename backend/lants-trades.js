@@ -40,6 +40,24 @@ function rowToTrade(row) {
   };
 }
 
+/** Most recent recorded buyer per token id. Antscan's own indexer can lag
+ *  well behind a real sale (it still reports the old owner for a while),
+ *  and our own market cache rebuilds from Antscan on every refresh cycle --
+ *  so without this, a sold position's ownership silently reverts to the
+ *  seller again as soon as any refresh happens without an explicit
+ *  ensureIds override. A trade we recorded ourselves is ground truth: use
+ *  it to correct Antscan's data whenever the two disagree. */
+export function latestOwners() {
+  const rows = db.prepare(`
+    SELECT token_id, buyer, MAX(created_at) AS created_at
+    FROM lants_trades
+    GROUP BY token_id
+  `).all();
+  const map = new Map();
+  for (const r of rows) map.set(r.token_id, { owner: r.buyer, createdAt: r.created_at });
+  return map;
+}
+
 export function listTrades({ page = 1, pageSize = 20 } = {}) {
   const limit = Math.max(1, Math.min(100, Number(pageSize) || 20));
   const offset = Math.max(0, (Math.max(1, Number(page) || 1) - 1) * limit);
