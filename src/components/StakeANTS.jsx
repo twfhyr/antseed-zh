@@ -992,7 +992,7 @@ function LantsNftArt({ position: p, sellerName, state, lockDays, daysRemaining, 
           ? `${t('stake.lockedForDays', { n: lockDays })}, ${remainingLabel}`
           : (listingLabel || '—')}
       </text>
-      <text x="262" y="400" fill={stateColor(state)} fontSize="12" fontWeight="600" fontFamily="Geist, system-ui, sans-serif" textAnchor="end">
+      <text x="262" y="448" fill={stateColor(state)} fontSize="12" fontWeight="600" fontFamily="Geist, system-ui, sans-serif" textAnchor="end">
         {stateLabel.toUpperCase()}
       </text>
     </svg>
