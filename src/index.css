@@ -1214,3 +1214,231 @@ text-decoration: underline;
   font-weight: 500;
   color: var(--text-secondary);
 }
+
+/* lANTS position NFTs on the Staking tab (Uniswap-V3-style cards). */
+.lants-nft-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 1.25rem;
+  margin: 0.25rem 0 1.5rem;
+}
+.lants-nft {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.lants-nft__svg {
+  width: 100%;
+  height: auto;
+  display: block;
+  border-radius: 24px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45);
+  transition: transform 0.2s var(--ease), box-shadow 0.2s var(--ease);
+}
+.lants-nft:hover .lants-nft__svg {
+  transform: translateY(-4px);
+  box-shadow: 0 22px 48px rgba(0, 0, 0, 0.55);
+}
+.lants-nft__caption {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+.lants-nft__caption a {
+  color: var(--info);
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+.lants-nft__caption a:hover {
+  text-decoration: underline;
+}
+.lants-nft__price {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  color: var(--clay);
+  font-weight: 600;
+  margin-bottom: 0.25rem;
+}
+.lants-nft__links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+}
+.lants-nft__listbtn {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 0.25rem 0.7rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.lants-nft__listform {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+  margin-top: 0.6rem;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+.lants-nft__listform label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+.lants-nft__listform input {
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.35rem 0.5rem;
+  color: var(--text-primary);
+  font-size: 0.8125rem;
+}
+.lants-nft__listform button {
+  border-radius: 6px;
+  padding: 0.35rem 0.6rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.3rem;
+}
+.lants-nft__listform button:first-of-type {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+}
+.lants-nft__listbtn--danger {
+  background: var(--danger);
+}
+.lants-nft__offers {
+  margin-top: 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.lants-nft__offers-empty {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+.lants-nft__offer-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+  padding: 0.4rem 0.6rem;
+  background: var(--bg-secondary);
+  border-radius: 8px;
+}
+.lants-nft__offer-row span:first-child {
+  font-weight: 600;
+  color: var(--clay);
+}
+.lants-nft__offer-addr {
+  color: var(--text-secondary);
+  font-family: 'Geist Mono', ui-monospace, monospace;
+}
+.lants-nft__offer-row button {
+  margin-left: auto;
+  border-radius: 6px;
+  padding: 0.25rem 0.6rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+.lants-nft__offer-msg {
+  flex-basis: 100%;
+  font-size: 0.7rem;
+}
+@media (prefers-reduced-motion: reduce) {
+  .lants-nft__svg,
+  .lants-nft:hover .lants-nft__svg {
+    transition: none;
+    transform: none;
+  }
+}
+
+.lants-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 1rem;
+  padding: 1rem;
+  margin-bottom: 1rem;
+  background: var(--bg-secondary);
+  border-radius: 12px;
+}
+.lants-filters label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+.lants-filters select,
+.lants-filters input {
+  padding: 0.4rem 0.6rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 0.8125rem;
+}
+.lants-filters__range {
+  display: flex;
+  gap: 0.4rem;
+}
+.lants-filters__range input {
+  width: 80px;
+}
+.lants-filters__apply {
+  padding: 0.5rem 1rem;
+  border-radius: 8px;
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+  align-self: end;
+}
+
+.lants-pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  margin-top: 1.5rem;
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+}
+.lants-pager button {
+  padding: 0.4rem 0.9rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+.lants-pager button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}

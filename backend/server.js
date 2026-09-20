@@ -2,7 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { Interface, JsonRpcProvider, Contract } from 'ethers';
+import { Interface, JsonRpcProvider, Contract, verifyMessage } from 'ethers';
 import db from './database.js';
 import { syncFromOfficialNetwork } from './sync-official.js';
 import { readChainMetrics, updateChainMetrics, startChainPoller } from './chain-poller.js';
@@ -14,6 +14,14 @@ import {
 import {
   fetchBuyerEpochs, fetchSellerEpochs, fetchPoolEpochs, fetchOpenStakePositions, fetchStakingEpoch,
 } from './antscan.js';
+import { fetchOpenSeaLantsMarket, OPENSEA_COLLECTION_URL, isProviderActivationStake } from './opensea-lants.js';
+import { postSeaportListing, resolveOpenSeaApiKey, SEAPORT_V16 } from './opensea-list.js';
+import { saveListing, getListing, allActiveListings, invalidateListing } from './lants-listings.js';
+import { upsertPositions } from './lants-positions.js';
+import {
+  WETH_BASE, saveOffer, getOffer, offersForToken, offererForOffer,
+  cancelOffer, markOfferAccepted, cancelOtherOffers,
+} from './lants-offers.js';
 import {
   EmissionsClient, ANTSTokenClient, DepositsClient, RegistryClient, EmissionsGateClient,
   UsageAccountingClient, UsageRewardsClient, SellerPoolsClient, SellerPoolsRewardsClient,
@@ -1298,6 +1306,478 @@ async function loadEpochTotalsBatch(epochs, currentEpoch) {
   }
   return entries;
 }
+
+// ─── lANTS OpenSea market (Locked Antseed Stake) ───
+// All tradable staking NFTs, listing prices from OpenSea when present, ANTS
+// amounts from Antscan / on-chain. Floor per ANT = min(listingUsd / stakedANTS)
+// over listed positions with a real amount — never an assumed ANTS price.
+const LANTS_MARKET_TTL_MS = 90_000;
+let lantsMarketCache = null;
+let lantsMarketCacheAt = 0;
+let lantsMarketRefreshing = null;
+
+// Our own listings are ETH-denominated (the Seaport consideration is native
+// ETH); OpenSea's scraped listings come back already in USD. A real spot
+// price is needed to make the two comparable for sorting / floor price --
+// Coinbase's public spot endpoint needs no key and is only used for this
+// display conversion, never for anything financial.
+let ethUsdCache = null;
+let ethUsdCacheAt = 0;
+async function ethUsdPrice() {
+  if (ethUsdCache != null && Date.now() - ethUsdCacheAt < 5 * 60_000) return ethUsdCache;
+  try {
+    const res = await fetch('https://api.coinbase.com/v2/prices/ETH-USD/spot');
+    const body = await res.json();
+    const price = Number(body?.data?.amount);
+    if (Number.isFinite(price) && price > 0) {
+      ethUsdCache = price;
+      ethUsdCacheAt = Date.now();
+    }
+  } catch {
+    // Keep the previous cached value (even if stale) rather than nulling it out.
+  }
+  return ethUsdCache;
+}
+
+// epoch N starts at genesis + N * epochDuration (both in seconds, on-chain
+// values already exposed via readChainMetrics()). Used to show real lock
+// dates/durations instead of raw epoch numbers.
+function epochToDate(epoch, genesis, epochDuration) {
+  if (epoch == null || genesis == null || !epochDuration) return null;
+  return new Date((Number(genesis) + Number(epoch) * Number(epochDuration)) * 1000).toISOString();
+}
+
+function sellerNameByAgentId() {
+  const rows = db.prepare('SELECT agent_id, name FROM sellers WHERE agent_id IS NOT NULL').all();
+  const map = new Map();
+  for (const r of rows) map.set(String(r.agent_id), r.name);
+  return map;
+}
+
+async function loadOnChainPosition(id) {
+  if (!sellerPoolsClient) return null;
+  try {
+    const p = await sellerPoolsClient.position(id);
+    if (!p || p.withdrawn) return null;
+    return {
+      id: p.id,
+      owner: p.owner,
+      agentId: p.agentId,
+      amount: Number(p.amount) / 1e18,
+      weightAmount: Number(p.weightAmount) / 1e18,
+      stakeStartEpoch: p.stakeStartEpoch,
+      stakeEndEpoch: p.stakeEndEpoch,
+      closedAtEpoch: p.closedAtEpoch,
+      withdrawn: p.withdrawn,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function computeLantsMarket() {
+  const contract = emissionsCfg.sellerPoolsAddress;
+  const chain = readChainMetrics();
+  const currentEpoch = chain?.emissions?.currentEpoch ?? null;
+  const genesis = chain?.emissions?.genesis ?? null;
+  const epochDuration = chain?.emissions?.epochDuration ?? null;
+  const names = sellerNameByAgentId();
+
+  const [os, antscan] = await Promise.all([
+    fetchOpenSeaLantsMarket(contract).catch((e) => ({ items: [], uniqueItemCount: null, source: 'none', htmlError: e.message, collectionUrl: OPENSEA_COLLECTION_URL })),
+    fetchOpenStakePositions().catch(() => ({ items: [] })),
+  ]);
+
+  const byAntscan = new Map();
+  for (const p of antscan.items || []) {
+    const id = Number(p.id);
+    if (!Number.isFinite(id)) continue;
+    byAntscan.set(id, {
+      id,
+      owner: p.owner,
+      agentId: p.agentId != null ? Number(p.agentId) : null,
+      amount: p.amount != null ? Number(p.amount) / 1e18 : null,
+      weightAmount: p.weightAmount != null ? Number(p.weightAmount) / 1e18 : null,
+      stakeStartEpoch: p.stakeStartEpoch != null ? Number(p.stakeStartEpoch) : null,
+      stakeEndEpoch: p.stakeEndEpoch != null ? Number(p.stakeEndEpoch) : null,
+      closedAtEpoch: 0,
+      withdrawn: false,
+    });
+  }
+
+  const osItems = os.items || [];
+  const localListings = new Map(allActiveListings().map((l) => [l.tokenId, l]));
+  const ethUsd = localListings.size ? await ethUsdPrice() : null;
+
+  // Real bug fixed 2026-09-20: this used to be osItems.length ? osItems ids
+  // : antscan ids -- i.e. antscan-known positions were silently dropped
+  // from the whole market list whenever OpenSea's scrape returned ANYTHING,
+  // even one item, because JS truthiness picked the (possibly incomplete,
+  // e.g. not-yet-indexed-by-OpenSea) OpenSea id list over the fuller
+  // antscan one instead of merging both. This is exactly the kind of gap
+  // that made a real position (sg-01's stake, since re-confirmed as staked
+  // to antseed-aggregator not antseed-zh -- a different, non-bug mixup)
+  // invisible on the market page for anyone whose position OpenSea hadn't
+  // picked up yet. Always union both sources now.
+  const ids = new Set([...byAntscan.keys(), ...osItems.map((i) => i.id)]);
+  for (const id of localListings.keys()) ids.add(id);
+
+  const missing = [...ids].filter((id) => !byAntscan.has(id));
+  if (missing.length > 0 && missing.length <= 40) {
+    const extra = await Promise.all(missing.map((id) => loadOnChainPosition(id)));
+    for (const p of extra) if (p) byAntscan.set(p.id, p);
+  }
+
+  // Persist every known position's metadata locally -- subsequent requests
+  // (pagination, filtering, the "mine" tab) read this instead of hitting
+  // antscan/chain again; only this periodic refresh does.
+  if (byAntscan.size) upsertPositions([...byAntscan.values()]);
+
+  const osById = new Map(osItems.map((i) => [i.id, i]));
+  const items = [];
+  for (const id of ids) {
+    const pos = byAntscan.get(id);
+    const sea = osById.get(id);
+    const amount = pos?.amount ?? null;
+
+    // Prefer our own listing (fulfillable directly against Seaport, no
+    // OpenSea dependency) over the OpenSea scrape -- but only while the
+    // offerer still actually owns the position; a sold/withdrawn/transferred
+    // position's stale listing is dropped rather than shown as live.
+    const local = localListings.get(id);
+    let listing = null;
+    if (local) {
+      if (pos?.owner && pos.owner.toLowerCase() === local.offerer) {
+        const eth = Number(local.priceWei) / 1e18;
+        listing = { usd: ethUsd != null ? eth * ethUsd : null, unit: eth, symbol: 'ETH' };
+      } else {
+        invalidateListing(id);
+      }
+    }
+    if (!listing) listing = sea?.listing || null;
+
+    let perAntUsd = null;
+    if (listing?.usd != null && amount != null && amount > 0) {
+      perAntUsd = listing.usd / amount;
+    }
+    const agentId = pos?.agentId ?? null;
+    const startEpoch = pos?.stakeStartEpoch ?? null;
+    const endEpoch = pos?.stakeEndEpoch ?? null;
+    const startDate = epochToDate(startEpoch, genesis, epochDuration);
+    const endDate = epochToDate(endEpoch, genesis, epochDuration);
+    const lockDays = (startEpoch != null && endEpoch != null && epochDuration)
+      ? Math.round((endEpoch - startEpoch) * epochDuration / 86400)
+      : null;
+    const daysRemaining = endDate != null
+      ? Math.max(0, Math.ceil((new Date(endDate).getTime() - Date.now()) / 86400000))
+      : null;
+    items.push({
+      id,
+      owner: pos?.owner || sea?.owner || null,
+      agentId,
+      sellerName: agentId != null ? (names.get(String(agentId)) || null) : null,
+      amount,
+      weightAmount: pos?.weightAmount ?? null,
+      stakeStartEpoch: startEpoch,
+      stakeEndEpoch: endEpoch,
+      startDate,
+      endDate,
+      lockDays,
+      daysRemaining,
+      listed: !!listing,
+      listing: listing
+        ? { usd: listing.usd, unit: listing.unit, symbol: listing.symbol, perAntUsd }
+        : null,
+      fulfillableHere: !!(local && listing),
+      offerCount: offersForToken(id).length,
+    });
+  }
+
+  items.sort((a, b) => {
+    const aList = a.listed ? 0 : 1;
+    const bList = b.listed ? 0 : 1;
+    if (aList !== bList) return aList - bList;
+    const ap = a.listing?.perAntUsd;
+    const bp = b.listing?.perAntUsd;
+    if (ap != null && bp != null && ap !== bp) return ap - bp;
+    return (b.amount || 0) - (a.amount || 0) || a.id - b.id;
+  });
+
+  const activationHidden = items.filter((i) => isProviderActivationStake(i.amount)).length;
+  const tradable = items.filter((i) => !isProviderActivationStake(i.amount));
+
+  const priced = tradable.filter((i) => i.listing?.perAntUsd != null);
+  const floorPerAntUsd = priced.length ? Math.min(...priced.map((i) => i.listing.perAntUsd)) : null;
+  const floorItem = priced.find((i) => i.listing.perAntUsd === floorPerAntUsd) || null;
+
+  const sellerMap = new Map();
+  for (const i of tradable) {
+    if (i.agentId == null || sellerMap.has(i.agentId)) continue;
+    sellerMap.set(i.agentId, { agentId: i.agentId, name: i.sellerName || null });
+  }
+
+  return {
+    collectionUrl: OPENSEA_COLLECTION_URL,
+    contract,
+    currentEpoch,
+    genesis,
+    epochDuration,
+    totalNfts: tradable.length,
+    listedCount: tradable.filter((i) => i.listed).length,
+    activationHidden,
+    // Listing on antseed-zh's own Seaport order book never depended on
+    // OpenSea's key -- that's only needed for the bonus cross-post to
+    // OpenSea's own listing page, tracked separately.
+    listingEnabled: true,
+    openseaRelayEnabled: !!(await resolveOpenSeaApiKey()),
+    floorPerAntUsd,
+    floorTokenId: floorItem ? floorItem.id : null,
+    sellers: [...sellerMap.values()].sort((a, b) => a.agentId - b.agentId),
+    source: os.source,
+    fetchedAt: Date.now(),
+    items: tradable,
+  };
+}
+
+function refreshLantsMarket() {
+  if (lantsMarketRefreshing) return lantsMarketRefreshing;
+  lantsMarketRefreshing = computeLantsMarket()
+    .then((data) => {
+      lantsMarketCache = data;
+      lantsMarketCacheAt = Date.now();
+      writePayloadCache('lants-market', data);
+      return data;
+    })
+    .finally(() => { lantsMarketRefreshing = null; });
+  return lantsMarketRefreshing;
+}
+
+app.post('/api/lants/list', async (req, res) => {
+  try {
+    const { tokenId, order, protocolAddress } = req.body || {};
+    if (!order?.parameters || !order?.signature) {
+      return res.status(400).json({ error: 'signed Seaport order required' });
+    }
+    const id = Number(tokenId);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'tokenId required' });
+    const pos = await loadOnChainPosition(id);
+    if (!pos) return res.status(400).json({ error: 'position not found or withdrawn' });
+    if (isProviderActivationStake(pos.amount)) {
+      return res.status(400).json({ error: '1 ANT provider-activation stakes are not listed' });
+    }
+    const offerer = (order.parameters.offerer || '').toLowerCase();
+    if (offerer && pos.owner && offerer !== pos.owner.toLowerCase()) {
+      return res.status(400).json({ error: 'order offerer does not own this position' });
+    }
+    const priceWei = order.parameters.consideration?.[0]?.startAmount;
+    if (!priceWei) return res.status(400).json({ error: 'order has no consideration amount' });
+
+    // Primary path: store the signed order ourselves. It's a real, valid
+    // Seaport order regardless of OpenSea -- a buyer's wallet can fulfill it
+    // directly against Seaport, and antseed-zh's own market view can show
+    // and act on it without needing OpenSea's API or key at all.
+    saveListing({
+      tokenId: id,
+      offerer,
+      priceWei,
+      protocolAddress: protocolAddress || SEAPORT_V16,
+      orderParameters: order.parameters,
+      signature: order.signature,
+    });
+
+    // Best-effort bonus: also try to get it onto OpenSea's own book for
+    // wider discovery, when a key happens to be available. Never blocks or
+    // fails the listing if this doesn't work.
+    let posted = null;
+    try { posted = await postSeaportListing({ order, protocolAddress }); } catch { /* local listing still stands */ }
+
+    lantsMarketCache = null;
+    lantsMarketCacheAt = 0;
+    res.json({ ok: true, local: true, posted });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message, detail: e.detail || null });
+  }
+});
+
+app.get('/api/lants/order/:tokenId', (req, res) => {
+  const id = Number(req.params.tokenId);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'tokenId required' });
+  const listing = getListing(id);
+  if (!listing) return res.status(404).json({ error: 'no active local listing for this token' });
+  res.json(listing);
+});
+
+// Every state-changing lants/* action below other than list/offer (which
+// carry their own Seaport signature) requires a short signed message so
+// only the real owner/offerer can cancel their own listing/offer -- these
+// are cheap DB writes with no on-chain signature of their own to check.
+function verifySignedAction(message, signature, expectedAddress) {
+  if (!message || !signature || !expectedAddress) return false;
+  const m = message.match(/@ (\d+)$/);
+  const ts = m ? Number(m[1]) : NaN;
+  if (!Number.isFinite(ts) || Math.abs(Date.now() - ts) > 5 * 60_000) return false; // 5 min validity window
+  try {
+    const recovered = verifyMessage(message, signature);
+    return recovered.toLowerCase() === expectedAddress.toLowerCase();
+  } catch {
+    return false;
+  }
+}
+
+app.post('/api/lants/cancel', (req, res) => {
+  const { tokenId, message, signature } = req.body || {};
+  const id = Number(tokenId);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'tokenId required' });
+  const listing = getListing(id);
+  if (!listing) return res.status(404).json({ error: 'no active local listing for this token' });
+  if (!verifySignedAction(message, signature, listing.offerer)) {
+    return res.status(401).json({ error: 'signature does not match the listing owner' });
+  }
+  invalidateListing(id);
+  lantsMarketCache = null;
+  lantsMarketCacheAt = 0;
+  res.json({ ok: true });
+});
+
+app.post('/api/lants/offer', async (req, res) => {
+  try {
+    const { tokenId, order, protocolAddress } = req.body || {};
+    if (!order?.parameters || !order?.signature) {
+      return res.status(400).json({ error: 'signed Seaport order required' });
+    }
+    const id = Number(tokenId);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'tokenId required' });
+    const pos = await loadOnChainPosition(id);
+    if (!pos) return res.status(400).json({ error: 'position not found or withdrawn' });
+    const offerItem = order.parameters.offer?.[0];
+    if (!offerItem || offerItem.token?.toLowerCase() !== WETH_BASE.toLowerCase()) {
+      return res.status(400).json({ error: `offers must be denominated in WETH (${WETH_BASE})` });
+    }
+    const considerItem = order.parameters.consideration?.find(
+      (c) => c.token?.toLowerCase() === emissionsCfg.sellerPoolsAddress?.toLowerCase() && String(c.identifierOrCriteria) === String(id)
+    );
+    if (!considerItem) return res.status(400).json({ error: 'order does not offer for this token' });
+    const offerer = (order.parameters.offerer || '').toLowerCase();
+    const offerId = saveOffer({
+      tokenId: id,
+      offerer,
+      priceWei: offerItem.startAmount,
+      weth: offerItem.token,
+      protocolAddress: protocolAddress || SEAPORT_V16,
+      orderParameters: order.parameters,
+      signature: order.signature,
+    });
+    res.json({ ok: true, offerId });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message, detail: e.detail || null });
+  }
+});
+
+app.get('/api/lants/offers/:tokenId', (req, res) => {
+  const id = Number(req.params.tokenId);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'tokenId required' });
+  res.json({ offers: offersForToken(id) });
+});
+
+app.get('/api/lants/offer/:offerId', (req, res) => {
+  const id = Number(req.params.offerId);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'offerId required' });
+  const offer = getOffer(id);
+  if (!offer) return res.status(404).json({ error: 'offer not found or already resolved' });
+  res.json(offer);
+});
+
+app.post('/api/lants/offer/cancel', (req, res) => {
+  const { offerId, message, signature } = req.body || {};
+  const id = Number(offerId);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'offerId required' });
+  const offerer = offererForOffer(id);
+  if (!offerer) return res.status(404).json({ error: 'offer not found' });
+  if (!verifySignedAction(message, signature, offerer)) {
+    return res.status(401).json({ error: 'signature does not match the offer maker' });
+  }
+  cancelOffer(id);
+  res.json({ ok: true });
+});
+
+// Called by the seller's browser right after their fulfillOrder() tx for
+// this offer confirms on-chain -- this endpoint does no on-chain check of
+// its own (the transaction itself is what actually moved the NFT/WETH);
+// it just records which offer was accepted and retires the others on the
+// same token, since only one buyer can end up owning it.
+app.post('/api/lants/offer/accept', (req, res) => {
+  const { offerId } = req.body || {};
+  const id = Number(offerId);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'offerId required' });
+  const offer = getOffer(id);
+  if (!offer) return res.status(404).json({ error: 'offer not found or already resolved' });
+  markOfferAccepted(id);
+  cancelOtherOffers(offer.tokenId, id);
+  invalidateListing(offer.tokenId); // the position just changed hands -- any listing on it is stale
+  lantsMarketCache = null;
+  lantsMarketCacheAt = 0;
+  res.json({ ok: true });
+});
+
+// Applies page/filter/sort to an already-computed items array -- no chain
+// or antscan calls here, this only ever touches the cached/DB-backed data
+// computeLantsMarket() already gathered.
+function paginateMarketItems(items, query) {
+  let rows = items;
+  const owner = query.owner ? String(query.owner).toLowerCase() : null;
+  if (owner) rows = rows.filter((i) => i.owner && i.owner.toLowerCase() === owner);
+  if (query.agentId != null && query.agentId !== '') {
+    const wanted = Number(query.agentId);
+    rows = rows.filter((i) => i.agentId === wanted);
+  }
+  if (query.minAmount) rows = rows.filter((i) => i.amount != null && i.amount >= Number(query.minAmount));
+  if (query.maxAmount) rows = rows.filter((i) => i.amount != null && i.amount <= Number(query.maxAmount));
+  if (query.minLockDays) rows = rows.filter((i) => i.lockDays != null && i.lockDays >= Number(query.minLockDays));
+  if (query.maxLockDays) rows = rows.filter((i) => i.lockDays != null && i.lockDays <= Number(query.maxLockDays));
+  if (query.listed === '1') rows = rows.filter((i) => i.listed);
+
+  const sort = query.sort || 'id';
+  const dir = query.dir === 'desc' ? -1 : 1;
+  const sorters = {
+    id: (a, b) => (a.id - b.id) * dir,
+    amount: (a, b) => ((a.amount || 0) - (b.amount || 0)) * dir,
+    lockDays: (a, b) => ((a.lockDays || 0) - (b.lockDays || 0)) * dir,
+    daysRemaining: (a, b) => ((a.daysRemaining ?? -1) - (b.daysRemaining ?? -1)) * dir,
+    price: (a, b) => ((a.listing?.perAntUsd ?? Infinity) - (b.listing?.perAntUsd ?? Infinity)) * dir,
+  };
+  rows = [...rows].sort(sorters[sort] || sorters.id);
+
+  const total = rows.length;
+  const pageSize = Math.max(1, Math.min(100, Number(query.pageSize) || 10));
+  const page = Math.max(1, Number(query.page) || 1);
+  const start = (page - 1) * pageSize;
+  return { items: rows.slice(start, start + pageSize), total, page, pageSize };
+}
+
+app.get('/api/lants-market', async (req, res) => {
+  try {
+    const fresh = lantsMarketCache && Date.now() - lantsMarketCacheAt < LANTS_MARKET_TTL_MS;
+    let base;
+    let stale;
+    let fetchedAt;
+    if (fresh) {
+      base = lantsMarketCache; stale = false; fetchedAt = lantsMarketCacheAt;
+    } else {
+      const persisted = !lantsMarketCache ? readPayloadCache('lants-market') : null;
+      const cached = lantsMarketCache || persisted?.data || null;
+      if (cached && req.query.wait !== '1') {
+        refreshLantsMarket().catch(() => {});
+        base = cached; stale = true; fetchedAt = lantsMarketCacheAt || persisted?.fetchedAt || cached.fetchedAt;
+      } else {
+        base = await refreshLantsMarket(); stale = false; fetchedAt = base.fetchedAt;
+      }
+    }
+    const page = paginateMarketItems(base.items, req.query);
+    res.json({ ...base, ...page, stale, fetchedAt });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 app.get('/api/deposits/config', (_req, res) => {
 res.json({

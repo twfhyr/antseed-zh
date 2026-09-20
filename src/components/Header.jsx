@@ -1,15 +1,13 @@
 import React from 'react';
 import { Github } from 'lucide-react';
+import { ConnectButton } from '@rainbow-me/rainbowkit';
 import { useI18n } from '../i18n/index.jsx';
 
-// Wallet connect / deposit / withdraw UI is intentionally not rendered here.
-// This is a public read-only network dashboard aimed at first-time visitors;
-// a "Connect Wallet" button up top reads as "this site wants access to my
-// funds" and scares people off before they've even looked at the data. The
-// underlying wagmi/RainbowKit wiring (and the deposit/withdraw modals it
-// drove, plus the Claim ANTS / Channels tabs it would gate — see App.jsx) is
-// left in place for now — just not surfaced — in case buyer-facing wallet
-// actions come back later. See notes/dev-plan.md.
+// Wallet connect was hidden 2026-09 (reads as "this site wants access to my
+// funds" to first-time visitors on an otherwise read-only dashboard — see
+// notes/dev-plan.md) but re-added 2026-09-18, explicit call by the site
+// owner, for the Staking tab (App.jsx). Claim ANTS / Channels stay
+// unlinked from the nav; this button doesn't change that.
 function Header() {
 const { lang, setLang, t } = useI18n();
 
@@ -59,6 +57,7 @@ return (
     >
     <Github size={16} />
     </a>
+    <ConnectButton showBalance={false} chainStatus="none" accountStatus="address" />
   </div>
 </header>
 );

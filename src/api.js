@@ -8,6 +8,17 @@ async function get(endpoint) {
   return res.json();
 }
 
+async function post(endpoint, body) {
+  const res = await fetch(`${API_BASE}${endpoint}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(json.error || `Request failed (${res.status})`);
+  return json;
+}
+
 export async function fetchStats() {
   return get('/stats');
 }
@@ -49,6 +60,59 @@ return get(`/emissions/balance?address=${address}`);
 export async function fetchRewards(address, bustCache = false) {
 const bust = bustCache ? '&bust=1' : '';
 return get(`/rewards?address=${address}${bust}`);
+}
+
+/**
+ * lANTS NFT market, paginated/filtered/sorted server-side. `params` may
+ * include: page, pageSize, sort ('id'|'amount'|'lockDays'|'daysRemaining'|
+ * 'price'), dir ('asc'|'desc'), owner, agentId, minAmount, maxAmount,
+ * minLockDays, maxLockDays, listed ('1' for listed-only), wait ('1' to
+ * force a synchronous refresh instead of stale-while-revalidate).
+ */
+export async function fetchLantsMarket(params = {}) {
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== null && v !== undefined && v !== '') qs.set(k, v);
+  }
+  const q = qs.toString();
+  return get(`/lants-market${q ? `?${q}` : ''}`);
+}
+
+export async function postLantsListing(body) {
+  return post('/lants/list', body);
+}
+
+/** The stored signed Seaport order for a listed lANTS token, for direct on-chain fulfillment. */
+export async function fetchLantsOrder(tokenId) {
+  return get(`/lants/order/${tokenId}`);
+}
+
+export async function cancelLantsListing({ tokenId, message, signature }) {
+  return post('/lants/cancel', { tokenId, message, signature });
+}
+
+export async function postLantsOffer(body) {
+  return post('/lants/offer', body);
+}
+
+/** All active (not cancelled/accepted) offers on one token. */
+export async function fetchLantsOffers(tokenId) {
+  return get(`/lants/offers/${tokenId}`);
+}
+
+/** One offer's stored signed order, for the owner to fulfill directly. */
+export async function fetchLantsOffer(offerId) {
+  return get(`/lants/offer/${offerId}`);
+}
+
+export async function cancelLantsOffer({ offerId, message, signature }) {
+  return post('/lants/offer/cancel', { offerId, message, signature });
+}
+
+/** Records that an offer was accepted -- call this after the on-chain
+ *  fulfillOrder() tx confirms, not before. */
+export async function acceptLantsOffer(offerId) {
+  return post('/lants/offer/accept', { offerId });
 }
 
 export async function fetchDepositsConfig() {
