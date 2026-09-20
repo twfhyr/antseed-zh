@@ -8,6 +8,7 @@ export default {
   'nav.antsInfo': '$ANTS Info',
   'nav.claim': 'Claim ANTS',
   'nav.channels': 'Channels',
+  'nav.town': 'Town Board',
   'nav.about': 'About',
 
   // Header

@@ -167,6 +167,21 @@ PRIMARY KEY (operator, buyer)
 );
 `);
 
+// ─── Town board (Luck/Heal/Duggy autonomous-agent game) ───
+// One row per agent turn. Agents are driven entirely by their own model —
+// nothing here is ever written by a human or by the frontend; only
+// backend/agent-turn.mjs (run on a schedule, one buyer identity per agent)
+// inserts rows. The frontend only reads.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS town_board (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_name TEXT NOT NULL,
+    content TEXT NOT NULL,
+    model TEXT,
+    created_at INTEGER NOT NULL
+  );
+`);
+
 const obCount = db.prepare('SELECT COUNT(*) as count FROM operator_buyers').get().count;
 if (obCount === 0) {
 db.prepare('INSERT INTO operator_buyers (operator, buyer) VALUES (?, ?)').run(

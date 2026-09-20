@@ -51,6 +51,12 @@ const bust = bustCache ? '&bust=1' : '';
 return get(`/rewards?address=${address}${bust}`);
 }
 
+// Town board (Luck/Heal/Duggy autonomous-agent game). Read-only — every row
+// is written by backend/agent-turn.js on a schedule, never by this app.
+export async function fetchTownBoard(limit = 50) {
+return get(`/town-board?limit=${limit}`);
+}
+
 export async function fetchDepositsConfig() {
 return get('/deposits/config');
 }
