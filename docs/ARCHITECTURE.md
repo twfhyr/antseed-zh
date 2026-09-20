@@ -86,6 +86,9 @@ App.jsx (useTabRouter → one tab active at a time)
   ├─ ChannelsView ← /api/channels (buyer proxy) + live channels() reads via
   │                 the address from /api/deposits/config (never hardcoded —
   │                 AntseedChannels is swappable and does get redeployed)
+  ├─ StakeANTS    ← /api/lants-market (paginated) + on-chain lANTS positions
+  │                 for the connected/searched address + direct Seaport
+  │                 calls (list/buy/cancel/offer/accept) via src/lib/listLants.js
   └─ About        ← this node's own peer info + connection guide
 ```
 
@@ -226,6 +229,194 @@ Full live map served by `/api/chain-stats` → `contracts`. Core entries:
 
 ---
 
+## lANTS Marketplace (Self-Hosted Seaport)
+
+### Overview
+
+Locked ANTS positions (`AntseedSellerPools`) are ERC-721 NFTs — "lANTS". The
+Staking tab lets holders list, buy, cancel, make offers on, and accept
+offers for these NFTs entirely on **antseed-zh's own order book**, using the
+[Seaport](https://github.com/ProjectOpenSea/seaport) protocol directly
+against the contract on Base. Nothing on this flow depends on OpenSea's API,
+an API key, or OpenSea having indexed the NFT — a listing is usable the
+instant it's created. OpenSea cross-posting still happens best-effort (wider
+discovery, when a key is available) but the site never blocks on it or
+requires it.
+
+This replaced an earlier approach that called OpenSea's API directly for
+listing, which failed in production with "no API key" — OpenSea's free
+instant keys are rate-limited to 2/day per IP and were being burned by every
+dev-server restart (see `backend/opensea-list.js` below for the fix). Rather
+than depend on that quota at all, listings/buys/offers now go straight to
+Seaport, with OpenSea reduced to an optional bonus channel.
+
+### Why Seaport orders don't need gas to create
+
+A Seaport order is an **off-chain signed message** (EIP-712), not a
+transaction — creating or cancelling one (when it never touched the chain)
+costs nothing. The chain is only touched once, when someone **fulfills**
+the order by calling `fulfillOrder()`/`fulfillBasicOrder()` on the Seaport
+contract. This is what makes a "free to list, only the buyer pays gas"
+marketplace possible without any backend holding funds or keys.
+
+- **Listing** = `offer: [ERC721 NFT]`, `consideration: [ETH payment →
+  seller]`. The buyer's wallet calls `fulfillOrder()`, attaching the price
+  as `msg.value`; Seaport moves the NFT to the buyer and the ETH to the
+  seller in one transaction.
+- **Offer** = the mirror image — `offer: [ERC20 payment]`, `consideration:
+  [ERC721 NFT → buyer]`. The **owner's** wallet calls `fulfillOrder()` to
+  accept it, pulling the buyer's pre-approved ERC20 and sending the NFT.
+
+### Why offers use WETH, not raw ETH
+
+`fulfillOrder()` for an offer is called by the **seller** (the position
+owner), not the buyer. Only the caller of a transaction can attach
+`msg.value` — so the owner's fulfillment tx can't pull ETH out of the
+buyer's wallet on their behalf. It *can* pull a pre-approved ERC20, though.
+So a buy-side offer's payment item must be WETH: `src/lib/listLants.js`'s
+`makeOffer()` wraps ETH into WETH first (`ensureWeth()` calls `deposit()`
+for any shortfall) before creating the order. Base's canonical WETH
+predeploy — same address on every OP-Stack chain — is
+`0x4200000000000000000000000000000000000006` (verified via `name()`, not
+assumed).
+
+### Conduit: Seaport's own, not OpenSea's
+
+Every order sets `conduitKey` to the **zero conduit key**
+(`0x` + 64 zeros) — Seaport's own default conduit — instead of the conduit
+key OpenSea's own tooling normally defaults to. This means a seller's
+`setApprovalForAll` grants transfer approval to the Seaport contract
+itself, with no OpenSea-operated contract anywhere in the approval or
+fulfillment path.
+
+Seaport 1.6 on Base: `0x0000000000000068F116a894984e2DB1123eB395`
+(`SEAPORT_V16` in both `backend/opensea-list.js` and `src/lib/listLants.js`).
+
+### Data model (`backend/database.js`)
+
+| Table | Purpose |
+|---|---|
+| `lants_listings` | One row per token (`token_id` PK) — the current active sell listing: offerer, `price_wei`, the full signed Seaport order (`order_parameters` JSON + `signature`), `cancelled_at`. Upserted on re-list, soft-deleted via `cancelled_at`. |
+| `lants_offers` | One row per offer (autoincrement id, many per token) — offerer, `price_wei`, the WETH token address, the signed order, `cancelled_at`/`accepted_at`. |
+| `lants_positions` | Cached position metadata (owner, `agent_id`, `amount`, `weight_amount`, stake start/end epoch, `withdrawn`) so the market page can page/filter/sort with plain SQL instead of an on-chain or Antscan read on every request. Refreshed each time `computeLantsMarket()` runs (~90s TTL). |
+
+Storage/query layers: `backend/lants-listings.js`, `backend/lants-offers.js`,
+`backend/lants-positions.js`.
+
+### Backend endpoints (`backend/server.js`)
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/api/lants-market` | GET | `?page&pageSize&sort&dir&owner&agentId&minAmount&maxAmount&minLockDays&maxLockDays&listed&wait` — paginated/filtered/sorted market view. Serves from a 90s in-memory + on-disk cache (stale-while-revalidate); `wait=1` forces a synchronous refresh. |
+| `/api/lants/list` | POST | `{ tokenId, order, protocolAddress }` — verifies the position exists, isn't a 1-ANT activation stake, and the order's offerer owns it; saves the listing locally (always succeeds independent of OpenSea), then best-effort cross-posts to OpenSea. |
+| `/api/lants/order/:tokenId` | GET | The stored signed order for a listed token, for a buyer's wallet to fulfill directly. |
+| `/api/lants/cancel` | POST | `{ tokenId, message, signature }` — signature-authenticated (see below); invalidates the local listing. |
+| `/api/lants/offer` | POST | `{ tokenId, order, protocolAddress }` — validates the offer's payment item is WETH and its consideration targets this token; saves it. |
+| `/api/lants/offers/:tokenId` | GET | All active (not cancelled/accepted) offers on one token. |
+| `/api/lants/offer/:offerId` | GET | One offer's stored order, for the owner to fulfill. |
+| `/api/lants/offer/cancel` | POST | `{ offerId, message, signature }` — signature-authenticated against the offer's maker. |
+| `/api/lants/offer/accept` | POST | `{ offerId }` — called after the owner's `fulfillOrder()` tx confirms on-chain; the tx itself is the real authorization, this just records the accepted offer, retires the token's other offers, and invalidates any stale listing. |
+
+### Signature-based auth for actions with no Seaport signature of their own
+
+Listing and making an offer are self-authenticating — a valid Seaport
+signature already proves the offerer's intent. Cancelling a listing or an
+offer isn't backed by any on-chain signature, so those two endpoints use a
+lightweight scheme (`verifySignedAction()` in `backend/server.js`, mirrored
+by `signTimestampedMessage()` in `src/lib/listLants.js`):
+
+```
+message   = "Antseed-zh lANTS: {action} #{id} @ {timestamp}"
+signature = walletClient.signMessage({ account, message })
+```
+
+The server extracts the trailing `@ {timestamp}`, rejects anything outside
+a 5-minute window (limits replay), recovers the signer via ethers'
+`verifyMessage()`, and checks it against the resource's stored
+owner/offerer.
+
+### Market computation & caching (`computeLantsMarket()`)
+
+Runs on a 90s TTL, gathering from three sources in parallel and merging by
+token id:
+
+1. **Antscan / on-chain fallback** — position metadata (owner, agent,
+   amount, epochs). Any id seen elsewhere but missing here (e.g. a
+   brand-new position Antscan hasn't indexed yet) is filled in with a
+   direct `sellerPoolsClient.position(id)` call, up to 40 at a time.
+2. **OpenSea scrape** (`backend/opensea-lants.js`) — best-effort, for
+   listings created via the old direct-OpenSea path or the cross-post
+   bonus. Never required.
+3. **Local order book** (`lants_listings`) — takes priority over an OpenSea
+   listing for the same token when the offerer still owns the position (a
+   sold/transferred/withdrawn position's stale listing is dropped, not
+   shown as live).
+
+**Real bug fixed here (2026-09-20):** the id union used to be
+`osItems.length ? osItems.map(...) : [...byAntscan.keys()]` — i.e. any
+non-empty OpenSea scrape result *replaced* the fuller Antscan-derived id
+list instead of merging with it, silently hiding real positions OpenSea
+hadn't indexed yet. Fixed to always union both sources
+(`new Set([...byAntscan.keys(), ...osItems.map(i => i.id)])`).
+
+Every gathered position is upserted into `lants_positions`
+(`upsertPositions()`), and `paginateMarketItems()` then applies
+page/filter/sort purely against that already-computed array — no
+additional chain or Antscan calls happen per request.
+
+Local (ETH-denominated) and OpenSea (USD-denominated) listings are made
+comparable for floor-price/sort purposes via a 5-minute-cached ETH/USD spot
+price from Coinbase's public endpoint (`ethUsdPrice()`) — used only for
+this display conversion, never anything financial. **The card UI always
+shows the actual listed price in ETH first** (what a buyer's wallet
+actually pays), with the USD-denominated $/ANT figure kept as a separate
+reference line — an earlier version showed USD first, which made a 1 ETH
+listing look like its dollar equivalent.
+
+Lock duration/remaining time are computed from real dates, not raw epoch
+counts: `epoch N starts at genesis + N * epochDuration` (both seconds, from
+the on-chain `EmissionsGate`, `epochDuration` = 604,800 = 7 days). Computed
+identically server-side (`epochToDate` in `server.js`) and client-side
+(`epochDates` in `StakeANTS.jsx`, used as a fallback for the personal-
+positions grid, which reads positions directly on-chain without these
+precomputed fields).
+
+### OpenSea cross-post (best-effort only)
+
+`backend/opensea-list.js` posts a copy of a local listing to OpenSea's own
+orderbook, purely for wider discovery — the site never depends on this
+succeeding. Instant API keys are free but rate-limited (2/day per IP,
+~7-day validity); the original bug this replaced was an **in-memory-only**
+key cache burning the whole day's quota on every dev-server restart. Fixed
+by persisting the resolved key to `backend/private/opensea-key.json`
+(gitignored), reused across restarts until its real expiry (minus a 1h
+margin).
+
+### Frontend (`src/lib/listLants.js`, `src/api.js`, `src/components/StakeANTS.jsx`)
+
+`src/lib/listLants.js` loads `@opensea/seaport-js` and `ethers` on demand
+(so the rest of the dashboard doesn't pay for that bundle weight) and
+exposes one function per user action — `createAndPostListing`,
+`fulfillListing`, `cancelListing`, `makeOffer`, `cancelOffer`,
+`acceptOffer` — each building/signing the Seaport order client-side via the
+connected wallet, then calling the matching `src/api.js` wrapper
+(`postLantsListing`, `cancelLantsListing`, `postLantsOffer`,
+`cancelLantsOffer`, `acceptLantsOffer`, `fetchLantsOrder`/`fetchLantsOffer`)
+to persist or fetch from the order book.
+
+`StakeANTS.jsx`'s market grid is paginated (10 per page, `MarketPager`),
+filterable (seller, ANTS-amount range, lock-days range) and sortable
+(id/amount/lock-length/time-left/price), with three tabs — **For sale**
+(default), **All NFTs**, and **Mine** (shown only when a wallet is
+connected, filters to the connected address). Each `LantsNftCard` shows the
+real lock start/end dates as a Uniswap-LP-style diagonal range curve
+(`LantsNftArt`, site-language-aware date formatting) rather than a raw
+epoch range, and exposes List/Buy/Cancel-listing/Make-offer/Accept-offer/
+Cancel-my-offer actions inline based on ownership and listing state — there
+is no "view/buy on OpenSea" link anywhere in this flow.
+
+---
+
 ## Lessons Learned
 
 ### 1. Always rebuild before restarting the server
@@ -281,8 +472,16 @@ User Browser
   |-- HTTP GET /api/rewards       → five-bucket rewards view (staker/usage/legacy/locked)
   |-- HTTP GET /api/deposits/config → live contract addresses (source of truth for wagmi calls)
   |-- HTTP GET /api/channels      → proxies the local buyer proxy's channel list
+  |-- HTTP GET /api/lants-market  → paginated lANTS NFT market (self-hosted Seaport order book)
+  |-- HTTP POST /api/lants/list   → save a signed Seaport listing (+ best-effort OpenSea cross-post)
+  |-- HTTP GET /api/lants/order/:tokenId → stored signed order for a buyer to fulfill
+  |-- HTTP POST /api/lants/cancel → cancel a listing (signed-message auth)
+  |-- HTTP POST /api/lants/offer  → save a signed WETH offer
+  |-- HTTP GET /api/lants/offers/:tokenId, /api/lants/offer/:offerId → read offers
+  |-- HTTP POST /api/lants/offer/cancel, /api/lants/offer/accept → cancel/accept an offer
   |-- HTTP POST /api/admin/sync   → triggers live network re-sync (token-gated, see README)
   |-- Direct wallet tx            → claimSellerEmissions / claimBuyerEmissions on Base
   |-- Direct wallet tx            → indexPoolRewards + claimStakerRewardsBatch / claimBuyerReward
   |-- Direct wallet tx            → AntseedChannels.requestClose / .withdraw
+  |-- Direct wallet tx            → Seaport fulfillOrder() — buy a listing, or accept an offer
 ```

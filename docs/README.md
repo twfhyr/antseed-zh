@@ -83,6 +83,12 @@ Express Server (PORT 3001)
 | backend/sync-official.js | Fetches live AntSeed network data (DHT snapshot) and writes to DB |
 | backend/antscan.js | Antscan GraphQL client — real settled on-chain volume/requests/tokens |
 | backend/sync-history.js | Orchestrates Antscan sync into network_snapshots/buyers_onchain/sellers_onchain/daily_metrics/epoch_metrics |
+| backend/lants-listings.js | Self-hosted Seaport order book: CRUD for lANTS sell listings (`lants_listings` table) |
+| backend/lants-offers.js | CRUD for lANTS buy-side WETH offers (`lants_offers` table) |
+| backend/lants-positions.js | Cached lANTS position metadata (`lants_positions` table) for server-side pagination/filtering without re-hitting the chain |
+| backend/opensea-list.js | Best-effort cross-post of a local Seaport listing to OpenSea's orderbook; persists the free instant API key to `backend/private/` so it survives restarts |
+| backend/opensea-lants.js | Scrapes OpenSea's public lANTS collection page for listing prices (one input to the merged market view, never the source of truth) |
+| src/lib/listLants.js | Client-side Seaport order creation/fulfillment (list/buy/cancel/offer/accept) via `@opensea/seaport-js`, loaded on demand |
 | src/App.jsx | Root component: URL-driven tab routing (see hooks/useTabRouter.js), top-level data fetch |
 | src/api.js | Thin fetch wrapper for /api/* endpoints, base-path-aware |
 | src/components/Overview.jsx | Landing tab: stat cards + daily/epoch history charts |
@@ -94,6 +100,7 @@ Express Server (PORT 3001)
 | src/components/ClaimANTS.jsx | Five-bucket rewards view + wallet claim flows |
 | src/components/ChannelsView.jsx | Payment channels: list, requestClose, withdraw |
 | src/components/ANTSInfo.jsx | On-chain ANTS data, contract addresses, reward-mechanics explainer |
+| src/components/StakeANTS.jsx | lANTS position NFTs (claim/stake usage rewards) + the paginated self-hosted Seaport marketplace (list/buy/cancel/offer/accept) |
 | src/components/About.jsx | Node showcase (this seller's peer info, connection guide) |
 | vite.config.js | Vite config; `BUILD_TARGET=root` switches base path + outDir (see README Deployment) |
 | package.json | dev script uses concurrently to run both servers |
