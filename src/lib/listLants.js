@@ -205,9 +205,11 @@ export async function acceptOffer({ walletClient, account, offerId }) {
   const seaport = new Seaport(provider);
   const order = { parameters: stored.orderParameters, signature: stored.signature };
   const { executeAllActions } = await seaport.fulfillOrder({ order, accountAddress: account });
-  const result = await executeAllActions();
-  await acceptLantsOffer(offerId, account);
-  return result;
+  const tx = await executeAllActions();
+  const receipt = typeof tx?.wait === 'function' ? await tx.wait() : tx;
+  const hash = receipt?.hash || tx?.hash || null;
+  await acceptLantsOffer(offerId, account, hash);
+  return { hash };
 }
 
 /**

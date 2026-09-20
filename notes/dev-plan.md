@@ -205,7 +205,23 @@ Verified on the real domain: `https://antseed-zh.com/build-id.json` now
 reports `c004367` (current HEAD) instead of the stale `935088b`, site still
 200.
 
-## Recently fixed (2026-09-15 session)
+## Offer/accept txHash gap closed, dist rebuilt again (same session, follow-up)
+
+Closed the dedup-fallback gap flagged in the indexer-wiring round above:
+`/api/lants/offer/accept` now accepts an optional `txHash` and passes it
+through to `recordTrade()` (was hardcoded `null`). `acceptLantsOffer()` in
+`src/api.js` now takes and sends it; `acceptOffer()` in `src/lib/listLants.js`
+now extracts the accept tx's hash the same way `fulfillListing()` already
+does (`receipt?.hash || tx?.hash || null`) and passes it through, instead of
+discarding `executeAllActions()`'s result entirely.
+
+Rebuilt and shipped both targets again (`npm run build` +
+`BUILD_TARGET=root npm run build`, both clean). Note: `build-id.json` still
+reports commit `4d4a4d9` since this fix isn't committed yet (build id is
+git-hash based, not content-hash based) — only its timestamp component
+changed. Verified the fix is actually in the shipped bundle (`grep -l
+acceptLantsOffer dist-root/assets/*.js` matches). Not committed or pushed —
+only a rebuild was asked for this round.
 
 Context for whoever picks this up next — these are done, not open items,
 listed so the reasoning doesn't get lost:

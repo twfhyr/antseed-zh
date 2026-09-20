@@ -1808,7 +1808,7 @@ app.post('/api/lants/offer/cancel', (req, res) => {
 // it just records which offer was accepted and retires the others on the
 // same token, since only one buyer can end up owning it.
 app.post('/api/lants/offer/accept', async (req, res) => {
-  const { offerId, seller } = req.body || {};
+  const { offerId, seller, txHash } = req.body || {};
   const id = Number(offerId);
   if (!Number.isFinite(id)) return res.status(400).json({ error: 'offerId required' });
   const offer = getOffer(id);
@@ -1820,7 +1820,7 @@ app.post('/api/lants/offer/accept', async (req, res) => {
     const pos = await loadOnChainPosition(offer.tokenId).catch(() => null);
     recordTrade({
       tokenId: offer.tokenId, seller, buyer: offer.offerer, priceWei: offer.priceWei,
-      currency: 'WETH', tradeType: 'offer', txHash: null,
+      currency: 'WETH', tradeType: 'offer', txHash: txHash || null,
       amount: pos?.amount ?? null, agentId: pos?.agentId ?? null,
     });
   }
