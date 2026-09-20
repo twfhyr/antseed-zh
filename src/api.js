@@ -51,6 +51,31 @@ const bust = bustCache ? '&bust=1' : '';
 return get(`/rewards?address=${address}${bust}`);
 }
 
+/** OpenSea listings for lANTS NFTs plus on-chain stake size (floor per ANT). */
+export async function fetchLantsMarket(bustCache = false) {
+  const bust = bustCache ? '?wait=1' : '';
+  return get(`/lants-market${bust}`);
+}
+
+export async function postLantsListing(body) {
+  const res = await fetch(`${API_BASE}/lants/list`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(json.error || `Listing failed (${res.status})`);
+  return json;
+}
+
+/** The stored signed Seaport order for a listed lANTS token, for direct on-chain fulfillment. */
+export async function fetchLantsOrder(tokenId) {
+  const res = await fetch(`${API_BASE}/lants/order/${tokenId}`);
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(json.error || `No listing (${res.status})`);
+  return json;
+}
+
 export async function fetchDepositsConfig() {
 return get('/deposits/config');
 }

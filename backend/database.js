@@ -58,6 +58,17 @@ db.exec(`
     status TEXT NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS lants_listings (
+    token_id INTEGER PRIMARY KEY,
+    offerer TEXT NOT NULL,
+    price_wei TEXT NOT NULL,
+    protocol_address TEXT NOT NULL,
+    order_parameters TEXT NOT NULL, -- JSON, the signed Seaport order's parameters
+    signature TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    cancelled_at INTEGER
+  );
+
   CREATE TABLE IF NOT EXISTS stats (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     total_buyers INTEGER DEFAULT 0,
