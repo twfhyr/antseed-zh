@@ -8,6 +8,17 @@ async function get(endpoint) {
   return res.json();
 }
 
+async function post(endpoint, body) {
+  const res = await fetch(`${API_BASE}${endpoint}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(json.error || `Request failed (${res.status})`);
+  return json;
+}
+
 export async function fetchStats() {
   return get('/stats');
 }
@@ -82,22 +93,40 @@ export async function fetchLantsMarket(params = {}) {
 }
 
 export async function postLantsListing(body) {
-  const res = await fetch(`${API_BASE}/lants/list`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  const json = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(json.error || `Listing failed (${res.status})`);
-  return json;
+  return post('/lants/list', body);
 }
 
 /** The stored signed Seaport order for a listed lANTS token, for direct on-chain fulfillment. */
 export async function fetchLantsOrder(tokenId) {
-  const res = await fetch(`${API_BASE}/lants/order/${tokenId}`);
-  const json = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(json.error || `No listing (${res.status})`);
-  return json;
+  return get(`/lants/order/${tokenId}`);
+}
+
+export async function cancelLantsListing({ tokenId, message, signature }) {
+  return post('/lants/cancel', { tokenId, message, signature });
+}
+
+export async function postLantsOffer(body) {
+  return post('/lants/offer', body);
+}
+
+/** All active (not cancelled/accepted) offers on one token. */
+export async function fetchLantsOffers(tokenId) {
+  return get(`/lants/offers/${tokenId}`);
+}
+
+/** One offer's stored signed order, for the owner to fulfill directly. */
+export async function fetchLantsOffer(offerId) {
+  return get(`/lants/offer/${offerId}`);
+}
+
+export async function cancelLantsOffer({ offerId, message, signature }) {
+  return post('/lants/offer/cancel', { offerId, message, signature });
+}
+
+/** Records that an offer was accepted -- call this after the on-chain
+ *  fulfillOrder() tx confirms, not before. */
+export async function acceptLantsOffer(offerId) {
+  return post('/lants/offer/accept', { offerId });
 }
 
 export async function fetchDepositsConfig() {

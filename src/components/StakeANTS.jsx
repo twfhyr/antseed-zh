@@ -17,9 +17,12 @@ import {
   TrendingUp,
   Users,
 } from 'lucide-react';
-import { fetchRewards, fetchSellers, fetchLantsMarket } from '../api';
+import { fetchRewards, fetchSellers, fetchLantsMarket, fetchLantsOffers } from '../api';
 import { useI18n } from '../i18n/index.jsx';
-import { createAndPostListing, fulfillListing, isProviderActivationStake } from '../lib/listLants';
+import {
+  createAndPostListing, fulfillListing, cancelListing, makeOffer, cancelOffer, acceptOffer,
+  isProviderActivationStake,
+} from '../lib/listLants';
 
 // ─── ABIs (Base mainnet, recognized-usage era) — same contracts ClaimANTS.jsx
 // uses; only the functions this component actually calls are declared. ───
@@ -234,6 +237,11 @@ function StakeANTS() {
   const MARKET_PAGE_SIZE = 10;
   const [listForm, setListForm] = useState(null); // { id, price, days, phase, message }
   const [buyState, setBuyState] = useState(null); // { id, phase, message }
+  const [cancelState, setCancelState] = useState(null); // { id, phase, message }
+  const [offerForm, setOfferForm] = useState(null); // { id, price, days, phase, message }
+  const [offersOpenFor, setOffersOpenFor] = useState(null); // tokenId whose offers panel is expanded
+  const [offersById, setOffersById] = useState({}); // tokenId -> { loading, items, error }
+  const [offerActionState, setOfferActionState] = useState(null); // { offerId, phase, message }
 
   const [searchInput, setSearchInput] = useState('');
   const [searchAddress, setSearchAddress] = useState(null);
@@ -419,6 +427,87 @@ function StakeANTS() {
       fetchLantsMarket({ ...marketQuery, wait: '1' }).then(setMarket).catch(() => {});
     } catch (e) {
       setBuyState({ id: position.id, phase: 'error', message: e.shortMessage || e.message });
+    }
+  };
+
+  const doCancel = async (position) => {
+    if (!walletClient || !address) {
+      setCancelState({ id: position.id, phase: 'error', message: t('stake.buyNeedWallet') });
+      return;
+    }
+    try {
+      setCancelState({ id: position.id, phase: 'cancelling', message: t('stake.cancelling') });
+      await cancelListing({ walletClient, account: address, tokenId: position.id });
+      setCancelState({ id: position.id, phase: 'done', message: t('stake.cancelledOk') });
+      fetchLantsMarket({ ...marketQuery, wait: '1' }).then(setMarket).catch(() => {});
+    } catch (e) {
+      setCancelState({ id: position.id, phase: 'error', message: e.shortMessage || e.message });
+    }
+  };
+
+  const doMakeOffer = async (position) => {
+    const contract = market?.contract || rewards?.contracts?.sellerPools;
+    if (!walletClient || !address || !contract) {
+      setOfferForm((f) => ({ ...(f || { id: position.id, price: '', days: 30 }), phase: 'error', message: t('stake.buyNeedWallet') }));
+      return;
+    }
+    const price = Number(offerForm?.price);
+    if (!(price > 0)) {
+      setOfferForm((f) => ({ ...f, phase: 'error', message: t('stake.listPrice') }));
+      return;
+    }
+    try {
+      setOfferForm((f) => ({ ...f, phase: 'offering', message: t('stake.offering') }));
+      await makeOffer({
+        walletClient, account: address, contract, tokenId: position.id,
+        priceEth: price, durationDays: offerForm?.days || 30,
+      });
+      setOfferForm({ id: position.id, price: String(price), days: offerForm?.days || 30, phase: 'done', message: t('stake.offeredOk') });
+      if (offersOpenFor === position.id) loadOffers(position.id, true);
+    } catch (e) {
+      setOfferForm((f) => ({ ...f, phase: 'error', message: e.shortMessage || e.message }));
+    }
+  };
+
+  const loadOffers = useCallback(async (tokenId, force = false) => {
+    if (!force && offersById[tokenId] && !offersById[tokenId].error) return;
+    setOffersById((m) => ({ ...m, [tokenId]: { ...(m[tokenId] || {}), loading: true } }));
+    try {
+      const { offers } = await fetchLantsOffers(tokenId);
+      setOffersById((m) => ({ ...m, [tokenId]: { loading: false, items: offers, error: null } }));
+    } catch (e) {
+      setOffersById((m) => ({ ...m, [tokenId]: { loading: false, items: [], error: e.message } }));
+    }
+  }, [offersById]);
+
+  const toggleOffers = (tokenId) => {
+    const next = offersOpenFor === tokenId ? null : tokenId;
+    setOffersOpenFor(next);
+    if (next != null) loadOffers(next);
+  };
+
+  const doAcceptOffer = async (offer) => {
+    if (!walletClient || !address) return;
+    try {
+      setOfferActionState({ offerId: offer.id, phase: 'accepting', message: t('stake.accepting') });
+      await acceptOffer({ walletClient, account: address, offerId: offer.id });
+      setOfferActionState({ offerId: offer.id, phase: 'done', message: t('stake.acceptedOk') });
+      loadOffers(offer.tokenId, true);
+      fetchLantsMarket({ ...marketQuery, wait: '1' }).then(setMarket).catch(() => {});
+    } catch (e) {
+      setOfferActionState({ offerId: offer.id, phase: 'error', message: e.shortMessage || e.message });
+    }
+  };
+
+  const doCancelOffer = async (offer) => {
+    if (!walletClient || !address) return;
+    try {
+      setOfferActionState({ offerId: offer.id, phase: 'cancelling', message: t('stake.cancelling') });
+      await cancelOffer({ walletClient, account: address, offerId: offer.id });
+      setOfferActionState({ offerId: offer.id, phase: 'done', message: t('stake.cancelledOk') });
+      loadOffers(offer.tokenId, true);
+    } catch (e) {
+      setOfferActionState({ offerId: offer.id, phase: 'error', message: e.shortMessage || e.message });
     }
   };
 
@@ -614,7 +703,6 @@ function StakeANTS() {
                       t={t}
                       lang={lang}
                       listing={p.listing}
-                      openseaUrl={p.openseaUrl}
                       listForm={listForm}
                       setListForm={setListForm}
                       onList={() => doList(p)}
@@ -622,6 +710,20 @@ function StakeANTS() {
                       onBuy={() => doBuy(p)}
                       canBuy={!!(isConnected && address && p.owner && address.toLowerCase() !== p.owner.toLowerCase() && p.listed && p.fulfillableHere)}
                       buyState={buyState?.id === p.id ? buyState : null}
+                      isOwner={!!(isConnected && address && p.owner && address.toLowerCase() === p.owner.toLowerCase())}
+                      address={address}
+                      onCancel={doCancel}
+                      cancelState={cancelState?.id === p.id ? cancelState : null}
+                      offerForm={offerForm}
+                      setOfferForm={setOfferForm}
+                      onMakeOffer={doMakeOffer}
+                      canOffer={!!(isConnected && address && p.owner && address.toLowerCase() !== p.owner.toLowerCase() && !isProviderActivationStake(p.amount))}
+                      offersOpen={offersOpenFor === p.id}
+                      offers={offersById[p.id]}
+                      onToggleOffers={toggleOffers}
+                      onAcceptOffer={doAcceptOffer}
+                      onCancelOffer={doCancelOffer}
+                      offerActionState={offerActionState}
                     />
                   ))}
                 </div>
@@ -740,12 +842,25 @@ function StakeANTS() {
                     poolsAddress={poolsAddress}
                     t={t}
                     lang={lang}
-                    openseaUrl={poolsAddress ? `https://opensea.io/item/base/${poolsAddress}/${p.id}` : null}
                     listForm={listForm}
                     setListForm={setListForm}
                     onList={() => doList(p)}
                     canList={!!(canAct && !isProviderActivationStake(p.amount))}
                     activation={isProviderActivationStake(p.amount)}
+                    isOwner={canAct}
+                    address={address}
+                    onCancel={doCancel}
+                    cancelState={cancelState?.id === p.id ? cancelState : null}
+                    offerForm={offerForm}
+                    setOfferForm={setOfferForm}
+                    onMakeOffer={doMakeOffer}
+                    canOffer={!!(isConnected && address && !canAct && !isProviderActivationStake(p.amount))}
+                    offersOpen={offersOpenFor === p.id}
+                    offers={offersById[p.id]}
+                    onToggleOffers={toggleOffers}
+                    onAcceptOffer={doAcceptOffer}
+                    onCancelOffer={doCancelOffer}
+                    offerActionState={offerActionState}
                   />
                 ))}
               </div>
@@ -804,7 +919,11 @@ function StakeANTS() {
   );
 }
 
-function LantsNftCard({ position: p, seller, currentEpoch, genesis, epochDuration, t, lang, listing, openseaUrl, listForm, setListForm, onList, canList, onBuy, canBuy, buyState, activation }) {
+function LantsNftCard({
+  position: p, seller, currentEpoch, genesis, epochDuration, t, lang, listing, listForm, setListForm, onList, canList, onBuy, canBuy, buyState,
+  activation, isOwner, address, onCancel, cancelState, offerForm, setOfferForm, onMakeOffer, canOffer,
+  offersOpen, offers, onToggleOffers, onAcceptOffer, onCancelOffer, offerActionState,
+}) {
   const sellerName = seller?.name || (p.agentId != null ? t('stake.agent', { id: p.agentId }) : '—');
   const state = (p.stakeStartEpoch != null && p.stakeEndEpoch != null) ? positionState(p, currentEpoch) : null;
   const dates = epochDates(p.stakeStartEpoch, p.stakeEndEpoch, genesis, epochDuration);
@@ -812,12 +931,15 @@ function LantsNftCard({ position: p, seller, currentEpoch, genesis, epochDuratio
   const daysRemaining = p.daysRemaining ?? dates.daysRemaining;
   const startDate = p.startDate ?? dates.startDate;
   const endDate = p.endDate ?? dates.endDate;
-  const sea = openseaUrl || (poolsAddress ? `https://opensea.io/item/base/${poolsAddress}/${p.id}` : null);
   const perAnt = listing?.perAntUsd != null
     ? t('stake.perAnt', { price: formatUsd(listing.perAntUsd) })
     : null;
   const open = listForm?.id === p.id;
   const listingBusy = open && listForm?.phase === 'listing';
+  const offerOpen = offerForm?.id === p.id;
+  const offerBusy = offerOpen && offerForm?.phase === 'offering';
+  const cancelBusy = cancelState?.id === p.id && cancelState?.phase === 'cancelling';
+  const canCancel = isOwner && p.listed && p.fulfillableHere;
 
   return (
     <figure className="lants-nft">
@@ -853,6 +975,17 @@ function LantsNftCard({ position: p, seller, currentEpoch, genesis, epochDuratio
               {t('stake.listOnSite')}
             </button>
           )}
+          {canCancel && onCancel && (
+            <button
+              type="button"
+              className="lants-nft__listbtn lants-nft__listbtn--danger"
+              onClick={() => onCancel(p)}
+              disabled={cancelBusy}
+            >
+              {cancelBusy ? <Loader2 size={12} className="spin" /> : null}
+              {t('stake.cancelListing')}
+            </button>
+          )}
           {canBuy && onBuy && (
             <button
               type="button"
@@ -864,13 +997,26 @@ function LantsNftCard({ position: p, seller, currentEpoch, genesis, epochDuratio
               {t('stake.buyOnSite')}
             </button>
           )}
-          {sea && (
-            <a href={sea} target="_blank" rel="noopener noreferrer">
-              {listing ? t('stake.buyOnOpensea') : t('stake.sellOnOpensea')}
-              <ExternalLink size={11} />
-            </a>
+          {canOffer && setOfferForm && (
+            <button
+              type="button"
+              className="lants-nft__listbtn"
+              onClick={() => setOfferForm(offerOpen ? null : { id: p.id, price: '', days: 30, phase: null, message: null })}
+            >
+              {t('stake.makeOffer')}
+            </button>
+          )}
+          {onToggleOffers && (
+            <button type="button" className="lants-nft__listbtn" onClick={() => onToggleOffers(p.id)}>
+              {t('stake.viewOffers', { n: p.offerCount || 0 })}
+            </button>
           )}
         </div>
+        {cancelState?.id === p.id && cancelState.message && (
+          <div style={{ color: cancelState.phase === 'error' ? 'var(--danger)' : 'var(--text-secondary)', fontSize: '0.8rem', marginTop: '0.25rem' }}>
+            {cancelState.message}
+          </div>
+        )}
         {buyState?.message && (
           <div style={{ color: buyState.phase === 'error' ? 'var(--danger)' : 'var(--text-secondary)', fontSize: '0.8rem', marginTop: '0.25rem' }}>
             {buyState.message}
@@ -904,6 +1050,70 @@ function LantsNftCard({ position: p, seller, currentEpoch, genesis, epochDuratio
                 {listForm.message}
               </div>
             )}
+          </div>
+        )}
+        {offerOpen && canOffer && (
+          <div className="lants-nft__listform">
+            <label>
+              {t('stake.offerPrice')}
+              <input
+                type="number" min="0" step="0.0001"
+                value={offerForm.price}
+                onChange={(e) => setOfferForm({ ...offerForm, price: e.target.value, phase: null })}
+              />
+            </label>
+            <label>
+              {t('stake.listDays')}
+              <input
+                type="number" min="1" max="365"
+                value={offerForm.days}
+                onChange={(e) => setOfferForm({ ...offerForm, days: Number(e.target.value) || 30, phase: null })}
+              />
+            </label>
+            <button type="button" onClick={() => onMakeOffer(p)} disabled={offerBusy}>
+              {offerBusy ? <Loader2 size={12} className="spin" /> : null}
+              {t('stake.offerConfirm')}
+            </button>
+            <button type="button" onClick={() => setOfferForm(null)}>{t('stake.listCancel')}</button>
+            {offerForm.message && (
+              <div style={{ color: offerForm.phase === 'error' ? 'var(--danger)' : 'var(--text-secondary)', gridColumn: '1 / -1' }}>
+                {offerForm.message}
+              </div>
+            )}
+          </div>
+        )}
+        {offersOpen && (
+          <div className="lants-nft__offers">
+            {offers?.loading && <div className="lants-nft__offers-empty">{t('stake.loadingOffers')}</div>}
+            {offers?.error && <div className="lants-nft__offers-empty">{offers.error}</div>}
+            {!offers?.loading && offers?.items?.length === 0 && (
+              <div className="lants-nft__offers-empty">{t('stake.noOffers')}</div>
+            )}
+            {(offers?.items || []).map((o) => {
+              const mine = address && o.offerer.toLowerCase() === address.toLowerCase();
+              const busy = offerActionState?.offerId === o.id && ['accepting', 'cancelling'].includes(offerActionState.phase);
+              return (
+                <div key={o.id} className="lants-nft__offer-row">
+                  <span>{(Number(o.priceWei) / 1e18).toFixed(4)} WETH</span>
+                  <span className="lants-nft__offer-addr">{truncateAddress(o.offerer)}</span>
+                  {isOwner && (
+                    <button type="button" onClick={() => onAcceptOffer(o)} disabled={busy}>
+                      {busy ? <Loader2 size={11} className="spin" /> : null}{t('stake.acceptOffer')}
+                    </button>
+                  )}
+                  {mine && !isOwner && (
+                    <button type="button" onClick={() => onCancelOffer(o)} disabled={busy}>
+                      {busy ? <Loader2 size={11} className="spin" /> : null}{t('stake.cancelOffer')}
+                    </button>
+                  )}
+                  {offerActionState?.offerId === o.id && offerActionState.message && (
+                    <div className="lants-nft__offer-msg" style={{ color: offerActionState.phase === 'error' ? 'var(--danger)' : 'var(--text-secondary)' }}>
+                      {offerActionState.message}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
       </figcaption>

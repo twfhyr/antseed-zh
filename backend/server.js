@@ -3,7 +3,7 @@ import cors from 'cors';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
-import { Interface, JsonRpcProvider, Contract } from 'ethers';
+import { Interface, JsonRpcProvider, Contract, verifyMessage } from 'ethers';
 import db from './database.js';
 import { syncFromOfficialNetwork, getLastCatalogSync } from './sync-official.js';
 import { readChainMetrics, updateChainMetrics, startChainPoller } from './chain-poller.js';
@@ -15,10 +15,14 @@ import {
 import {
   fetchBuyerEpochs, fetchSellerEpochs, fetchPoolEpochs, fetchOpenStakePositions, fetchStakingEpoch,
 } from './antscan.js';
-import { fetchOpenSeaLantsMarket, openseaItemUrl, OPENSEA_COLLECTION_URL, isProviderActivationStake } from './opensea-lants.js';
+import { fetchOpenSeaLantsMarket, OPENSEA_COLLECTION_URL, isProviderActivationStake } from './opensea-lants.js';
 import { postSeaportListing, resolveOpenSeaApiKey, SEAPORT_V16 } from './opensea-list.js';
 import { saveListing, getListing, allActiveListings, invalidateListing } from './lants-listings.js';
 import { upsertPositions } from './lants-positions.js';
+import {
+  WETH_BASE, saveOffer, getOffer, offersForToken, offererForOffer,
+  cancelOffer, markOfferAccepted, cancelOtherOffers,
+} from './lants-offers.js';
 import {
   EmissionsClient, ANTSTokenClient, DepositsClient, RegistryClient, EmissionsGateClient,
   UsageAccountingClient, UsageRewardsClient, SellerPoolsClient, SellerPoolsRewardsClient,
@@ -1748,7 +1752,7 @@ async function computeLantsMarket() {
         ? { usd: listing.usd, unit: listing.unit, symbol: listing.symbol, perAntUsd }
         : null,
       fulfillableHere: !!(local && listing),
-      openseaUrl: contract ? openseaItemUrl(contract, id) : OPENSEA_COLLECTION_URL,
+      offerCount: offersForToken(id).length,
     });
   }
 
@@ -1864,6 +1868,118 @@ app.get('/api/lants/order/:tokenId', (req, res) => {
   const listing = getListing(id);
   if (!listing) return res.status(404).json({ error: 'no active local listing for this token' });
   res.json(listing);
+});
+
+// Every state-changing lants/* action below other than list/offer (which
+// carry their own Seaport signature) requires a short signed message so
+// only the real owner/offerer can cancel their own listing/offer -- these
+// are cheap DB writes with no on-chain signature of their own to check.
+function verifySignedAction(message, signature, expectedAddress) {
+  if (!message || !signature || !expectedAddress) return false;
+  const m = message.match(/@ (\d+)$/);
+  const ts = m ? Number(m[1]) : NaN;
+  if (!Number.isFinite(ts) || Math.abs(Date.now() - ts) > 5 * 60_000) return false; // 5 min validity window
+  try {
+    const recovered = verifyMessage(message, signature);
+    return recovered.toLowerCase() === expectedAddress.toLowerCase();
+  } catch {
+    return false;
+  }
+}
+
+app.post('/api/lants/cancel', (req, res) => {
+  const { tokenId, message, signature } = req.body || {};
+  const id = Number(tokenId);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'tokenId required' });
+  const listing = getListing(id);
+  if (!listing) return res.status(404).json({ error: 'no active local listing for this token' });
+  if (!verifySignedAction(message, signature, listing.offerer)) {
+    return res.status(401).json({ error: 'signature does not match the listing owner' });
+  }
+  invalidateListing(id);
+  lantsMarketCache = null;
+  lantsMarketCacheAt = 0;
+  res.json({ ok: true });
+});
+
+app.post('/api/lants/offer', async (req, res) => {
+  try {
+    const { tokenId, order, protocolAddress } = req.body || {};
+    if (!order?.parameters || !order?.signature) {
+      return res.status(400).json({ error: 'signed Seaport order required' });
+    }
+    const id = Number(tokenId);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'tokenId required' });
+    const pos = await loadOnChainPosition(id);
+    if (!pos) return res.status(400).json({ error: 'position not found or withdrawn' });
+    const offerItem = order.parameters.offer?.[0];
+    if (!offerItem || offerItem.token?.toLowerCase() !== WETH_BASE.toLowerCase()) {
+      return res.status(400).json({ error: `offers must be denominated in WETH (${WETH_BASE})` });
+    }
+    const considerItem = order.parameters.consideration?.find(
+      (c) => c.token?.toLowerCase() === emissionsCfg.sellerPoolsAddress?.toLowerCase() && String(c.identifierOrCriteria) === String(id)
+    );
+    if (!considerItem) return res.status(400).json({ error: 'order does not offer for this token' });
+    const offerer = (order.parameters.offerer || '').toLowerCase();
+    const offerId = saveOffer({
+      tokenId: id,
+      offerer,
+      priceWei: offerItem.startAmount,
+      weth: offerItem.token,
+      protocolAddress: protocolAddress || SEAPORT_V16,
+      orderParameters: order.parameters,
+      signature: order.signature,
+    });
+    res.json({ ok: true, offerId });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message, detail: e.detail || null });
+  }
+});
+
+app.get('/api/lants/offers/:tokenId', (req, res) => {
+  const id = Number(req.params.tokenId);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'tokenId required' });
+  res.json({ offers: offersForToken(id) });
+});
+
+app.get('/api/lants/offer/:offerId', (req, res) => {
+  const id = Number(req.params.offerId);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'offerId required' });
+  const offer = getOffer(id);
+  if (!offer) return res.status(404).json({ error: 'offer not found or already resolved' });
+  res.json(offer);
+});
+
+app.post('/api/lants/offer/cancel', (req, res) => {
+  const { offerId, message, signature } = req.body || {};
+  const id = Number(offerId);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'offerId required' });
+  const offerer = offererForOffer(id);
+  if (!offerer) return res.status(404).json({ error: 'offer not found' });
+  if (!verifySignedAction(message, signature, offerer)) {
+    return res.status(401).json({ error: 'signature does not match the offer maker' });
+  }
+  cancelOffer(id);
+  res.json({ ok: true });
+});
+
+// Called by the seller's browser right after their fulfillOrder() tx for
+// this offer confirms on-chain -- this endpoint does no on-chain check of
+// its own (the transaction itself is what actually moved the NFT/WETH);
+// it just records which offer was accepted and retires the others on the
+// same token, since only one buyer can end up owning it.
+app.post('/api/lants/offer/accept', (req, res) => {
+  const { offerId } = req.body || {};
+  const id = Number(offerId);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'offerId required' });
+  const offer = getOffer(id);
+  if (!offer) return res.status(404).json({ error: 'offer not found or already resolved' });
+  markOfferAccepted(id);
+  cancelOtherOffers(offer.tokenId, id);
+  invalidateListing(offer.tokenId); // the position just changed hands -- any listing on it is stale
+  lantsMarketCache = null;
+  lantsMarketCacheAt = 0;
+  res.json({ ok: true });
 });
 
 // Applies page/filter/sort to an already-computed items array -- no chain

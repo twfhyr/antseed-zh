@@ -85,6 +85,21 @@ db.exec(`
     cancelled_at INTEGER
   );
 
+  CREATE TABLE IF NOT EXISTS lants_offers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    token_id INTEGER NOT NULL,
+    offerer TEXT NOT NULL,
+    price_wei TEXT NOT NULL,
+    weth TEXT NOT NULL,
+    protocol_address TEXT NOT NULL,
+    order_parameters TEXT NOT NULL, -- JSON, the signed Seaport order's parameters
+    signature TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    cancelled_at INTEGER,
+    accepted_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_lants_offers_token ON lants_offers(token_id);
+
   CREATE TABLE IF NOT EXISTS stats (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     total_buyers INTEGER DEFAULT 0,
