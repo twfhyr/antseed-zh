@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   useAccount,
   useWriteContract,
@@ -61,33 +61,6 @@ const USAGE_ACCOUNTING_ABI = [
 const SELLER_POOLS_ABI = [
   { name: 'minStakeEpochs', type: 'function', stateMutability: 'view', inputs: [], outputs: [{ name: '', type: 'uint256' }] },
   { name: 'MAX_STAKE_EPOCHS', type: 'function', stateMutability: 'view', inputs: [], outputs: [{ name: '', type: 'uint256' }] },
-  {
-    name: 'stakerPositionCount', type: 'function', stateMutability: 'view',
-    inputs: [{ name: 'staker', type: 'address' }], outputs: [{ name: '', type: 'uint256' }],
-  },
-  {
-    name: 'stakerPositionIds', type: 'function', stateMutability: 'view',
-    inputs: [
-      { name: 'staker', type: 'address' },
-      { name: 'offset', type: 'uint256' },
-      { name: 'limit', type: 'uint256' },
-    ],
-    outputs: [{ name: '', type: 'uint256[]' }],
-  },
-  {
-    name: 'positions', type: 'function', stateMutability: 'view',
-    inputs: [{ name: 'positionId', type: 'uint256' }],
-    outputs: [
-      { name: 'owner', type: 'address' },
-      { name: 'agentId', type: 'uint256' },
-      { name: 'amount', type: 'uint256' },
-      { name: 'weightAmount', type: 'uint256' },
-      { name: 'stakeStartEpoch', type: 'uint64' },
-      { name: 'stakeEndEpoch', type: 'uint64' },
-      { name: 'closedAtEpoch', type: 'uint64' },
-      { name: 'withdrawn', type: 'bool' },
-    ],
-  },
 ];
 
 const isValidAddress = (addr) => /^0x[a-fA-F0-9]{40}$/.test(addr);
@@ -102,20 +75,6 @@ const formatAnts = (n) => {
   if (n === undefined || n === null || Number.isNaN(n)) return '—';
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
   return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
-};
-const toNumber = (v) => {
-  if (v === undefined || v === null) return null;
-  if (typeof v === 'bigint') return Number(v);
-  const n = Number(v);
-  return Number.isNaN(n) ? null : n;
-};
-const weiToAnts = (wei) => {
-  if (wei === undefined || wei === null) return null;
-  try {
-    return Number(wei) / 1e18;
-  } catch {
-    return null;
-  }
 };
 const formatUsd = (n) => {
   if (n === undefined || n === null || Number.isNaN(n)) return '—';
@@ -153,70 +112,6 @@ function positionState(p, currentEpoch) {
   return 'matured';
 }
 
-function unpackPosition(id, result) {
-  if (!result) return null;
-  const owner = result.owner ?? result[0];
-  const agentId = toNumber(result.agentId ?? result[1]);
-  const amount = weiToAnts(result.amount ?? result[2]);
-  const weightAmount = weiToAnts(result.weightAmount ?? result[3]);
-  const stakeStartEpoch = toNumber(result.stakeStartEpoch ?? result[4]);
-  const stakeEndEpoch = toNumber(result.stakeEndEpoch ?? result[5]);
-  const closedAtEpoch = toNumber(result.closedAtEpoch ?? result[6]);
-  const withdrawn = !!(result.withdrawn ?? result[7]);
-  if (agentId == null || stakeStartEpoch == null || stakeEndEpoch == null) return null;
-  return {
-    id,
-    owner,
-    agentId,
-    amount,
-    weightAmount,
-    stakeStartEpoch,
-    stakeEndEpoch,
-    closedAtEpoch: closedAtEpoch || 0,
-    withdrawn,
-  };
-}
-
-async function readLantsPositions(publicClient, poolsAddress, owner) {
-  const count = toNumber(await publicClient.readContract({
-    address: poolsAddress,
-    abi: SELLER_POOLS_ABI,
-    functionName: 'stakerPositionCount',
-    args: [owner],
-  }));
-  if (!count) return [];
-  const ids = [];
-  for (let offset = 0; offset < count; offset += 256) {
-    const page = await publicClient.readContract({
-      address: poolsAddress,
-      abi: SELLER_POOLS_ABI,
-      functionName: 'stakerPositionIds',
-      args: [owner, offset, 256],
-    });
-    ids.push(...(page || []).map((x) => Number(x)));
-  }
-  if (ids.length === 0) return [];
-  const results = await publicClient.multicall({
-    contracts: ids.map((id) => ({
-      address: poolsAddress,
-      abi: SELLER_POOLS_ABI,
-      functionName: 'positions',
-      args: [id],
-    })),
-    allowFailure: true,
-  });
-  return ids
-    .map((id, i) => {
-      const row = results[i];
-      const result = row && typeof row === 'object' && 'status' in row
-        ? (row.status === 'success' ? row.result : null)
-        : row;
-      if (!result) return null;
-      return unpackPosition(id, result);
-    })
-    .filter((p) => p && !p.withdrawn && !p.closedAtEpoch);
-}
-
 function StakeANTS() {
   const { t, lang } = useI18n();
   const { address, isConnected } = useAccount();
@@ -228,9 +123,6 @@ function StakeANTS() {
   const [sellers, setSellers] = useState([]);
   const [loading, setLoading] = useState(false);
   const [stakeBounds, setStakeBounds] = useState({ min: 1, max: 104 });
-  const [positions, setPositions] = useState(null);
-  const [positionsLoading, setPositionsLoading] = useState(false);
-  const [positionsError, setPositionsError] = useState(false);
   const [market, setMarket] = useState(null);
   const [marketLoading, setMarketLoading] = useState(true);
   const [marketError, setMarketError] = useState(false);
@@ -262,29 +154,8 @@ function StakeANTS() {
   const canAct = isConnected && !!address && !!displayAddress
     && address.toLowerCase() === displayAddress.toLowerCase();
 
-  const loadPositions = useCallback(async (addr, poolsAddress) => {
-    setPositionsError(false);
-    if (!addr || !poolsAddress || !publicClient) {
-      setPositions([]);
-      if (addr && !publicClient) setPositionsError(true);
-      return;
-    }
-    setPositionsLoading(true);
-    try {
-      const rows = await readLantsPositions(publicClient, poolsAddress, addr);
-      setPositions(rows);
-    } catch (e) {
-      console.error('Failed to load lANTS positions:', e);
-      setPositions([]);
-      setPositionsError(true);
-    } finally {
-      setPositionsLoading(false);
-    }
-  }, [publicClient]);
-
   const loadData = useCallback(async (addr, bustCache = false) => {
     setLoading(true);
-    setPositions(null);
     try {
       const [rewardsData, sellersData] = await Promise.all([
         fetchRewards(addr, bustCache),
@@ -304,20 +175,16 @@ function StakeANTS() {
           // Keep the 1..104 default (network defaults observed 2026-09) if the read fails.
         }
       }
-      await loadPositions(addr, poolsAddress);
     } catch (e) {
       console.error('Failed to load stake data:', e);
-      setPositions([]);
-      setPositionsError(true);
     } finally {
       setLoading(false);
     }
-  }, [publicClient, loadPositions]);
+  }, [publicClient]);
 
   useEffect(() => {
     if (!isConnected || !address) {
       setRewards(null);
-      setPositions(null);
       return;
     }
     loadData(address);
@@ -336,6 +203,12 @@ function StakeANTS() {
     maxLockDays: marketFilters.maxLockDays || undefined,
   }), [marketPage, marketSort, marketTab, address, marketFilters]);
 
+  // Only steer away from an empty "For sale" tab once, on the very first
+  // load -- otherwise this effect (which reruns on every marketTab change)
+  // would immediately bounce the user straight back to "All NFTs" the
+  // moment they clicked "For sale" while nothing happens to be listed.
+  const autoTabAppliedRef = useRef(false);
+
   useEffect(() => {
     if (marketTab === 'mine' && !address) return;
     let cancelled = false;
@@ -345,7 +218,10 @@ function StakeANTS() {
       .then((data) => {
         if (cancelled) return;
         setMarket(data);
-        if (marketTab === 'listed' && (data?.listedCount || 0) === 0) setMarketTab('all');
+        if (!autoTabAppliedRef.current) {
+          autoTabAppliedRef.current = true;
+          if (marketTab === 'listed' && (data?.listedCount || 0) === 0) setMarketTab('all');
+        }
       })
       .catch((e) => {
         console.error('Failed to load lANTS market:', e);
@@ -570,7 +446,6 @@ function StakeANTS() {
   const effectiveEpoch = rewards?.effectiveEpoch;
   const currentEpoch = rewards?.currentEpoch;
   const totalUnclaimed = buyerRows.reduce((s, e) => s + e.amount, 0) + sellerRows.reduce((s, e) => s + e.amount, 0);
-  const totalStaked = (positions || []).reduce((s, p) => s + (p.amount || 0), 0);
   const poolsAddress = rewards?.contracts?.sellerPools || market?.contract;
 
   return (
@@ -746,8 +621,6 @@ function StakeANTS() {
           )}
         </div>
 
-        <h3 style={{ fontSize: '1.125rem', fontWeight: 600, marginBottom: '0.75rem' }}>{t('stake.positions')}</h3>
-
         {!isConnected && (
           <div style={{ marginBottom: '2rem', background: 'var(--bg-secondary)', padding: '1.5rem', borderRadius: '12px' }}>
             <h3 style={{ fontSize: '1rem', fontWeight: 600, marginBottom: '0.75rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -800,76 +673,8 @@ function StakeANTS() {
             </div>
 
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '1rem', marginBottom: '1.5rem' }}>
-              <StatCard
-                label={t('stake.positions')}
-                value={positionsError ? '—' : (positions == null || positionsLoading ? '…' : positions.length)}
-                sub={positionsLoading ? t('stake.loadingPositions') : ''}
-              />
-              <StatCard
-                label={t('stake.totalStaked')}
-                value={positionsError ? '—' : (positions == null || positionsLoading ? '…' : formatAnts(totalStaked))}
-                sub="ANTS"
-                accent="var(--clay)"
-              />
               <StatCard label={t('stake.currentEpoch')} value={currentEpoch ?? '—'} sub="" />
             </div>
-
-            {positionsError && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem', color: 'var(--warning)', fontSize: '0.875rem' }}>
-                <AlertCircle size={14} />
-                <span>{t('stake.positionsError')}</span>
-              </div>
-            )}
-
-            {positionsLoading && (
-              <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-secondary)' }}>
-                <Loader2 size={24} className="spin" />
-                <p style={{ marginTop: '0.75rem', fontSize: '0.875rem' }}>{t('stake.loadingPositions')}</p>
-              </div>
-            )}
-
-            {!positionsLoading && !positionsError && positions && positions.length === 0 && (
-              <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-secondary)', fontSize: '0.875rem' }}>
-                {t('stake.noPositions')}
-              </div>
-            )}
-
-            {!positionsLoading && positions && positions.length > 0 && (
-              <div className="lants-nft-grid">
-                {positions.map((p) => (
-                  <LantsNftCard
-                    key={p.id}
-                    position={p}
-                    seller={sellerForAgent(sellers, p.agentId)}
-                    currentEpoch={currentEpoch}
-                    genesis={market?.genesis}
-                    epochDuration={market?.epochDuration}
-                    poolsAddress={poolsAddress}
-                    t={t}
-                    lang={lang}
-                    listForm={listForm}
-                    setListForm={setListForm}
-                    onList={() => doList(p)}
-                    canList={!!(canAct && !isProviderActivationStake(p.amount))}
-                    activation={isProviderActivationStake(p.amount)}
-                    isOwner={canAct}
-                    address={address}
-                    onCancel={doCancel}
-                    cancelState={cancelState?.id === p.id ? cancelState : null}
-                    offerForm={offerForm}
-                    setOfferForm={setOfferForm}
-                    onMakeOffer={doMakeOffer}
-                    canOffer={!!(isConnected && address && !canAct && !isProviderActivationStake(p.amount))}
-                    offersOpen={offersOpenFor === p.id}
-                    offers={offersById[p.id]}
-                    onToggleOffers={toggleOffers}
-                    onAcceptOffer={doAcceptOffer}
-                    onCancelOffer={doCancelOffer}
-                    offerActionState={offerActionState}
-                  />
-                ))}
-              </div>
-            )}
 
             <div style={{ marginTop: '2.5rem', marginBottom: '1.5rem' }}>
               <h3 style={{ fontSize: '1.125rem', fontWeight: 600, marginBottom: '0.5rem' }}>{t('stake.rewardsTitle')}</h3>
