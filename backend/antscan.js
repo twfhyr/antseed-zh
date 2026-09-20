@@ -239,7 +239,11 @@ export async function fetchPoolEpochs(epoch, limit = 5000) {
  *  which buyers/sellers also hold a staking position, for the pool-reward
  *  component of "potential rewards" (see notes/epoch-features-plan.md). */
 export async function fetchOpenStakePositions(limit = 5000) {
-  const fields = `id owner agentId amount weightAmount stakeStartEpoch stakeEndEpoch`;
+  // closedAtEpoch: a split/merge/move burns the NFT via _burn() but leaves
+  // `withdrawn` false forever on the source position -- only closedAtEpoch
+  // marks it dead. Without this field callers can't tell a real open
+  // position from a burned one that still happens to pass {withdrawn: false}.
+  const fields = `id owner agentId amount weightAmount stakeStartEpoch stakeEndEpoch closedAtEpoch`;
   return fetchAllPaged('stakePositions', 'id', fields, limit, `{withdrawn: false}`);
 }
 

@@ -1398,6 +1398,15 @@ async function computeLantsMarket(extraIds = []) {
   for (const p of antscan.items || []) {
     const id = Number(p.id);
     if (!Number.isFinite(id)) continue;
+    // A split/merge/move burns the NFT (ERC721 _burn) but the source
+    // position's own `withdrawn` field stays false forever -- only
+    // closedAtEpoch marks it dead. Antscan's {withdrawn: false} filter
+    // alone still returns these, so this used to be hardcoded to 0 and
+    // every closed-via-restructure position kept showing up as a live,
+    // tradable market item (including under "Mine") long after the NFT
+    // itself no longer existed. Skip it entirely, same as loadOnChainPosition
+    // already does for the on-chain-fetched path.
+    if (p.closedAtEpoch != null && Number(p.closedAtEpoch) !== 0) continue;
     byAntscan.set(id, {
       id,
       owner: p.owner,
@@ -1463,10 +1472,20 @@ async function computeLantsMarket(extraIds = []) {
         const eth = Number(local.priceWei) / 1e18;
         listing = { usd: ethUsd != null ? eth * ethUsd : null, unit: eth, symbol: 'ETH' };
       } else {
+        // Also covers a closed-via-restructure position (pos is null here,
+        // loadOnChainPosition already excluded it) that still had a stale
+        // local listing -- invalidate it so it stops recurring.
         invalidateListing(id);
       }
     }
     if (!listing) listing = sea?.listing || null;
+
+    // Neither source has real position data nor a resolvable listing --
+    // most likely a stale extraId/listing left over from a position closed
+    // via split/merge/move (loadOnChainPosition returned null above).
+    // Nothing real to show, and it won't recur once the invalidation above
+    // (or its DB write) is picked up on the next refresh.
+    if (!pos && !listing) continue;
 
     let perAntUsd = null;
     if (listing?.usd != null && amount != null && amount > 0) {
