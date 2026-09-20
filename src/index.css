@@ -1318,6 +1318,55 @@ text-decoration: underline;
   color: #fff;
   border: none;
 }
+.lants-nft__listbtn--danger {
+  background: var(--danger);
+}
+.lants-nft__offers {
+  margin-top: 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.lants-nft__offers-empty {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+.lants-nft__offer-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+  padding: 0.4rem 0.6rem;
+  background: var(--bg-secondary);
+  border-radius: 8px;
+}
+.lants-nft__offer-row span:first-child {
+  font-weight: 600;
+  color: var(--clay);
+}
+.lants-nft__offer-addr {
+  color: var(--text-secondary);
+  font-family: 'Geist Mono', ui-monospace, monospace;
+}
+.lants-nft__offer-row button {
+  margin-left: auto;
+  border-radius: 6px;
+  padding: 0.25rem 0.6rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+.lants-nft__offer-msg {
+  flex-basis: 100%;
+  font-size: 0.7rem;
+}
 @media (prefers-reduced-motion: reduce) {
   .lants-nft__svg,
   .lants-nft:hover .lants-nft__svg {
