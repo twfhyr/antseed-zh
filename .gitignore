@@ -5,6 +5,7 @@ public/build-id.json
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
+backend/*.log
 .opencode/
 opencode.json
 ref/
