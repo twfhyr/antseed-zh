@@ -477,6 +477,24 @@ Built the swap:
   runs and its peer cache warms up; not something to chase further unless
   it's still empty after it's been running a while.
 
+## Epoch Sellers tab: full catalog, not just epoch earners (2026-09-21 follow-up)
+
+User pushed back correctly on the "18 sellers" explanation: the Epoch tab
+existing as a pure filter on `seller_epoch_rewards` means a seller with
+zero current buyers can never appear there, and can never earn its way in
+either -- no points without buyers, no buyers without visibility. The
+"Total" tab already avoided this (it's driven by `/api/sellers`, the full
+local-discovery catalog, unfiltered by earnings) but Epoch wasn't.
+
+Restructured `GET /api/epoch/sellers` to LEFT JOIN from `sellers` (the full
+catalog) instead of starting from `seller_epoch_rewards` and only
+optionally joining a name. Real epoch numbers where they exist, real `null`
+(not a fabricated 0) where a seller has no epoch-23 activity at all --
+`usd()`/`fmtAnts()` on the frontend already render both correctly with zero
+changes needed there. Verified live: 57 sellers now (was 18),
+`antseed-aggregator` present and findable by name search, real earners
+(Apex Ant etc.) still sort first.
+
 ## Open questions (no obvious right answer — flag to the user, don't guess)
 
 - Should the admin routes (`/api/admin/sync`, `/api/admin/force-*-sync`)

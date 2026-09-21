@@ -878,17 +878,28 @@ app.get('/api/epoch/sellers', (req, res) => {
   const epoch = chain?.emissions?.currentEpoch;
   if (epoch == null) return res.json({ epoch: null, items: [], total: 0, offset: 0, limit: 0, hasMore: false });
   const { limit, offset, q } = parsePageParams(req);
-  // Sellers are also matched by display name (from the live DHT `sellers`
-  // table via agent_id), not just address — the address alone isn't what
-  // most visitors recognize a seller by.
-  const where = q ? 'AND (r.address LIKE ? OR EXISTS (SELECT 1 FROM sellers s WHERE s.agent_id = r.agent_id AND LOWER(s.name) LIKE ?))' : '';
-  const args = q ? [epoch, `%${q}%`, `%${q}%`] : [epoch];
-  const total = db.prepare(`SELECT COUNT(*) AS c FROM seller_epoch_rewards r WHERE r.epoch = ? ${where}`).get(...args).c;
-  const rows = db.prepare(
-    `SELECT r.*, (SELECT s.name FROM sellers s WHERE s.agent_id = r.agent_id LIMIT 1) AS seller_name
-     FROM seller_epoch_rewards r WHERE r.epoch = ? ${where}
-     ORDER BY CAST(r.points AS INTEGER) DESC, r.address ASC LIMIT ? OFFSET ?`
-  ).all(...args, limit, offset);
+  // Seeded from the full seller catalog (`sellers` -- our own local P2P
+  // discovery, see sync-local-discovery.js), not from who happened to earn
+  // epoch points. A seller with zero current buyers earns zero points and
+  // would otherwise never appear here at all -- and never could, since
+  // there's no way to get points without buyers, or buyers without
+  // visibility. Epoch reward data is a LEFT JOIN (real zeros/blanks for a
+  // seller with no epoch activity), not a filter on who gets listed.
+  const where = q ? 'AND (s.id LIKE ? OR LOWER(s.name) LIKE ?)' : '';
+  const args = q ? [`%${q}%`, `%${q}%`] : [];
+  const total = db.prepare(`SELECT COUNT(*) AS c FROM sellers s WHERE 1=1 ${where}`).get(...args).c;
+  const rows = db.prepare(`
+    SELECT
+      COALESCE(r.address, '0x' || substr(s.id, 8)) AS address,
+      s.name AS seller_name, s.agent_id, s.status AS seller_status,
+      r.points, r.volume_usdc, r.requests,
+      r.staked_ants_wei, r.usage_reward_wei, r.pool_reward_wei
+    FROM sellers s
+    LEFT JOIN seller_epoch_rewards r ON r.agent_id = s.agent_id AND r.epoch = ?
+    WHERE 1=1 ${where}
+    ORDER BY COALESCE(CAST(r.points AS INTEGER), 0) DESC, s.name ASC
+    LIMIT ? OFFSET ?
+  `).all(epoch, ...args, limit, offset);
   res.json({ epoch, items: rows, total, offset, limit, hasMore: offset + rows.length < total });
 });
 
