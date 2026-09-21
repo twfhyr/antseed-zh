@@ -84,7 +84,7 @@ Express Server (PORT 3001)
 | backend/antscan.js | Antscan GraphQL client — real settled on-chain volume/requests/tokens |
 | backend/sync-history.js | Orchestrates Antscan sync into network_snapshots/buyers_onchain/sellers_onchain/daily_metrics/epoch_metrics |
 | backend/lants-listings.js | Self-hosted Seaport order book: CRUD for lANTS sell listings (`lants_listings` table) |
-| backend/lants-offers.js | CRUD for lANTS buy-side WETH offers (`lants_offers` table) |
+| backend/lants-offers.js | CRUD for lANTS buy-side USDC offers (`lants_offers` table) — WETH before the 2026-09-21 pricing switch |
 | backend/lants-positions.js | Cached lANTS position metadata (`lants_positions` table) for server-side pagination/filtering without re-hitting the chain |
 | backend/opensea-list.js | Best-effort cross-post of a local Seaport listing to OpenSea's orderbook; persists the free instant API key to `backend/private/` so it survives restarts |
 | backend/opensea-lants.js | Scrapes OpenSea's public lANTS collection page for listing prices (one input to the merged market view, never the source of truth) |

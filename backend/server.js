@@ -19,7 +19,7 @@ import { postSeaportListing, resolveOpenSeaApiKey, SEAPORT_V16 } from './opensea
 import { saveListing, getListing, allActiveListings, invalidateListing } from './lants-listings.js';
 import { upsertPositions } from './lants-positions.js';
 import {
-  WETH_BASE, saveOffer, getOffer, offersForToken, offererForOffer,
+  saveOffer, getOffer, offersForToken, offererForOffer,
   cancelOffer, markOfferAccepted, cancelOtherOffers,
 } from './lants-offers.js';
 import { recordTrade, listTrades, latestOwners } from './lants-trades.js';
@@ -1428,28 +1428,15 @@ let lantsMarketCache = null;
 let lantsMarketCacheAt = 0;
 let lantsMarketRefreshing = null;
 
-// Our own listings are ETH-denominated (the Seaport consideration is native
-// ETH); OpenSea's scraped listings come back already in USD. A real spot
-// price is needed to make the two comparable for sorting / floor price --
-// Coinbase's public spot endpoint needs no key and is only used for this
-// display conversion, never for anything financial.
-let ethUsdCache = null;
-let ethUsdCacheAt = 0;
-async function ethUsdPrice() {
-  if (ethUsdCache != null && Date.now() - ethUsdCacheAt < 5 * 60_000) return ethUsdCache;
-  try {
-    const res = await fetch('https://api.coinbase.com/v2/prices/ETH-USD/spot');
-    const body = await res.json();
-    const price = Number(body?.data?.amount);
-    if (Number.isFinite(price) && price > 0) {
-      ethUsdCache = price;
-      ethUsdCacheAt = Date.now();
-    }
-  } catch {
-    // Keep the previous cached value (even if stale) rather than nulling it out.
-  }
-  return ethUsdCache;
-}
+// Every listing/offer created on this site is USDC-denominated (2026-09-21
+// on, see src/lib/listLants.js) -- USDC's own peg IS the USD figure, so
+// there's no spot-price conversion left to do for our own listings at all
+// (this used to call Coinbase's ETH-USD spot endpoint to convert a native-
+// ETH listing price into USD for sorting/floor-price purposes; removed
+// along with the ETH consideration item itself). OpenSea's scraped
+// listings still come back already converted to USD by the scraper
+// (backend/opensea-lants.js) regardless of what token they're actually
+// denominated in on OpenSea's side.
 
 // epoch N starts at genesis + N * epochDuration (both in seconds, on-chain
 // values already exposed via readChainMetrics()). Used to show real lock
@@ -1536,7 +1523,6 @@ async function computeLantsMarket(extraIds = []) {
 
   const osItems = os.items || [];
   const localListings = new Map(allActiveListings().map((l) => [l.tokenId, l]));
-  const ethUsd = localListings.size ? await ethUsdPrice() : null;
 
   // Real bug fixed 2026-09-20: this used to be osItems.length ? osItems ids
   // : antscan ids -- i.e. antscan-known positions were silently dropped
@@ -1610,8 +1596,13 @@ async function computeLantsMarket(extraIds = []) {
     let listing = null;
     if (local) {
       if (pos?.owner && pos.owner.toLowerCase() === local.offerer) {
-        const eth = Number(local.priceWei) / 1e18;
-        listing = { usd: ethUsd != null ? eth * ethUsd : null, unit: eth, symbol: 'ETH' };
+        // price_wei has no separate currency column -- every listing this
+        // site creates is USDC (6 decimals) as of 2026-09-21, and there
+        // were zero active listings at the moment of that switch (checked
+        // live before shipping it), so there's no stale ETH-denominated row
+        // to misread here.
+        const usdc = Number(local.priceWei) / 1e6;
+        listing = { usd: usdc, unit: usdc, symbol: 'USDC' };
       } else {
         // Also covers a closed-via-restructure position (pos is null here,
         // loadOnChainPosition already excluded it) that still had a stale
@@ -1747,8 +1738,12 @@ app.post('/api/lants/list', async (req, res) => {
     if (offerer && pos.owner && offerer !== pos.owner.toLowerCase()) {
       return res.status(400).json({ error: 'order offerer does not own this position' });
     }
-    const priceWei = order.parameters.consideration?.[0]?.startAmount;
+    const considerationItem = order.parameters.consideration?.[0];
+    const priceWei = considerationItem?.startAmount;
     if (!priceWei) return res.status(400).json({ error: 'order has no consideration amount' });
+    if (considerationItem.token?.toLowerCase() !== emissionsCfg.usdcContractAddress.toLowerCase()) {
+      return res.status(400).json({ error: `listings must be denominated in USDC (${emissionsCfg.usdcContractAddress})` });
+    }
 
     // Primary path: store the signed order ourselves. It's a real, valid
     // Seaport order regardless of OpenSea -- a buyer's wallet can fulfill it
@@ -1798,7 +1793,7 @@ app.post('/api/lants/trade', async (req, res) => {
     const pos = await loadOnChainPosition(id).catch(() => null);
     recordTrade({
       tokenId: id, seller, buyer, priceWei,
-      currency: currency || 'ETH', tradeType: 'listing', txHash,
+      currency: currency || 'USDC', tradeType: 'listing', txHash,
       amount: pos?.amount ?? null, agentId: pos?.agentId ?? null,
     });
     lantsMarketCache = null;
@@ -1863,14 +1858,23 @@ app.post('/api/lants/offer', async (req, res) => {
     const pos = await loadOnChainPosition(id);
     if (!pos) return res.status(400).json({ error: 'position not found or withdrawn' });
     const offerItem = order.parameters.offer?.[0];
-    if (!offerItem || offerItem.token?.toLowerCase() !== WETH_BASE.toLowerCase()) {
-      return res.status(400).json({ error: `offers must be denominated in WETH (${WETH_BASE})` });
+    if (!offerItem || offerItem.token?.toLowerCase() !== emissionsCfg.usdcContractAddress.toLowerCase()) {
+      return res.status(400).json({ error: `offers must be denominated in USDC (${emissionsCfg.usdcContractAddress})` });
     }
     const considerItem = order.parameters.consideration?.find(
       (c) => c.token?.toLowerCase() === emissionsCfg.sellerPoolsAddress?.toLowerCase() && String(c.identifierOrCriteria) === String(id)
     );
     if (!considerItem) return res.status(400).json({ error: 'order does not offer for this token' });
     const offerer = (order.parameters.offerer || '').toLowerCase();
+    // Server-side backstop for the same rule the frontend already checks
+    // before opening the offer form (StakeANTS.jsx's openOfferModal): one
+    // open offer per (offerer, token) at a time, so a second submission
+    // from a stale tab/race can't silently create a duplicate the person
+    // never intended and would have to notice and cancel manually.
+    const dup = offersForToken(id).some((o) => o.offerer === offerer);
+    if (dup) {
+      return res.status(409).json({ error: 'you already have an open offer on this token -- cancel it before making another' });
+    }
     const offerId = saveOffer({
       tokenId: id,
       offerer,
@@ -1929,9 +1933,14 @@ app.post('/api/lants/offer/accept', async (req, res) => {
   invalidateListing(offer.tokenId); // the position just changed hands -- any listing on it is stale
   if (seller) {
     const pos = await loadOnChainPosition(offer.tokenId).catch(() => null);
+    // offer.weth is really "whatever ERC20 token address this offer's
+    // payment item named" (the column predates the USDC switch) -- read
+    // the real currency back from it instead of hardcoding USDC, so an
+    // older still-open WETH offer records its trade history correctly too.
+    const currency = offer.weth?.toLowerCase() === emissionsCfg.usdcContractAddress.toLowerCase() ? 'USDC' : 'WETH';
     recordTrade({
       tokenId: offer.tokenId, seller, buyer: offer.offerer, priceWei: offer.priceWei,
-      currency: 'WETH', tradeType: 'offer', txHash: txHash || null,
+      currency, tradeType: 'offer', txHash: txHash || null,
       amount: pos?.amount ?? null, agentId: pos?.agentId ?? null,
     });
   }

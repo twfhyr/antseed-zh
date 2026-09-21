@@ -16,6 +16,7 @@ import { useMarketTabRouter, marketTabHref } from '../hooks/useTabRouter';
 import {
   createAndPostListing, fulfillListing, cancelListing, makeOffer, cancelOffer, acceptOffer,
   splitPosition, mergePositions, movePosition, isProviderActivationStake,
+  USDC_BASE, WETH_BASE,
 } from '../lib/listLants';
 
 const truncateAddress = (addr) => (addr ? `${addr.slice(0, 6)}...${addr.slice(-4)}` : '');
@@ -41,19 +42,36 @@ const formatUsdCompact = (n) => {
   if (abs >= 1_000) return `$${(n / 1_000).toFixed(1)}K`;
   return formatUsd(n);
 };
-// Listings are paid in native ETH (Seaport's consideration for every
-// listing this site creates), so the listed price itself should read in
-// ETH, not the USD conversion -- USD only makes sense for the per-ANT
-// reference price below, where it's comparable across listings priced at
-// different ETH amounts.
-const formatListing = (listing) => {
-  if (!listing) return '—';
-  if (listing.unit != null && listing.symbol) {
-    return `${listing.unit.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${listing.symbol}`;
-  }
-  if (listing.usd != null) return formatUsd(listing.usd);
-  return '—';
+// Every new offer/listing/trade is USDC (6 decimals) as of 2026-09-21, but
+// a handful of offers/trades made before that switch are still WETH
+// (18 decimals) -- they're still perfectly fulfillable (fulfillOrder()
+// doesn't care what token an old signed order names), so old rows are kept
+// rather than hidden, just formatted using their own recorded decimals
+// instead of assuming everything is 6.
+const CURRENCY_DECIMALS = { USDC: 6, WETH: 18, ETH: 18 };
+const formatTradeAmount = (priceWei, currency) => {
+  const decimals = CURRENCY_DECIMALS[currency] ?? 18;
+  const n = Number(priceWei) / 10 ** decimals;
+  return `${n.toLocaleString(undefined, { maximumFractionDigits: decimals === 6 ? 2 : 6 })} ${currency || ''}`.trim();
 };
+// An offer row's `weth` field is really just "whatever ERC20 token address
+// this offer's payment item names" (the DB column predates the USDC
+// switch) -- map it back to a symbol for display instead of assuming USDC.
+const currencyForToken = (addr) => {
+  if (!addr) return '';
+  const a = addr.toLowerCase();
+  if (a === USDC_BASE.toLowerCase()) return 'USDC';
+  if (a === WETH_BASE.toLowerCase()) return 'WETH';
+  return '';
+};
+
+// Listings/offers created on this site are USDC-denominated (see
+// src/lib/listLants.js), so the total is already a real USD amount, not a
+// converted one -- just show it directly. Deliberately never renders a raw
+// ETH amount: a listing scraped from OpenSea (backend/opensea-lants.js) can
+// still carry an ETH `unit`/`symbol`, but this site shows every price as a
+// USD total everywhere, including those, per the no-ETH-anywhere rule.
+const formatListing = (listing) => (listing?.usd != null ? formatUsd(listing.usd) : '—');
 
 function sellerForAgent(sellers, agentId) {
   if (agentId == null) return null;
@@ -127,7 +145,12 @@ function StakeANTS() {
   const [marketError, setMarketError] = useState(false);
   const [marketTab, setMarketTab] = useMarketTabRouter(); // 'listed' | 'all' | 'mine' -- URL-driven, see /iants/sales|all|mine
   const [marketPage, setMarketPage] = useState(1);
-  const [marketSort, setMarketSort] = useState('id');
+  // Defaults to per-ANT price (cheapest first) rather than id -- the same
+  // "rank by unit price, not by total" convention a BRC-20 marketplace
+  // uses, and the one this page's own sort already implements server-side
+  // (paginateMarketItems's 'price' sorter keys off listing.perAntUsd, never
+  // the total listed price -- see docs/ARCHITECTURE.md).
+  const [marketSort, setMarketSort] = useState('price');
   const [marketFilters, setMarketFilters] = useState({ agentId: '', minAmount: '', maxAmount: '', minLockDays: '', maxLockDays: '' });
   const [filterDraft, setFilterDraft] = useState(marketFilters);
   const MARKET_PAGE_SIZE = 10;
@@ -271,11 +294,15 @@ function StakeANTS() {
       setListForm((f) => ({ ...(f || { position, price: '', days: 30 }), phase: 'error', message: t('stake.listNeedWallet') }));
       return;
     }
-    const price = Number(listForm?.price);
-    if (!(price > 0)) {
-      setListForm((f) => ({ ...f, phase: 'error', message: t('stake.listPrice') }));
+    // The form collects a per-ANT price (like a BRC-20 marketplace) -- the
+    // actual Seaport order still needs one flat total, computed here rather
+    // than asking the user to do the multiplication themselves.
+    const perAnt = Number(listForm?.price);
+    if (!(perAnt > 0)) {
+      setListForm((f) => ({ ...f, phase: 'error', message: t('stake.listPriceInvalid') }));
       return;
     }
+    const totalUsdc = perAnt * position.amount;
     try {
       setListForm((f) => ({ ...f, phase: 'listing', message: t('stake.listing') }));
       await createAndPostListing({
@@ -283,10 +310,10 @@ function StakeANTS() {
         account: address,
         contract,
         tokenId: position.id,
-        priceEth: price,
+        priceUsdc: totalUsdc,
         durationDays: listForm?.days || 30,
       });
-      setListForm({ position, price: String(price), days: listForm?.days || 30, phase: 'done', message: t('stake.listedOk') });
+      setListForm({ position, price: String(perAnt), days: listForm?.days || 30, phase: 'done', message: t('stake.listedOk') });
       fetchLantsMarket({ ...marketQuery, wait: '1' }).then(setMarket).catch(() => {});
     } catch (e) {
       setListForm((f) => ({ ...f, phase: 'error', message: e.shortMessage || e.message }));
@@ -305,7 +332,7 @@ function StakeANTS() {
       if (result?.seller && result?.priceWei) {
         postLantsTrade({
           tokenId: position.id, seller: result.seller, buyer: address,
-          priceWei: result.priceWei, currency: 'ETH', txHash: result.hash,
+          priceWei: result.priceWei, currency: 'USDC', txHash: result.hash,
         }).catch(() => {});
       }
       // A direct Seaport fulfillment never touches this backend, so the
@@ -450,18 +477,20 @@ function StakeANTS() {
       setOfferForm((f) => ({ ...(f || { position, price: '', days: 30 }), phase: 'error', message: t('stake.buyNeedWallet') }));
       return;
     }
-    const price = Number(offerForm?.price);
-    if (!(price > 0)) {
-      setOfferForm((f) => ({ ...f, phase: 'error', message: t('stake.listPrice') }));
+    if (offerForm?.blocked) return; // already has an open offer -- see openOfferModal
+    const perAnt = Number(offerForm?.price);
+    if (!(perAnt > 0)) {
+      setOfferForm((f) => ({ ...f, phase: 'error', message: t('stake.offerPriceInvalid') }));
       return;
     }
+    const totalUsdc = perAnt * position.amount;
     try {
       setOfferForm((f) => ({ ...f, phase: 'offering', message: t('stake.offering') }));
       await makeOffer({
         walletClient, account: address, contract, tokenId: position.id,
-        priceEth: price, durationDays: offerForm?.days || 30,
+        priceUsdc: totalUsdc, durationDays: offerForm?.days || 30,
       });
-      setOfferForm({ position, price: String(price), days: offerForm?.days || 30, phase: 'done', message: t('stake.offeredOk') });
+      setOfferForm({ position, price: String(perAnt), days: offerForm?.days || 30, phase: 'done', message: t('stake.offeredOk') });
       // Both needed: loadOffers refreshes the expandable list (if open),
       // but the closed "Offers (N)" button's count comes from the market
       // item's own offerCount field -- only a market refetch updates that.
@@ -487,6 +516,28 @@ function StakeANTS() {
     const next = offersOpenFor === tokenId ? null : tokenId;
     setOffersOpenFor(next);
     if (next != null) loadOffers(next);
+  };
+
+  // "Make offer" doesn't open the form directly -- it checks first whether
+  // the connected address already has an open offer on this token (the
+  // backend also rejects a second one at submit time, see /api/lants/offer,
+  // but checking here means the person sees why immediately instead of
+  // after filling out the whole form). Fails open on a network hiccup: a
+  // failed check shouldn't block a legitimate first offer.
+  const openOfferModal = async (p) => {
+    setOfferForm({ position: p, price: '', days: 30, phase: 'checking', message: t('stake.offerChecking'), blocked: false });
+    let existing = [];
+    try {
+      const { offers } = await fetchLantsOffers(p.id);
+      existing = offers || [];
+      setOffersById((m) => ({ ...m, [p.id]: { loading: false, items: existing, error: null } }));
+    } catch { /* fail open -- see comment above */ }
+    const mine = address && existing.find((o) => o.offerer.toLowerCase() === address.toLowerCase());
+    if (mine) {
+      setOfferForm({ position: p, price: '', days: 30, phase: 'error', message: t('stake.offerAlreadyExists'), blocked: true });
+      return;
+    }
+    setOfferForm({ position: p, price: '', days: 30, phase: null, message: null, blocked: false });
   };
 
   // Background refresh so a page left passively open -- e.g. a seller
@@ -556,7 +607,7 @@ function StakeANTS() {
     address,
     onCancel: doCancel,
     cancelState: cancelState?.id === p.id ? cancelState : null,
-    setOfferForm,
+    onOpenOffer: openOfferModal,
     canOffer: marketTab !== 'mine' && !!(isConnected && address && p.owner && address.toLowerCase() !== p.owner.toLowerCase() && !isProviderActivationStake(p.amount)),
     offersOpen: offersOpenFor === p.id,
     offers: offersById[p.id],
@@ -771,7 +822,7 @@ function StakeANTS() {
 
 function LantsNftCard({
   position: p, seller, currentEpoch, genesis, epochDuration, t, lang, listing, setListForm, canList, onBuy, canBuy, buyState,
-  activation, isOwner, address, onCancel, cancelState, setOfferForm, canOffer,
+  activation, isOwner, address, onCancel, cancelState, onOpenOffer, canOffer,
   offersOpen, offers, onToggleOffers, onAcceptOffer, onCancelOffer, offerActionState,
   setSplitForm, canSplit, setMoveForm, canMove, mergeCheckbox,
 }) {
@@ -865,11 +916,11 @@ function LantsNftCard({
               {t('stake.buyOnSite')}
             </button>
           )}
-          {canOffer && setOfferForm && (
+          {canOffer && onOpenOffer && (
             <button
               type="button"
               className="lants-nft__listbtn"
-              onClick={() => setOfferForm({ position: p, price: '', days: 30, phase: null, message: null })}
+              onClick={() => onOpenOffer(p)}
             >
               {t('stake.makeOffer')}
             </button>
@@ -920,7 +971,7 @@ function LantsNftCard({
               const busy = offerActionState?.offerId === o.id && ['accepting', 'cancelling'].includes(offerActionState.phase);
               return (
                 <div key={o.id} className="lants-nft__offer-row">
-                  <span>{(Number(o.priceWei) / 1e18).toFixed(4)} WETH</span>
+                  <span>{formatTradeAmount(o.priceWei, currencyForToken(o.weth))}</span>
                   <span className="lants-nft__offer-addr">{truncateAddress(o.offerer)}</span>
                   {isOwner && (
                     <button type="button" onClick={() => onAcceptOffer(o)} disabled={busy}>
@@ -968,6 +1019,8 @@ function ActionModal({ titleKey, position, onClose, children, t }) {
 function ListModal({ form, setForm, onConfirm, t }) {
   if (!form) return null;
   const busy = form.phase === 'listing';
+  const perAnt = Number(form.price);
+  const total = perAnt > 0 ? perAnt * (form.position.amount || 0) : null;
   return (
     <ActionModal titleKey="stake.listOnSite" position={form.position} onClose={() => setForm(null)} t={t}>
       <div className="lants-nft__listform">
@@ -987,6 +1040,11 @@ function ListModal({ form, setForm, onConfirm, t }) {
             onChange={(e) => setForm({ ...form, days: Number(e.target.value) || 30, phase: null })}
           />
         </label>
+        {total != null && (
+          <div style={{ gridColumn: '1 / -1', fontSize: '0.8125rem', color: 'var(--text-secondary)' }}>
+            {t('stake.totalPrice', { total: formatUsd(total), amount: formatAnts(form.position.amount) })}
+          </div>
+        )}
         <button type="button" onClick={() => onConfirm(form.position)} disabled={busy}>
           {busy ? <Loader2 size={12} className="spin" /> : null}
           {t('stake.listConfirm')}
@@ -1004,7 +1062,9 @@ function ListModal({ form, setForm, onConfirm, t }) {
 
 function OfferModal({ form, setForm, onConfirm, t }) {
   if (!form) return null;
-  const busy = form.phase === 'offering';
+  const busy = form.phase === 'offering' || form.phase === 'checking';
+  const perAnt = Number(form.price);
+  const total = perAnt > 0 ? perAnt * (form.position.amount || 0) : null;
   return (
     <ActionModal titleKey="stake.makeOffer" position={form.position} onClose={() => setForm(null)} t={t}>
       <div className="lants-nft__listform">
@@ -1013,6 +1073,7 @@ function OfferModal({ form, setForm, onConfirm, t }) {
           <input
             type="number" min="0" step="0.0001"
             value={form.price}
+            disabled={form.blocked}
             onChange={(e) => setForm({ ...form, price: e.target.value, phase: null })}
           />
         </label>
@@ -1021,10 +1082,16 @@ function OfferModal({ form, setForm, onConfirm, t }) {
           <input
             type="number" min="1" max="365"
             value={form.days}
+            disabled={form.blocked}
             onChange={(e) => setForm({ ...form, days: Number(e.target.value) || 30, phase: null })}
           />
         </label>
-        <button type="button" onClick={() => onConfirm(form.position)} disabled={busy}>
+        {total != null && (
+          <div style={{ gridColumn: '1 / -1', fontSize: '0.8125rem', color: 'var(--text-secondary)' }}>
+            {t('stake.totalPrice', { total: formatUsd(total), amount: formatAnts(form.position.amount) })}
+          </div>
+        )}
+        <button type="button" onClick={() => onConfirm(form.position)} disabled={busy || form.blocked}>
           {busy ? <Loader2 size={12} className="spin" /> : null}
           {t('stake.offerConfirm')}
         </button>
@@ -1368,7 +1435,7 @@ function TradeHistoryPanel({ trades, loading, error, page, pageSize, onPageChang
                 <td>{tr.tradeType === 'offer' ? t('stake.tradeOffer') : t('stake.tradeListing')}</td>
                 <td style={{ fontFamily: 'monospace' }}>{truncateAddress(tr.seller)}</td>
                 <td style={{ fontFamily: 'monospace' }}>{truncateAddress(tr.buyer)}</td>
-                <td>{(Number(tr.priceWei) / 1e18).toLocaleString(undefined, { maximumFractionDigits: 6 })} {tr.currency}</td>
+                <td>{formatTradeAmount(tr.priceWei, tr.currency)}</td>
                 <td>{tr.amount != null ? formatAnts(tr.amount) : '—'}</td>
                 <td>{dateFmt(tr.createdAt, lang)}</td>
               </tr>

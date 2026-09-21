@@ -269,26 +269,117 @@ the order by calling `fulfillOrder()`/`fulfillBasicOrder()` on the Seaport
 contract. This is what makes a "free to list, only the buyer pays gas"
 marketplace possible without any backend holding funds or keys.
 
-- **Listing** = `offer: [ERC721 NFT]`, `consideration: [ETH payment →
-  seller]`. The buyer's wallet calls `fulfillOrder()`, attaching the price
-  as `msg.value`; Seaport moves the NFT to the buyer and the ETH to the
-  seller in one transaction.
-- **Offer** = the mirror image — `offer: [ERC20 payment]`, `consideration:
+- **Listing** = `offer: [ERC721 NFT]`, `consideration: [USDC payment →
+  seller]`. The buyer's wallet calls `fulfillOrder()`; Seaport pulls the
+  buyer's pre-approved USDC and moves it to the seller, and moves the NFT
+  to the buyer, in one transaction.
+- **Offer** = the mirror image — `offer: [USDC payment]`, `consideration:
   [ERC721 NFT → buyer]`. The **owner's** wallet calls `fulfillOrder()` to
-  accept it, pulling the buyer's pre-approved ERC20 and sending the NFT.
+  accept it, pulling the buyer's pre-approved USDC and sending the NFT.
 
-### Why offers use WETH, not raw ETH
+### Priced in USDC, everywhere, since 2026-09-21 (no ETH shown at all)
 
-`fulfillOrder()` for an offer is called by the **seller** (the position
-owner), not the buyer. Only the caller of a transaction can attach
-`msg.value` — so the owner's fulfillment tx can't pull ETH out of the
-buyer's wallet on their behalf. It *can* pull a pre-approved ERC20, though.
-So a buy-side offer's payment item must be WETH: `src/lib/listLants.js`'s
-`makeOffer()` wraps ETH into WETH first (`ensureWeth()` calls `deposit()`
-for any shortfall) before creating the order. Base's canonical WETH
-predeploy — same address on every OP-Stack chain — is
-`0x4200000000000000000000000000000000000006` (verified via `name()`, not
-assumed).
+Every listing and offer this site creates is denominated in **USDC**
+(`0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` on Base — the same constant
+`DepositModal.jsx` already used for real deposits), not native ETH or
+WETH. This replaced an earlier version where listings used a native-ETH
+consideration item and offers used WETH — changed after live user
+feedback: "IANTS feels more like BRC-20, so its trading should use
+similar ways… denominate in USDC and allow users [to] buy or pay in USDC
+while not show[ing] ETH any more" (referencing BRC-20 marketplace UIs
+like unisat.io's).
+
+**Why this was a smaller change than it sounds.** `fulfillOrder()` for an
+offer is called by the **seller** (the position owner), not the buyer —
+only the transaction's caller can attach `msg.value`, so the owner's
+fulfillment tx could never pull raw ETH out of the buyer's wallet; it
+could only pull a pre-approved ERC20. That's exactly why offers were
+*already* ERC20-only (WETH) before this change — switching the token from
+WETH to USDC didn't introduce a new mechanism, it just swapped which
+ERC20. The one real behavior change is that offers no longer wrap
+anything first: WETH needed an explicit `deposit()` step
+(`ensureWeth()`, now deleted) to convert ETH into an ERC20 before it could
+be offered; USDC is already an ERC20 the offerer holds directly, so
+`makeOffer()` (`src/lib/listLants.js`) just builds the order.
+
+Listings went from native ETH to ERC20 USDC the same way — this *does*
+change the consideration item's `itemType` from native to ERC20, but
+needed **zero new approval-handling code**: `createOrder()`'s and
+`fulfillOrder()`'s own `executeAllActions()` already inspect whatever
+token an order's offer/consideration items name and insert an `approve()`
+action first if the relevant party (lister for the NFT, fulfiller for the
+USDC) hasn't already approved it — confirmed by reading seaport-js's own
+`getApprovalActions()`/`validateStandardFulfillBalancesAndApprovals()`
+source, not assumed. `fulfillListing()`/`acceptOffer()` needed no code
+changes at all.
+
+**A real bug this caught before shipping:** the per-ANT-priced total
+(below) is computed in plain JS floating point (`perAnt * amount`), which
+routinely produces values like `0.30000000000000004`. `ethers`'
+`parseUnits()` throws `NUMERIC_FAULT: too many decimals` on a string with
+more fractional digits than USDC's 6 — reproduced with a throwaway
+`node -e` before trusting the code, not just by reading it. Fixed with
+`Number(priceUsdc).toFixed(6)` before `parseUnits()` in both
+`createAndPostListing()` and `makeOffer()`.
+
+**Backend validation** (`/api/lants/list`, `/api/lants/offer` in
+`server.js`) rejects any order whose consideration/offer token isn't
+`emissionsCfg.usdcContractAddress` (resolved live via `@antseed/node`, not
+hardcoded) — the same shape the WETH check used before, just pointed at a
+different address. `computeLantsMarket()`'s own USD figure for a local
+listing no longer needs the Coinbase ETH-USD spot-price call it used to
+(`ethUsdPrice()`, removed) — USDC's own peg *is* the USD figure, so
+`usd = price_wei / 1e6` directly. The frontend's `formatListing()` was
+simplified to always show that USD total and never a raw token unit,
+which also covers an OpenSea-scraped listing that might still carry an
+ETH `unit`/`symbol` from the scraper — this site shows every price as a
+USD total, full stop.
+
+**Pre-2026-09-21 rows are kept, not migrated or hidden.** A handful of
+real WETH offers were already open in production at the moment of this
+switch (found by querying the live database before writing the fix, not
+guessed) — they're still perfectly fulfillable (`fulfillOrder()` doesn't
+care what token an already-signed order names), so the frontend's offer
+row and trade-history rendering read each row's own recorded currency/
+decimals (`formatTradeAmount()`/`CURRENCY_DECIMALS` in `StakeANTS.jsx`)
+rather than assuming everything is 6-decimal USDC. `offersForToken()`'s
+price-descending sort (below) is a known approximation for a token that
+mixes an 18-decimal WETH offer with 6-decimal USDC ones, since their raw
+base-unit amounts aren't directly comparable — not worth solving given
+every *new* offer is USDC-only going forward.
+
+### Per-ANT pricing, like a BRC-20 marketplace
+
+The List/Offer forms collect a price **per ANT**, not a flat total — the
+same convention a BRC-20 marketplace uses (price per token, total shown
+alongside). `doList`/`doMakeOffer` (`StakeANTS.jsx`) compute
+`perAnt * position.amount` and show that computed total inline in the
+modal (`stake.totalPrice`) before sending it as the one flat amount
+Seaport's order actually needs — Seaport itself has no "per unit"
+concept, an order is always for one total price. `formatListing()` and
+the market card's per-ANT reference line (`listing.perAntUsd`, computed
+server-side in `computeLantsMarket()`) show the same total/per-ANT pair
+on the read side.
+
+Listings and the market's default sort both rank by **per-ANT price**,
+not the total: `paginateMarketItems`'s `'price'` sorter
+(`backend/server.js`) already keyed off `listing.perAntUsd`, and
+`marketSort`'s frontend default was changed from `'id'` to `'price'`
+(ascending — cheapest per-ANT first) to actually surface that ranking by
+default, matching a BRC-20 market's own default view.
+
+### One open offer per address per token
+
+`makeOffer()`'s entry point (`openOfferModal()` in `StakeANTS.jsx`) checks
+whether the connected address already has an open offer on a token before
+showing the form at all, and blocks with a clear message
+(`stake.offerAlreadyExists`) if so, rather than letting a second offer go
+through silently. `/api/lants/offer` enforces the same rule server-side
+(409 on a duplicate `(offerer, tokenId)`) as a backstop against a stale
+tab or race bypassing the client-side check. This exists because real
+production data showed the actual failure mode: the same address had
+three open (WETH) offers already sitting on one token from earlier
+live-testing this session, found by querying the database directly.
 
 ### Conduit: Seaport's own, not OpenSea's
 
@@ -307,7 +398,7 @@ Seaport 1.6 on Base: `0x0000000000000068F116a894984e2DB1123eB395`
 | Table | Purpose |
 |---|---|
 | `lants_listings` | One row per token (`token_id` PK) — the current active sell listing: offerer, `price_wei`, the full signed Seaport order (`order_parameters` JSON + `signature`), `cancelled_at`. Upserted on re-list, soft-deleted via `cancelled_at`. |
-| `lants_offers` | One row per offer (autoincrement id, many per token) — offerer, `price_wei`, the WETH token address, the signed order, `cancelled_at`/`accepted_at`. |
+| `lants_offers` | One row per offer (autoincrement id, many per token) — offerer, `price_wei`, the offer's payment-token address (`weth` column name predates the 2026-09-21 USDC switch — still just "whichever ERC20 this offer names", USDC for anything current), the signed order, `cancelled_at`/`accepted_at`. |
 | `lants_positions` | Cached position metadata (owner, `agent_id`, `amount`, `weight_amount`, stake start/end epoch, `withdrawn`) so the market page can page/filter/sort with plain SQL instead of an on-chain or Antscan read on every request. Refreshed each time `computeLantsMarket()` runs (~90s TTL). |
 
 Storage/query layers: `backend/lants-listings.js`, `backend/lants-offers.js`,
@@ -321,7 +412,7 @@ Storage/query layers: `backend/lants-listings.js`, `backend/lants-offers.js`,
 | `/api/lants/list` | POST | `{ tokenId, order, protocolAddress }` — verifies the position exists, isn't a 1-ANT activation stake, and the order's offerer owns it; saves the listing locally (always succeeds independent of OpenSea), then best-effort cross-posts to OpenSea. |
 | `/api/lants/order/:tokenId` | GET | The stored signed order for a listed token, for a buyer's wallet to fulfill directly. |
 | `/api/lants/cancel` | POST | `{ tokenId, message, signature }` — signature-authenticated (see below); invalidates the local listing. |
-| `/api/lants/offer` | POST | `{ tokenId, order, protocolAddress }` — validates the offer's payment item is WETH and its consideration targets this token; saves it. |
+| `/api/lants/offer` | POST | `{ tokenId, order, protocolAddress }` — validates the offer's payment item is USDC and its consideration targets this token, and rejects a duplicate (409) if this offerer already has an open offer on it; saves it. |
 | `/api/lants/offers/:tokenId` | GET | All active (not cancelled/accepted) offers on one token. |
 | `/api/lants/offer/:offerId` | GET | One offer's stored order, for the owner to fulfill. |
 | `/api/lants/offer/cancel` | POST | `{ offerId, message, signature }` — signature-authenticated against the offer's maker. |
@@ -625,7 +716,7 @@ User Browser
   |-- HTTP POST /api/lants/list   → save a signed Seaport listing (+ best-effort OpenSea cross-post)
   |-- HTTP GET /api/lants/order/:tokenId → stored signed order for a buyer to fulfill
   |-- HTTP POST /api/lants/cancel → cancel a listing (signed-message auth)
-  |-- HTTP POST /api/lants/offer  → save a signed WETH offer
+  |-- HTTP POST /api/lants/offer  → save a signed USDC offer
   |-- HTTP GET /api/lants/offers/:tokenId, /api/lants/offer/:offerId → read offers
   |-- HTTP POST /api/lants/offer/cancel, /api/lants/offer/accept → cancel/accept an offer
   |-- HTTP POST /api/admin/sync   → triggers live network re-sync (token-gated, see README)

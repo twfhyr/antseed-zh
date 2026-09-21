@@ -832,6 +832,106 @@ i18n keys. Pushed as a follow-up commit on the open PR
 (`feat/iants-stakers-and-perf`, #13) rather than a new one, since it's
 addressing review feedback on work already under review there.
 
+## 2026-09-21: lANTS trading rebuilt BRC-20-style -- per-ANT USDC pricing, no ETH shown, no duplicate offers, offers ranked by price
+
+User: "iants feel more like brc20 so its trading should use similar ways
+like brc20" -- five concrete asks, all shipped, referencing unisat.io's
+BRC-20 market UI as the model:
+
+1. **Per-ANT price input, total shown.** List/Offer forms now collect a
+   price *per ANT* (`stake.listPrice`/`stake.offerPrice` relabelled),
+   compute the flat total Seaport actually needs
+   (`perAnt * position.amount`), and show that computed total inline in
+   both modals (`stake.totalPrice`) -- the same way a BRC-20 market prices
+   by unit and shows the total. `doList`/`doMakeOffer` in `StakeANTS.jsx`
+   do the multiplication; `createAndPostListing`/`makeOffer` in
+   `listLants.js` still just take one flat total, since Seaport orders
+   have no "per unit" concept.
+
+2. **USDC only, no ETH shown anywhere.** This was the biggest change:
+   listings switched from a native-ETH Seaport consideration to an ERC20
+   USDC one, and offers switched from WETH to USDC. Verified zero active
+   listings existed at the moment of the switch (`lants_listings` query),
+   so there was no live ETH-priced listing to break.
+   - `src/lib/listLants.js`: added `USDC_BASE`
+     (`0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`, same address already
+     used in `DepositModal.jsx`) and `USDC_DECIMALS = 6`. Removed
+     `ensureWeth()`/`WETH_ABI` (the wrap-ETH-into-WETH step) entirely --
+     confirmed by reading seaport-js's own `createOrder()`/`fulfillOrder()`
+     source that `executeAllActions()` already auto-generates an
+     `approve()` action for whatever ERC20 an order's offer/consideration
+     needs, the same generic mechanism that used to cover WETH's approval
+     step, so USDC needs zero new approval-handling code -- no
+     wrap-first step either, since USDC (unlike ETH) is already a token
+     people hold directly. `fulfillListing`/`acceptOffer` needed **no
+     changes at all**, being fully generic already.
+   - **Real bug caught before shipping**: `parseUnits(String(priceUsdc), 6)`
+     throws `NUMERIC_FAULT: too many decimals` on almost any real
+     `perAnt * amount` result, since JS float multiplication routinely
+     produces things like `0.30000000000000004`. Fixed with
+     `Number(priceUsdc).toFixed(6)` before `parseUnits` in both
+     `createAndPostListing` and `makeOffer`. Caught by actually running
+     the multiplication through `parseUnits` in a throwaway `node -e`
+     before trusting the code, not just reading it.
+   - Backend (`server.js`): removed `ethUsdPrice()`/the Coinbase spot-price
+     cache entirely -- USDC's own peg means no conversion is needed for our
+     own listings any more. `computeLantsMarket()`'s local-listing branch
+     now reads `price_wei` as USDC (÷1e6) instead of ETH (÷1e18).
+     `/api/lants/list` and `/api/lants/offer` both now reject any order
+     whose consideration/offer token isn't
+     `emissionsCfg.usdcContractAddress` (live-resolved, not hardcoded).
+   - Frontend display: `formatListing()` simplified to always show the USD
+     total, never a raw ETH/token unit -- covers OpenSea-scraped listings
+     too, which can still carry an ETH `unit`/`symbol` from the scraper.
+     Offer rows and the trade-history table now decimal-aware
+     (`formatTradeAmount()`/`CURRENCY_DECIMALS`) rather than hardcoded
+     ÷1e18, since 3 real WETH offers (18 decimals) were already open on
+     token 36 in production at the time of this change and are kept
+     working, not hidden or migrated.
+
+3. **No duplicate offers, and an explicit message for every action.**
+   Real production data caught the exact bug being described: the same
+   address had 3 open WETH offers already sitting on token 36 (from
+   earlier live testing this session, before this fix existed) --
+   confirmed by querying `database.sqlite` directly before writing the
+   fix. Added `openOfferModal()` in `StakeANTS.jsx`: before showing the
+   offer form, it fetches the token's current offers and blocks (disabled
+   form, `stake.offerAlreadyExists` message) if the connected address
+   already has one open, rather than letting a second submission through
+   silently. Backed by a **server-side check too**
+   (`/api/lants/offer` now 409s on a duplicate `(offerer, tokenId)`) as a
+   backstop against a stale tab or race bypassing the client-side check --
+   verified live with a raw `curl` POST reproducing exactly that address's
+   real duplicate. Audited every action's existing inline message
+   (list/offer/buy/cancel/split/merge/move all already had one) rather
+   than adding a new toast system; the one genuine gap was the new
+   duplicate-offer case, now covered.
+
+4. **Offers ranked highest to lowest.** `offersForToken()`
+   (`backend/lants-offers.js`) used to `ORDER BY created_at DESC`
+   (newest first) -- changed to sort by price descending, done in JS with
+   `BigInt` comparison rather than SQL `ORDER BY` on the TEXT `price_wei`
+   column (a lexicographic string sort gets differing-digit-length
+   amounts wrong). Noted as a known approximation for the rare token that
+   mixes an old 18-decimal WETH offer in with new 6-decimal USDC ones,
+   since their raw base-unit amounts aren't directly comparable -- not
+   worth solving given all new offers are USDC-only going forward.
+
+5. **Rank listings by per-ANT price, not per-NFT total.** Already true
+   server-side (`paginateMarketItems`'s `price` sorter already keyed off
+   `listing.perAntUsd`) -- the actual gap was the frontend's *default*
+   sort being `id`, not `price`. Changed `marketSort`'s default state to
+   `'price'` (ascending, cheapest-per-ANT first), matching a BRC-20
+   market's own default view.
+
+Verified live: rebuilt both targets, restarted the dashboard backend
+(server.js logic changed this time, not just the frontend), confirmed the
+live bundle hash matches and contains the USDC address + new copy, and
+ran real `curl` requests against the live `/api/lants/offer` endpoint
+confirming both the USDC-only validation and the duplicate-offer 409 fire
+correctly against real production data (that same address's 3 existing
+offers on token 36).
+
 ## Open questions (no obvious right answer — flag to the user, don't guess)
 
 - Should the admin routes (`/api/admin/sync`, `/api/admin/force-*-sync`)

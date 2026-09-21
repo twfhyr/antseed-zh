@@ -1,11 +1,16 @@
-// Buy-side Seaport orders (offers) for lANTS NFTs: a buyer offers WETH
-// (ERC20 -- raw ETH can't be pulled by fulfillOrder, only pushed by the
-// offerer at fulfillment time, so an offer that isn't the current owner
-// fulfilling it has to be WETH) for a specific token; the owner accepts by
-// fulfilling that order directly against Seaport, same mechanism as buying
-// a listing, just with the roles swapped. No OpenSea involved.
+// Buy-side Seaport orders (offers) for lANTS NFTs: a buyer offers an ERC20
+// (raw ETH can't be pulled by fulfillOrder, only pushed by the offerer at
+// fulfillment time, so an offer that isn't the current owner fulfilling it
+// has to be an ERC20 -- USDC as of 2026-09-21, WETH before that) for a
+// specific token; the owner accepts by fulfilling that order directly
+// against Seaport, same mechanism as buying a listing, just with the roles
+// swapped. No OpenSea involved.
 import db from './database.js';
 
+// Kept for identifying pre-2026-09-21 offer rows (the `weth` column name
+// predates the USDC switch but still just stores "whatever ERC20 token
+// address this offer's payment item names") -- current offers use
+// emissionsCfg.usdcContractAddress instead, resolved live in server.js.
 export const WETH_BASE = '0x4200000000000000000000000000000000000006';
 
 const insertStmt = db.prepare(`
@@ -46,10 +51,25 @@ export function getOffer(id) {
   return row ? rowToOffer(row) : null;
 }
 
-/** Active (not cancelled/accepted) offers for one token, newest first. */
+/**
+ * Active (not cancelled/accepted) offers for one token, highest price
+ * first -- sorted in JS with BigInt rather than SQL's ORDER BY, since
+ * price_wei is TEXT (arbitrary-precision amounts don't fit a REAL/INTEGER
+ * column) and a lexicographic string sort gets differing-digit-length
+ * numbers wrong (e.g. "9" would sort after "10000"). This assumes every
+ * offer on a given token shares one currency's decimals, which holds for
+ * all new (USDC) offers; it's only approximate for the rare token that
+ * mixes an old pre-2026-09-21 WETH (18-decimal) offer in with new USDC
+ * (6-decimal) ones, since their raw base-unit amounts aren't comparable.
+ */
 export function offersForToken(tokenId) {
-  return db.prepare('SELECT * FROM lants_offers WHERE token_id = ? AND cancelled_at IS NULL AND accepted_at IS NULL ORDER BY created_at DESC')
+  const rows = db.prepare('SELECT * FROM lants_offers WHERE token_id = ? AND cancelled_at IS NULL AND accepted_at IS NULL')
     .all(Number(tokenId)).map(rowToOffer);
+  rows.sort((a, b) => {
+    const diff = BigInt(b.priceWei) - BigInt(a.priceWei);
+    return diff > 0n ? 1 : diff < 0n ? -1 : 0;
+  });
+  return rows;
 }
 
 export function offererForOffer(id) {

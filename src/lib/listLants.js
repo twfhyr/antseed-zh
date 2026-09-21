@@ -11,6 +11,20 @@
 const DEFAULT_CONDUIT_KEY = `0x${'0'.repeat(64)}`;
 const SEAPORT_V16 = '0x0000000000000068F116a894984e2DB1123eB395';
 
+// Canonical Base USDC (Circle's native issuance, not bridged USDbC) --
+// same address already used elsewhere in this app for real payments (see
+// src/components/DepositModal.jsx). Every listing/offer this site creates
+// is denominated and paid in this token as of 2026-09-21: no native ETH
+// consideration item, no WETH offer item, and USDC's own peg means no
+// separate USD conversion is needed anywhere downstream either (see
+// backend/server.js's computeLantsMarket). 6 decimals, not 18.
+export const USDC_BASE = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
+export const USDC_DECIMALS = 6;
+// Kept only so the UI can still recognize and correctly format a handful
+// of pre-2026-09-21 offers still open in WETH -- no code here creates a
+// new WETH offer any more.
+export const WETH_BASE = '0x4200000000000000000000000000000000000006';
+
 // Only the split entry point -- other SellerPools calls (stake/claim/etc.)
 // live in StakeANTS.jsx's own ABI, this file only needs this one.
 const SELLER_POOLS_SPLIT_ABI = [
@@ -31,16 +45,6 @@ const SELLER_POOLS_SPLIT_ABI = [
     ],
   },
 ];
-// Canonical WETH predeploy, same address on every OP-Stack chain (Base
-// included) -- confirmed by calling name() on it, not assumed. Offers have
-// to be WETH: fulfillOrder is called by the SELLER, who can only pull an
-// ERC20 the buyer pre-approved, not attach the buyer's raw ETH as msg.value.
-const WETH_BASE = '0x4200000000000000000000000000000000000006';
-const WETH_ABI = [
-  { name: 'balanceOf', type: 'function', stateMutability: 'view', inputs: [{ name: 'a', type: 'address' }], outputs: [{ type: 'uint256' }] },
-  { name: 'deposit', type: 'function', stateMutability: 'payable', inputs: [], outputs: [] },
-];
-
 async function signTimestampedMessage(walletClient, account, action, id) {
   const message = `Antseed-zh lANTS: ${action} #${id} @ ${Date.now()}`;
   const signature = await walletClient.signMessage({ account, message });
@@ -63,8 +67,20 @@ function stringify(value) {
   return value;
 }
 
-export async function createAndPostListing({ walletClient, account, contract, tokenId, priceEth, durationDays }) {
-  const [{ Seaport, ItemType }, { BrowserProvider, parseEther }] = await Promise.all([
+/**
+ * List an lANTS NFT for a flat total price in USDC (not native ETH). The
+ * caller (StakeANTS.jsx's doList) computes that total from a per-ANT price
+ * the person actually typed, the same way a BRC-20 marketplace prices by
+ * unit and shows the total -- Seaport itself has no notion of "per unit",
+ * an order is always for one flat amount.
+ *
+ * No approval step needed here: the item requiring approval on the LISTER's
+ * side is the NFT itself (the `offer`), not the USDC consideration a buyer
+ * will eventually pay -- createOrder()'s executeAllActions() already
+ * handles that NFT approval the same way it did before this was ETH.
+ */
+export async function createAndPostListing({ walletClient, account, contract, tokenId, priceUsdc, durationDays }) {
+  const [{ Seaport, ItemType }, { BrowserProvider, parseUnits }] = await Promise.all([
     import('@opensea/seaport-js'),
     import('ethers'),
   ]);
@@ -84,7 +100,14 @@ export async function createAndPostListing({ walletClient, account, contract, to
       identifier: String(tokenId),
     }],
     consideration: [{
-      amount: parseEther(String(priceEth)).toString(),
+      itemType: ItemType.ERC20,
+      token: USDC_BASE,
+      // toFixed, not String -- priceUsdc is perAnt * amount computed in
+      // plain JS floating point (StakeANTS.jsx's doList), which routinely
+      // produces something like 0.30000000000000004. parseUnits throws
+      // ("too many decimals") on any string with more than USDC_DECIMALS
+      // fractional digits rather than rounding it away.
+      amount: parseUnits(Number(priceUsdc).toFixed(USDC_DECIMALS), USDC_DECIMALS).toString(),
       recipient: account,
     }],
   }, account);
@@ -102,6 +125,11 @@ export async function createAndPostListing({ walletClient, account, contract, to
  * Buy a listed lANTS NFT: fetch the stored signed order from antseed-zh's
  * own order book and fulfill it directly against Seaport. No OpenSea
  * involvement -- the buyer's wallet pays the seller in one on-chain tx.
+ * Needs no special-casing for the USDC switch: fulfillOrder()'s own
+ * executeAllActions() already checks whether the fulfiller (the buyer, for
+ * a listing) has approved Seaport for whatever ERC20 the consideration
+ * names, and inserts an approve() action first if not -- the same
+ * mechanism that already handled WETH offer-acceptance below.
  */
 export async function fulfillListing({ walletClient, account, tokenId }) {
   const [{ Seaport }, { BrowserProvider }, { fetchLantsOrder }] = await Promise.all([
@@ -137,28 +165,26 @@ export async function cancelListing({ walletClient, account, tokenId }) {
   return cancelLantsListing({ tokenId, message, signature });
 }
 
-async function ensureWeth(walletClient, account, amountWei) {
-  const [{ BrowserProvider, Contract, parseEther }] = await Promise.all([import('ethers')]);
-  const network = { chainId: walletClient.chain.id, name: walletClient.chain.name };
-  const provider = new BrowserProvider(walletClient.transport, network);
-  const signer = await provider.getSigner(account);
-  const weth = new Contract(WETH_BASE, WETH_ABI, signer);
-  const balance = await weth.balanceOf(account);
-  if (balance < amountWei) {
-    const tx = await weth.deposit({ value: amountWei - balance });
-    await tx.wait();
-  }
-}
-
-/** Offer WETH for a specific lANTS NFT -- the owner doesn't have to be
- * selling yet; they can review and accept later (or never). */
-export async function makeOffer({ walletClient, account, contract, tokenId, priceEth, durationDays }) {
-  const [{ Seaport, ItemType }, { BrowserProvider, parseEther }] = await Promise.all([
+/**
+ * Offer USDC for a specific lANTS NFT (a flat total, computed by the
+ * caller from a per-ANT price -- see createAndPostListing's comment) -- the
+ * owner doesn't have to be selling yet; they can review and accept later
+ * (or never). Unlike the old WETH version, there's no wrap-ETH-first step:
+ * USDC is a token the offerer already holds directly, nothing to convert.
+ * createOrder()'s own executeAllActions() checks the offerer's USDC
+ * allowance for Seaport and inserts an approve() action first if it's
+ * short, the same generic mechanism that used to cover the WETH deposit's
+ * follow-up approval too.
+ */
+export async function makeOffer({ walletClient, account, contract, tokenId, priceUsdc, durationDays }) {
+  const [{ Seaport, ItemType }, { BrowserProvider, parseUnits }] = await Promise.all([
     import('@opensea/seaport-js'),
     import('ethers'),
   ]);
-  const amountWei = parseEther(String(priceEth));
-  await ensureWeth(walletClient, account, amountWei);
+  // See createAndPostListing's comment: toFixed guards against the
+  // floating-point multiplication that produced this total having more
+  // than USDC_DECIMALS fractional digits, which parseUnits would reject.
+  const amountUnits = parseUnits(Number(priceUsdc).toFixed(USDC_DECIMALS), USDC_DECIMALS);
 
   const network = { chainId: walletClient.chain.id, name: walletClient.chain.name };
   const provider = new BrowserProvider(walletClient.transport, network);
@@ -169,8 +195,8 @@ export async function makeOffer({ walletClient, account, contract, tokenId, pric
     endTime,
     offer: [{
       itemType: ItemType.ERC20,
-      token: WETH_BASE,
-      amount: amountWei.toString(),
+      token: USDC_BASE,
+      amount: amountUnits.toString(),
     }],
     consideration: [{
       itemType: ItemType.ERC721,
