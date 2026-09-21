@@ -932,6 +932,59 @@ confirming both the USDC-only validation and the duplicate-offer 409 fire
 correctly against real production data (that same address's 3 existing
 offers on token 36).
 
+## 2026-09-21: real listing test caught a Mine-tab staleness bug across five actions
+
+User tested List live in the browser and hit two things: the confirm
+modal stayed open after a successful listing instead of returning to the
+Mine tab, and the card still showed "List here" afterward instead of
+switching to "Cancel listing".
+
+**Root cause, not a display glitch**: the Mine tab was redesigned earlier
+this session (the Merge grouping work) to render from `myPositions` (a
+separate, uncapped fetch) instead of the paginated `market` state. Every
+mutation handler that predates that redesign — `doList`, `doBuy`,
+`doCancel`, `doSplit`, `doAcceptOffer` — only ever refreshed `market`
+after finishing, never `myPositions`. `doMergeSelected`/`doMove` (written
+*during* the redesign) already got this right; the five older handlers
+never got the same treatment. So a real listing succeeded on-chain and in
+the DB, `market` refreshed fine, and the Mine tab kept reading the old,
+now-stale `myPositions` snapshot regardless. Audited all seven mutation
+handlers systematically once the pattern was clear, not just the one the
+user hit:
+
+| Handler | Needed `refreshMyPositions`? | Why |
+|---|---|---|
+| `doList` | yes (was missing) | listing changes `p.listed`/`fulfillableHere` on the caller's own position |
+| `doCancel` | yes (was missing) | same, in reverse |
+| `doBuy` | yes (was missing) | buyer's own `myPositions` gains the bought position |
+| `doSplit` | yes (was missing) | source position disappears, two new ones appear |
+| `doAcceptOffer` | yes (was missing) | seller's position leaves their own `myPositions` |
+| `doMakeOffer` | no | `canOffer` already excludes the Mine tab and the position's own owner — never affects the offerer's own positions |
+| `doCancelOffer` | no | only retracts an offer, never touches position ownership |
+
+All five fixed the same way as `doMergeSelected`/`doMove`: chain
+`refreshMyPositions()` in a `.then()` after the market refresh resolves
+(not fired alongside it), with `refreshMyPositions({ force: true })` only
+in the `.catch()` fallback.
+
+**Second fix**: `ListModal`/`OfferModal` used to stay open on a `'done'`
+phase after success, requiring a manual close — now `doList`/
+`doMakeOffer` call `setListForm(null)`/`setOfferForm(null)` directly on
+success instead. The updated card (price appears, button switches to
+"Cancel listing"/offer count increments) is the confirmation, the same
+way Cancel/Buy's inline (non-modal) messages already worked. Left
+`SplitModal`/`MoveModal` open on success on purpose — they show a new
+position id the card doesn't otherwise surface, so closing them would
+lose real information; `MergeGroup` was already built this way with no
+modal at all.
+
+Frontend-only change, no backend restart needed. Verified both builds and
+confirmed the live site is serving the new bundle; couldn't re-verify the
+actual "button switches to Cancel listing" behavior against a real owned
+position (no funded/owning test wallet available, same limitation noted
+in the previous round's live-test writeup) — this one is a code-review-
+level fix, not a live-verified one.
+
 ## Open questions (no obvious right answer — flag to the user, don't guess)
 
 - Should the admin routes (`/api/admin/sync`, `/api/admin/force-*-sync`)

@@ -313,8 +313,18 @@ function StakeANTS() {
         priceUsdc: totalUsdc,
         durationDays: listForm?.days || 30,
       });
-      setListForm({ position, price: String(perAnt), days: listForm?.days || 30, phase: 'done', message: t('stake.listedOk') });
-      fetchLantsMarket({ ...marketQuery, wait: '1' }).then(setMarket).catch(() => {});
+      // Real bug reported live: the modal used to stay open on a 'done'
+      // phase forever (needing a manual close) AND the Mine tab kept
+      // showing "List here" afterward, because this never refreshed
+      // myPositions -- Mine renders from that list (see groupMyPositions),
+      // not from the `market` state this was already updating. Closing
+      // the form here is the confirmation (the card itself now shows
+      // "Cancel listing" and the price once myPositions lands) instead of
+      // a popup the user has to notice and dismiss themselves.
+      setListForm(null);
+      fetchLantsMarket({ ...marketQuery, wait: '1' })
+        .then((data) => { setMarket(data); return refreshMyPositions(); })
+        .catch(() => refreshMyPositions({ force: true }));
     } catch (e) {
       setListForm((f) => ({ ...f, phase: 'error', message: e.shortMessage || e.message }));
     }
@@ -339,7 +349,11 @@ function StakeANTS() {
       // cached (Antscan-sourced) owner can still say "seller" for a while
       // after a real sale -- force a real on-chain read of this id right
       // now instead of leaving it to show as for-sale until Antscan reindexes.
-      fetchLantsMarket({ ...marketQuery, wait: '1', ensureIds: String(position.id) }).then(setMarket).catch(() => {});
+      // Also refreshes myPositions: the buyer just gained a new position,
+      // which needs to show up if they go check the Mine tab.
+      fetchLantsMarket({ ...marketQuery, wait: '1', ensureIds: String(position.id) })
+        .then((data) => { setMarket(data); return refreshMyPositions(); })
+        .catch(() => refreshMyPositions({ force: true }));
     } catch (e) {
       setBuyState({ id: position.id, phase: 'error', message: e.shortMessage || e.message });
     }
@@ -354,7 +368,12 @@ function StakeANTS() {
       setCancelState({ id: position.id, phase: 'cancelling', message: t('stake.cancelling') });
       await cancelListing({ walletClient, account: address, tokenId: position.id });
       setCancelState({ id: position.id, phase: 'done', message: t('stake.cancelledOk') });
-      fetchLantsMarket({ ...marketQuery, wait: '1' }).then(setMarket).catch(() => {});
+      // Same staleness bug as doList: Mine renders from myPositions, not
+      // from `market`, so cancelling a listing needs this too or the card
+      // keeps showing "Cancel listing" / the old price after it's gone.
+      fetchLantsMarket({ ...marketQuery, wait: '1' })
+        .then((data) => { setMarket(data); return refreshMyPositions(); })
+        .catch(() => refreshMyPositions({ force: true }));
     } catch (e) {
       setCancelState({ id: position.id, phase: 'error', message: e.shortMessage || e.message });
     }
@@ -381,9 +400,12 @@ function StakeANTS() {
       // The two new position ids won't be in Antscan's cache yet -- pass
       // them explicitly so the backend fetches them on-chain right now
       // instead of waiting for Antscan to catch up (see /api/lants-market's
-      // ensureIds handling).
+      // ensureIds handling). Also refreshes myPositions -- same staleness
+      // bug as doList/doCancel, Mine renders from that list, not `market`.
       const ensureIds = [result.firstPositionId, result.secondPositionId].filter((x) => x != null).join(',');
-      fetchLantsMarket({ ...marketQuery, wait: '1', ensureIds }).then(setMarket).catch(() => {});
+      fetchLantsMarket({ ...marketQuery, wait: '1', ensureIds })
+        .then((data) => { setMarket(data); return refreshMyPositions(); })
+        .catch(() => refreshMyPositions({ force: true }));
     } catch (e) {
       setSplitForm((f) => ({ ...f, phase: 'error', message: e.shortMessage || e.message }));
     }
@@ -490,7 +512,10 @@ function StakeANTS() {
         walletClient, account: address, contract, tokenId: position.id,
         priceUsdc: totalUsdc, durationDays: offerForm?.days || 30,
       });
-      setOfferForm({ position, price: String(perAnt), days: offerForm?.days || 30, phase: 'done', message: t('stake.offeredOk') });
+      // Same fix as doList: close on success instead of lingering on a
+      // 'done' phase -- the "Offers (N)" count updating on the card is the
+      // confirmation.
+      setOfferForm(null);
       // Both needed: loadOffers refreshes the expandable list (if open),
       // but the closed "Offers (N)" button's count comes from the market
       // item's own offerCount field -- only a market refetch updates that.
@@ -564,7 +589,11 @@ function StakeANTS() {
       await acceptOffer({ walletClient, account: address, offerId: offer.id });
       setOfferActionState({ offerId: offer.id, phase: 'done', message: t('stake.acceptedOk') });
       loadOffers(offer.tokenId, true);
-      fetchLantsMarket({ ...marketQuery, wait: '1' }).then(setMarket).catch(() => {});
+      // The accepting side just sold the position away -- refresh
+      // myPositions too, or it keeps showing up as theirs on the Mine tab.
+      fetchLantsMarket({ ...marketQuery, wait: '1' })
+        .then((data) => { setMarket(data); return refreshMyPositions(); })
+        .catch(() => refreshMyPositions({ force: true }));
     } catch (e) {
       setOfferActionState({ offerId: offer.id, phase: 'error', message: e.shortMessage || e.message });
     }
