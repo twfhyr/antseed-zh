@@ -1027,6 +1027,24 @@ compute a floor from -- same real state confirmed in the last few rounds'
 live tests); confirmed the live bundle contains "ANTS Price" and no longer
 contains the removed filler phrases.
 
+## 2026-09-21: marketplace fee -- planned, deliberately not implemented yet
+
+User asked whether the marketplace's own Seaport orders could carry a fee
+(after I confirmed, checking the real deployed Seaport 1.6 contract
+source, that it currently charges 0% to anyone, including OpenSea --
+OpenSea's cut only exists because their own tooling opts into it as an
+extra consideration item, which this site's order-building code never
+does). Answer given: yes, straightforward, same `fees` param seaport-js
+already supports. User's call: "add the fee to a plan but not implement
+it now since the marketplace is just finished and I need more users to
+test." Written up as `docs/ARCHITECTURE.md`'s new "Planned: a marketplace
+fee (not yet implemented)" section under lANTS Marketplace -- mechanism,
+and the open decisions (rate, recipient, list/offer/both, backend
+validation changes, backward compatibility, display honesty) for
+whoever picks this up once there's real trading volume to justify it.
+No code changed. Not committed -- doc-only, and this session's standing
+rule is explicit-ask-only for commits regardless.
+
 ## Open questions (no obvious right answer — flag to the user, don't guess)
 
 - Should the admin routes (`/api/admin/sync`, `/api/admin/force-*-sync`)

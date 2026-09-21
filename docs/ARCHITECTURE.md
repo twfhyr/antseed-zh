@@ -655,6 +655,55 @@ while the Stakers tab's unit is the *person* (their combined stake). Forcing
 both into one table would mean either losing the per-NFT actions or losing
 the clean combined-per-staker numbers.
 
+### Planned: a marketplace fee (not yet implemented)
+
+**Status: deferred on purpose.** The marketplace just shipped (USDC
+pricing, split/merge/move, the Mine-tab staleness fixes — all this
+session) and currently charges **0% to anyone** on every trade — verified
+directly against the real deployed Seaport 1.6 contract (`0x0000...eB395`
+on Base, source pulled live from Sourcify): every offer/consideration item
+pays `item.amount` straight to `item.recipient`, with no protocol-level
+skim, and this site's own orders (`src/lib/listLants.js`) only ever
+include one consideration item — no fee item appended. The call was to
+get real users trading first and only add a fee once there's real volume
+to justify the engineering + UX cost of a change that touches every order
+a user signs. Revisit once there's a meaningful base of repeat listers/
+buyers, not before.
+
+**How it would work, when it's time:** Seaport already supports this
+natively — seaport-js's `createOrder()` takes a `fees: [{ recipient,
+basisPoints }]` array and appends an extra consideration item paying that
+cut, the exact mechanism OpenSea's own site uses for its 2.5%. No new
+on-chain mechanism needed, just start passing that parameter.
+
+**What actually needs a decision before implementing** (not this doc's
+call to make):
+
+- **Rate.** OpenSea charges 2.5%; most newer marketplaces run 0.5–1% to
+  stay competitive. Needs an explicit number from the site owner.
+- **Recipient.** A plain wallet address, or something more structured
+  (e.g. routed toward ANTS stakers) if the fee should read as
+  protocol-native revenue rather than personal take.
+- **List side, offer side, or both.** Same mechanism either way.
+- **Backend validation must change.** `/api/lants/list` and
+  `/api/lants/offer` (`backend/server.js`) currently assume exactly one
+  consideration/offer item is the real payment
+  (`order.parameters.consideration?.[0]`); adding a fee item means
+  distinguishing "the real payment to the seller" from "the fee to us"
+  when extracting `priceWei` to store and display, not just accepting a
+  longer array.
+- **Backward compatibility.** A fee can only apply going forward — it
+  cannot retroactively attach to anything already signed. Any listing/
+  offer created before the change stays fee-less until it's cancelled and
+  redone; no migration needed, but don't assume every stored order has
+  the new shape once this ships.
+- **Display honesty.** The price shown must stay what the buyer actually
+  pays; if a fee comes out of the seller's side, the UI needs to say the
+  seller nets less than the sticker price, not just silently show a
+  smaller number arriving on-chain (matches this session's "there should
+  be a message" / no-silent-surprises bar for every other action on this
+  page).
+
 ---
 
 ## Lessons Learned
