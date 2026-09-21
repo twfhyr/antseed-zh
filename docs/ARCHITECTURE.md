@@ -234,14 +234,24 @@ Full live map served by `/api/chain-stats` → `contracts`. Core entries:
 ### Overview
 
 Locked ANTS positions (`AntseedSellerPools`) are ERC-721 NFTs — "lANTS". The
-Staking tab lets holders list, buy, cancel, make offers on, and accept
-offers for these NFTs entirely on **antseed-zh's own order book**, using the
+**IANTS tab** (`/iants`, `src/components/StakeANTS.jsx` — labelled "lANTS"
+in-tab, "IANTS" in the nav since it sits next to Stakers as of 2026-09-21)
+lets holders list, buy, cancel, make offers on, accept offers, split, merge,
+and move these NFTs entirely on **antseed-zh's own order book** (for the
+trading actions) or directly against `AntseedSellerPools` on-chain (for
+split/merge/move, which have no marketplace component), using the
 [Seaport](https://github.com/ProjectOpenSea/seaport) protocol directly
 against the contract on Base. Nothing on this flow depends on OpenSea's API,
 an API key, or OpenSea having indexed the NFT — a listing is usable the
 instant it's created. OpenSea cross-posting still happens best-effort (wider
 discovery, when a key is available) but the site never blocks on it or
 requires it.
+
+The **Stakers tab** (`/stakers`, next to Sellers) is a separate, public,
+no-wallet-needed view of the *same underlying positions* — grouped by
+staker address and lock length instead of listed NFT-by-NFT. See "Stakers
+tab (public, read-only)" near the end of this section for how it relates to
+the IANTS tab and why the two are kept as separate tabs rather than merged.
 
 This replaced an earlier approach that called OpenSea's API directly for
 listing, which failed in production with "no API key" — OpenSea's free
@@ -398,22 +408,132 @@ margin).
 (so the rest of the dashboard doesn't pay for that bundle weight) and
 exposes one function per user action — `createAndPostListing`,
 `fulfillListing`, `cancelListing`, `makeOffer`, `cancelOffer`,
-`acceptOffer` — each building/signing the Seaport order client-side via the
-connected wallet, then calling the matching `src/api.js` wrapper
-(`postLantsListing`, `cancelLantsListing`, `postLantsOffer`,
-`cancelLantsOffer`, `acceptLantsOffer`, `fetchLantsOrder`/`fetchLantsOffer`)
-to persist or fetch from the order book.
+`acceptOffer`, plus the three chain-only actions below
+(`splitPosition`, `mergePositions`, `movePosition`) — each
+building/signing the Seaport order (marketplace actions) or sending the raw
+contract call (split/merge/move) client-side via the connected wallet, then
+calling the matching `src/api.js` wrapper (`postLantsListing`,
+`cancelLantsListing`, `postLantsOffer`, `cancelLantsOffer`,
+`acceptLantsOffer`, `fetchLantsOrder`/`fetchLantsOffer`) to persist or fetch
+from the order book. Split/merge/move never touch the order book — they go
+straight to `AntseedSellerPools` and the resulting position(s) show up via
+`ensureIds` (below), not a database write.
 
 `StakeANTS.jsx`'s market grid is paginated (10 per page, `MarketPager`),
 filterable (seller, ANTS-amount range, lock-days range) and sortable
-(id/amount/lock-length/time-left/price), with three tabs — **For sale**
-(default), **All NFTs**, and **Mine** (shown only when a wallet is
-connected, filters to the connected address). Each `LantsNftCard` shows the
-real lock start/end dates as a Uniswap-LP-style diagonal range curve
-(`LantsNftArt`, site-language-aware date formatting) rather than a raw
-epoch range, and exposes List/Buy/Cancel-listing/Make-offer/Accept-offer/
-Cancel-my-offer actions inline based on ownership and listing state — there
-is no "view/buy on OpenSea" link anywhere in this flow.
+(id/amount/lock-length/time-left/price), with four tabs — **For sale**
+(default), **All NFTs**, **Mine** (shown only when a wallet is connected,
+filters to the connected address), and **History**. Each `LantsNftCard`
+shows the real lock start/end dates as a Uniswap-LP-style diagonal range
+curve (`LantsNftArt`, site-language-aware date formatting) rather than a
+raw epoch range, and exposes List/Buy/Cancel-listing/Make-offer/
+Accept-offer/Cancel-my-offer/Split/Merge/Move actions inline based on
+ownership and listing state — there is no "view/buy on OpenSea" link
+anywhere in this flow. Split/Merge/Move only ever appear on **Mine**, since
+all three require the viewer to own the position.
+
+### Split / Merge / Move (`AntseedSellerPools`, on-chain only — no Seaport)
+
+These three actions restructure an existing lANTS position directly against
+`AntseedSellerPools` on Base. None of them touch the order book — a listed
+position can't be split/merged/moved (the UI hides the buttons; the
+contract would also reject it since the position is escrowed to the
+marketplace via approval, not literally transferred, so this is a UI-level
+safeguard against confusing a buyer who has a pending fulfillment).
+
+All three share one shape end-to-end, which is why they were built as
+near-copies of each other (`splitPosition`/`mergePositions`/`movePosition`
+in `src/lib/listLants.js`, `doSplit`/`doMerge`/`doMove` in
+`StakeANTS.jsx`): build a minimal single-function ABI, send the tx from the
+connected wallet via `ethers`' `BrowserProvider`, wait for the receipt,
+parse the resulting event out of the receipt's logs with `Interface.
+parseLog()` to recover the new position id(s), then call
+`fetchLantsMarket({ ...marketQuery, wait: '1', ensureIds })` with those new
+(and old, for merge) ids — same reasoning as a fresh listing/buy: the new
+position(s) won't be in Antscan's cache yet, so the ids are passed
+explicitly to force a synchronous on-chain read of exactly those tokens
+(see `/api/lants-market`'s `ensureIds` handling above) instead of waiting
+for the next background refresh.
+
+**Split** (`splitStake(positionId, splitAmountWei)` → `StakeSplit(positionId,
+firstPositionId, secondPositionId)`): breaks one position into two, each
+keeping the original's lock start/end epoch, one holding `splitAmountWei`
+and the other the remainder. Burns the original NFT, mints two new ones,
+both starting "Pending" until next epoch. UI gate (`canSplit`): caller owns
+it, it isn't listed, it isn't a 1-ANT provider-activation stake, and its
+amount is `> 1` ANT (so a valid split amount exists). The modal also warns
+if either resulting half would land on exactly 1 ANT — indistinguishable
+on-chain from a real activation stake, so this site would then refuse to
+list it.
+
+**Merge** (`mergeStakes(positionIds[])` → `StakesMerged(positionIds,
+newPositionId, staker, amount, weightAmount)`): the inverse — combines two
+or more positions into one. **On-chain requirements** (verified against the
+live contract, not just source): every position must be owned by the
+caller, share the same `agentId`, and — after each is closed for
+restructuring — resolve to the *exact same* normalized start/end epoch, or
+the whole call reverts (`InvalidValue`). In practice that only happens for
+positions that already share both `stakeStartEpoch` and `stakeEndEpoch`, so
+the frontend's `mergeCandidates()` filters to "same seller + identical lock
+window" as a safe, simple stand-in for replicating the contract's
+restructure math client-side — deliberately the same "same locked time"
+grouping the Stakers tab already uses for its own combined rows. UI gate
+(`canMerge`): caller owns it, not listed, not a 1-ANT activation stake,
+**and** at least one other eligible position exists (computed against
+`myPositions`, a separate uncapped fetch of the caller's full position
+list — not just whatever page of "Mine" happens to be open, since a
+sibling could be on a different page). The Merge modal lists every
+candidate as a checkbox with a running combined-total preview. Burns every
+selected source, mints one new position for the combined amount, starting
+"Pending" until next epoch.
+
+**Move** (`moveStake(positionId, toAgentId)` → `StakeMoved(oldPositionId,
+newPositionId, staker, fromAgentId, toAgentId)`): re-points a position at a
+*different* registered seller agent, keeping its principal and unlock date
+unchanged — this is "which seller does my stake back," not a
+lock/amount change. On-chain requirement: `toAgentId` must be a currently
+registered seller agent (`SellerRegistry`); the contract has no lock-window
+constraint here (unlike merge) since it's a single position, not a
+combination. The contract can apply an admin-settable
+`moveWeightPenaltyBps` to the position's *future* reward weight as a
+disincentive against churning between sellers — **read live on-chain while
+building this** and confirmed it is currently `0`, so the Move modal's copy
+says "0% currently" rather than promising no penalty forever, since it's a
+governance knob that could change. UI gate (`canMove`): same ownership/
+not-listed/not-activation-stake checks as Split, with no minimum amount
+(moving doesn't split anything) — any single eligible position can move.
+The Move modal is a `<select>` of registered sellers (the same `sellers`
+list used for the market's seller filter), excluding the position's
+current agent. Burns the old NFT, mints a new one backing the chosen
+seller, starting "Pending" until next epoch.
+
+**To actually test Merge**, you need two lANTS positions in the same
+wallet, staked with the *same* seller and locked for the *same* number of
+days at the *same* time (so their `stakeStartEpoch`/`stakeEndEpoch` already
+match) — e.g. stake twice in a row into the same seller with the same lock
+length before the epoch rolls over, or use Split first to produce two
+siblings from one position (Split always preserves the original epochs on
+both halves, so a freshly-split pair is always merge-eligible with each
+other). **To test Move**, you only need one non-listed, non-activation
+position and at least two registered sellers to choose between.
+
+### Stakers tab (public, read-only) vs. the IANTS tab
+
+Both tabs read the same underlying `AntseedSellerPools` positions, but for
+different purposes and audiences:
+
+| | IANTS tab | Stakers tab |
+|---|---|---|
+| Shown as | one card per NFT (`lants-market` items) | one row per staker, positions with the same address + lock length combined |
+| Needs a wallet? | only to act (list/buy/split/merge/move) — browsing doesn't | never — fully public |
+| Data source | `/api/lants-market` (Antscan + on-chain + local order book, 90s cache) | `/api/stakers` → local `stake_positions` SQLite table, synced every 5 min alongside the rest of `runHistorySync()` (no live Antscan call on the request path — this was a 2026-09-21 loading-speed fix, see `notes/dev-plan.md`) |
+| Purpose | trade/manage individual positions | "how much is staked, by whom, for how long" at a glance |
+
+They're deliberately two tabs, not one view with a toggle: the IANTS tab's
+unit of interaction is the NFT (you split/merge/move *a specific position*),
+while the Stakers tab's unit is the *person* (their combined stake). Forcing
+both into one table would mean either losing the per-NFT actions or losing
+the clean combined-per-staker numbers.
 
 ---
 

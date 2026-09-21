@@ -248,3 +248,106 @@ export async function splitPosition({ walletClient, account, poolsAddress, posit
   }
   return { hash: receipt.hash, firstPositionId, secondPositionId };
 }
+
+// Only the merge/move entry points -- same pattern as
+// SELLER_POOLS_SPLIT_ABI above, one file per action isn't warranted for
+// two more single-function ABIs.
+const SELLER_POOLS_MERGE_MOVE_ABI = [
+  {
+    name: 'mergeStakes', type: 'function', stateMutability: 'nonpayable',
+    inputs: [{ name: 'positionIds', type: 'uint256[]' }],
+    outputs: [{ name: 'newPositionId', type: 'uint256' }],
+  },
+  {
+    type: 'event', name: 'StakesMerged', anonymous: false,
+    inputs: [
+      { name: 'positionIds', type: 'uint256[]', indexed: false },
+      { name: 'newPositionId', type: 'uint256', indexed: true },
+      { name: 'staker', type: 'address', indexed: true },
+      { name: 'amount', type: 'uint256', indexed: false },
+      { name: 'weightAmount', type: 'uint256', indexed: false },
+    ],
+  },
+  {
+    name: 'moveStake', type: 'function', stateMutability: 'nonpayable',
+    inputs: [{ name: 'positionId', type: 'uint256' }, { name: 'toAgentId', type: 'uint256' }],
+    outputs: [{ name: 'newPositionId', type: 'uint256' }],
+  },
+  {
+    type: 'event', name: 'StakeMoved', anonymous: false,
+    inputs: [
+      { name: 'oldPositionId', type: 'uint256', indexed: true },
+      { name: 'newPositionId', type: 'uint256', indexed: true },
+      { name: 'staker', type: 'address', indexed: true },
+      { name: 'fromAgentId', type: 'uint256', indexed: false },
+      { name: 'toAgentId', type: 'uint256', indexed: false },
+    ],
+  },
+];
+
+/**
+ * Merge 2+ of the caller's own lANTS positions in the SAME seller pool into
+ * one. On-chain requirement (AntseedSellerPools.sol): every position must
+ * share the same agent id and, after closing for restructure, the same
+ * normal start/end epoch -- in practice, positions with the same lock end
+ * date in the same pool. Never pre-validated beyond that here: the chain is
+ * the source of truth for exact eligibility, a mismatched pick just reverts
+ * with the real reason rather than being guessed at client-side. Sources
+ * close next epoch; the merged position inherits their combined amount and
+ * weight and cannot be withdrawn before it takes over their power.
+ */
+export async function mergePositions({ walletClient, account, poolsAddress, positionIds }) {
+  const [{ BrowserProvider, Contract, Interface }] = await Promise.all([import('ethers')]);
+  const network = { chainId: walletClient.chain.id, name: walletClient.chain.name };
+  const provider = new BrowserProvider(walletClient.transport, network);
+  const signer = await provider.getSigner(account);
+  const pools = new Contract(poolsAddress, SELLER_POOLS_MERGE_MOVE_ABI, signer);
+  const tx = await pools.mergeStakes(positionIds);
+  const receipt = await tx.wait();
+
+  const iface = new Interface(SELLER_POOLS_MERGE_MOVE_ABI);
+  let newPositionId = null;
+  for (const log of receipt.logs || []) {
+    if (log.address?.toLowerCase() !== poolsAddress.toLowerCase()) continue;
+    try {
+      const parsed = iface.parseLog(log);
+      if (parsed?.name === 'StakesMerged') {
+        newPositionId = parsed.args.newPositionId.toString();
+        break;
+      }
+    } catch { /* not this event */ }
+  }
+  return { hash: receipt.hash, newPositionId };
+}
+
+/**
+ * Move one lANTS position to a different seller's pool -- re-targets who
+ * the stake counts toward, keeping the same principal and lock end epoch.
+ * Takes effect next epoch; future weight only (never principal) may be
+ * reduced by a configured move penalty (AntseedSellerPools.sol:
+ * moveWeightPenaltyBps). Closes the source and mints a replacement, same
+ * restructure pattern as split/merge.
+ */
+export async function movePosition({ walletClient, account, poolsAddress, positionId, toAgentId }) {
+  const [{ BrowserProvider, Contract, Interface }] = await Promise.all([import('ethers')]);
+  const network = { chainId: walletClient.chain.id, name: walletClient.chain.name };
+  const provider = new BrowserProvider(walletClient.transport, network);
+  const signer = await provider.getSigner(account);
+  const pools = new Contract(poolsAddress, SELLER_POOLS_MERGE_MOVE_ABI, signer);
+  const tx = await pools.moveStake(positionId, toAgentId);
+  const receipt = await tx.wait();
+
+  const iface = new Interface(SELLER_POOLS_MERGE_MOVE_ABI);
+  let newPositionId = null;
+  for (const log of receipt.logs || []) {
+    if (log.address?.toLowerCase() !== poolsAddress.toLowerCase()) continue;
+    try {
+      const parsed = iface.parseLog(log);
+      if (parsed?.name === 'StakeMoved') {
+        newPositionId = parsed.args.newPositionId.toString();
+        break;
+      }
+    } catch { /* not this event */ }
+  }
+  return { hash: receipt.hash, newPositionId };
+}

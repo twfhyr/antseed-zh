@@ -495,6 +495,271 @@ changes needed there. Verified live: 57 sellers now (was 18),
 `antseed-aggregator` present and findable by name search, real earners
 (Apex Ant etc.) still sort first.
 
+## lANTS renamed from "Staking"; new Staking tab for checking pool rewards (2026-09-21)
+
+Followed a long back-and-forth about how staking/pool rewards actually work
+(see backend/server.js's epoch-rewards fix above). User asked to:
+1. Rename the "Staking" tab to reflect what it actually is — a marketplace
+   for trading/managing lANTS position NFTs — since a genuinely separate
+   staking section was about to exist and the two would otherwise collide
+   on the name.
+2. Add that separate section: a place for stakers to check (and claim)
+   their pool rewards specifically.
+
+**Renamed** (label only, not the tab key/URL — `stake` stays `stake` so
+existing `/stake` links don't break): `nav.stake`/`stake.title` "Staking" →
+"lANTS" (en + zh). `stake.blurb` already described it accurately as an
+lANTS NFT marketplace; only the title was stale.
+
+**New "Staking" tab** (`nav.staking`, new tab key `staking`, registered in
+`useTabRouter.js`): `src/components/Staking.jsx`. Zero new backend work —
+`GET /api/rewards?address=` already returns `staker.positions[]` /
+`staker.total`, computed server-side via `@antseed/node`'s
+`previewPoolRewards()` (a real on-chain preview, the same mechanism behind
+the Epoch Sellers tab's Staking Reward column). The claim side (an on-chain
+write, must be signed by the connected browser wallet, so it can't be a
+backend call) reuses the exact index-then-batch-claim sequence
+`ClaimANTS.jsx`'s already-proven (but unmounted/hidden) `claimStaker()`
+already implements: `indexPoolRewards` loop to catch up a pool's lazy
+reward index, then `pendingIndexedStakerReward` per position, then
+`claimStakerRewardsBatch`. Did not un-hide `ClaimANTS.jsx` itself (it
+bundles legacy + usage-reward claims too, which `RewardsANTS.jsx` already
+covers on its own tab — surfacing the whole thing would duplicate that).
+
+Verified: both build targets succeed, `/staking` route serves the app
+shell (200), the new component/strings are present in the shipped bundle.
+**Not verified in an actual browser** — no browser tool has been available
+in any session today; the wallet-connect flow, live position rendering,
+and the real claim transaction are unverified beyond static
+build/route/bundle checks.
+
+## /iants URL rename + Stakers redefined as a public list (2026-09-21, same day)
+
+User follow-up after seeing the "Staking" tab plan: rename the lANTS
+marketplace's URL from `/stake` to `/iants` (and all its sub-tabs), rename
+the just-built personal reward-checker to "Stakers", move it next to
+Sellers, and redefine it entirely -- not a wallet-connected rewards
+dashboard, but a **public list**: address, amount staked, lock length, with
+positions from the same address at the same lock length combined into one
+row (since one lANTS NFT = one staking position, and this view is meant to
+show the staker-level picture "better" than one row per NFT).
+
+**URL rename** (`useTabRouter.js`): `TAB_PATHS.stake` 'stake' -> 'iants'
+(tab *key* unchanged, just its path, so no `activeTab === 'stake'` checks
+needed touching). `MARKET_TAB_PATHS`'s parent-segment check and
+`marketTabHref()` updated to `iants` too. Also renamed the "All NFTs"
+sub-tab's own URL segment from `iants` to `all` -- once the parent itself
+is `/iants`, keeping the sub-tab's segment as `iants` would have produced
+a literal `/iants/iants`; the sub-tab's internal key (`all`) is untouched,
+only its URL segment moved, so StakeANTS.jsx needed zero changes. Verified
+live: `/iants`, `/iants/sales`, `/iants/all` all 200. The old `/stake`
+URL still resolves (200) since the server always serves the app shell for
+any path) but silently falls back to Overview now -- anyone with a
+bookmarked `/stake` loses that specific deep link.
+
+**Stakers redefined, replacing the personal reward-checker built minutes
+earlier same session**: deleted `src/components/Staking.jsx` (the
+wallet-connected pending-reward/claim UI) and wrote
+`src/components/Stakers.jsx` instead -- a plain public, paginated,
+searchable table matching BuyersList.jsx's pattern, no wallet needed.
+New backend `GET /api/stakers` (`computeStakers()` in server.js): reuses
+`fetchOpenStakePositions()` (already used by the epoch-rewards sync,
+no new external calls), excludes `closedAtEpoch != 0` positions (a
+split/merge/move burn -- the exact filter `computeLantsMarket()` already
+applies, and the exact gap noted as still-open in the epoch-rewards
+`positionsByOwner` code a few rounds back in this same file) and the
+mandatory 1-ANT provider-activation stake (`isProviderActivationStake()`,
+same helper the lANTS marketplace's "For sale" view already uses to hide
+it), then groups by `(owner, lockDays)` summing amount in wei (BigInt, no
+float-accumulation error across combined positions) before converting to
+ANTS once. `lockDays` uses the exact same real-epochDuration formula
+`computeLantsMarket()` already uses for the marketplace's own lock-length
+display, not a new guess. 90s in-memory cache, same TTL convention as
+other computed-list endpoints.
+
+Verified live against real data: 8 staker rows total right now; at least
+two genuinely combine multiple positions (`positionCount: 2`) at the same
+lock length, confirming the merge rule works, not just that it compiles.
+Nav moved next to Sellers per the ask. Both builds succeed, `/stakers`
+serves 200, `/api/stakers` returns real combined rows on the live domain.
+**Not verified in an actual browser** -- same caveat as everything today,
+no browser tool available.
+
+## English now the default, zh/en switcher hidden (2026-09-21)
+
+Site owner relayed the founder's decision: hide the language toggle, make
+English the default (was zh), and stop translating new copy going forward.
+This directly reverses `AGENTS.md`'s own written rule ("zh is the default
+locale... new strings need both en.js and zh.js") -- updated that file to
+match, so it stops giving stale instructions to whoever/whatever reads it
+next.
+
+- `src/i18n/index.jsx`: default `lang` 'zh' -> 'en' (both the context's
+  default value and `getInitialLang()`'s fallback). Left the
+  `localStorage`-preference path alone -- a returning visitor with `zh`
+  already saved still gets zh, just can't pick it going forward since the
+  switcher's gone. Not a risk either way: `t()` already falls back to
+  `en.js` for any key missing from `zh.js`, so `zh.js` can now go stale
+  without ever breaking a page (confirmed this is genuinely how it already
+  worked, not something added for this change).
+- `src/components/Header.jsx`: removed the switcher button entirely (was
+  toggling `lang` between 'zh'/'en'). `setLang` stays exported from the
+  context (cheap, unused, harmless) in case something needs to flip it
+  later without another data-flow change.
+- `index.html`: `<html lang="zh">` -> `lang="en"`; fixed a stale comment
+  above the og/twitter tags that used to explain why they're English
+  ("the app UI defaults to zh") -- that reasoning no longer applies now
+  that English is the default everywhere, though the tags themselves
+  didn't need to change (they were already English).
+- `antseed-zh/AGENTS.md`: rewrote the i18n bullet -- new strings only need
+  `en.js` now; explicitly says not to add new `zh.js` entries and not to
+  delete the existing ones either.
+
+Verified on the real domain, not just the build: `curl` of the live page
+shows `lang="en"`, and the actual served JS bundle (not just what got
+built locally) has no "Switch language" string in it.
+
+## Loading speed pass: /iants and Stakers (2026-09-21, user made this a core design principle)
+
+User asked why /iants (the lANTS marketplace) was slow, guessed it might be
+the per-card generated SVG art, and separately asked whether Stakers could
+be backed by a local DB or the indexer instead of live calls.
+
+**Ruled out the SVG theory with evidence, not just assertion**: checked
+`nftPalette()` (a few modulo ops) and the `<svg>` markup itself -- trivial,
+deterministic, no filters/blur, negligible even across the whole page.
+Added temporary timing instrumentation to `/api/lants-market` instead of
+guessing, and found the real cause:
+
+**Real bug, root cause of every /iants load being slow**: `ensureIds`
+parsing did `String(req.query.ensureIds || '').split(',').map(Number)
+.filter(Number.isFinite)`. `''.split(',')` is `['']` (one element, not
+zero), and `Number('')` is `0` -- a *finite* number, not `NaN` -- so an
+absent/empty `ensureIds` query param produced `[0]`, not `[]`. That made
+`ensureIds.length > 0` true on every single request with no `ensureIds` at
+all, which made `forceFresh` true unconditionally, which bypassed the
+already-correctly-implemented 90s cache *entirely* -- every page load was
+a full blocking Antscan + on-chain refresh (1.8-6s observed live) instead
+of an instant cache hit. Fixed by filtering out empty segments before
+mapping to `Number`. Verified on the live domain: 2000-2300ms -> 40-70ms,
+a ~30-40x improvement, confirmed with real requests before and after, not
+just reasoning about the fix.
+
+**Stakers**: was calling `fetchOpenStakePositions()` (Antscan) live behind
+a 90s in-memory cache, so every cache-miss request (up to once per 90s,
+plus always right after a restart) blocked on a real GraphQL round-trip
+(70ms-545ms observed). User asked to check feasibility of a local DB or
+the indexer instead:
+- **Indexer route, evaluated and technically feasible but not done**:
+  `AntseedSellerPools.sol` emits `StakeCreated`/`StakeMoved`/`StakeSplit`/
+  `StakesMerged`/`StakeWithdrawn`/`LockExtended` events that carry
+  everything a Stakers row needs (owner, amount, lock epochs) directly --
+  no extra on-chain reads needed, unlike the lANTS trade-price decoding
+  work earlier this session. Would fully remove the Antscan dependency for
+  this specific feature and give real-time-accurate data instead of a
+  5-min-stale snapshot. Not built: given the position count is tiny and
+  the DB-cache option below already gets this to near-zero latency, adding
+  five new event handlers to the indexer for a small remaining freshness
+  gain wasn't judged worth the risk today, on top of everything else this
+  session already changed there.
+- **Built instead**: new local `stake_positions` table (`database.js`),
+  populated by `syncStakePositions()` (`sync-history.js`), piggybacking on
+  the *existing* 5-minute `runHistorySync()` cadence -- no new poller, no
+  extra Antscan load. `computeStakers()`/`GET /api/stakers` now reads this
+  table directly (synchronous, no cache needed at all, nothing to go
+  stale-then-refresh). Verified on the live domain: 70ms-545ms -> 2-11ms,
+  same real data (identical 8 rows, same combined-position counts) both
+  before and after.
+
+Neither fix touched any frontend file -- both are backend-only, so nothing
+needed rebuilding, just the dashboard restart to load the new backend code.
+
+## 2026-09-21: IANTS tab moved next to Stakers; Merge + Move added to Mine
+
+Three-part ask: (1) move the lANTS marketplace nav tab to sit next to
+Stakers instead of after $ANTS Info, (2) relabel it "IANTS" (uppercase I)
+since it and Stakers are now presented as a pair, (3) read the real
+`AntseedSellerPools.sol` contract functions for combining positions into
+one NFT or moving a position to a different seller, and add "Merge" and
+"Move" actions to the Mine sub-tab, matching the existing Split feature's
+pattern end to end.
+
+**Contract research first** (`/root/tian/antseed/packages/contracts/sellers/
+AntseedSellerPools.sol`), verified against the live contract on Base
+(`0x8bf4...0652`), not just the source:
+- `mergeStakes(uint256[] positionIds)`: needs 2+ positions, all owned by
+  the caller, all the same `agentId`, and — critically — all must resolve
+  to the *exact same* restructured start/end epoch once each is closed
+  (`_closePositionForRestructure`), or the whole call reverts
+  (`InvalidValue`). In practice this only holds for positions that already
+  share both `stakeStartEpoch` and `stakeEndEpoch`, so the frontend gates
+  merge candidates on "same seller + identical lock window" rather than
+  trying to replicate the restructure math client-side — the same
+  same-locked-time grouping the Stakers page already uses. Burns all
+  sources, mints one new position, emits `StakesMerged(positionIds,
+  newPositionId, staker, amount, weightAmount)`.
+- `moveStake(positionId, toAgentId)` / `moveStakes(ids[], toAgentId)`:
+  needs ownership and a registered target seller agent
+  (`_requireRegisteredSellerAgent`). Keeps principal and unlock date
+  unchanged; only the seller it backs changes. Can apply a protocol-wide
+  `moveWeightPenaltyBps` to the position's future reward weight — read
+  live on-chain before writing the UI copy: currently **0** (default,
+  unchanged since deploy), so the Move modal states "0% currently" rather
+  than promising no penalty ever, since it's an admin-settable value.
+  Burns the old NFT, mints a new one, emits `StakeMoved(oldPositionId,
+  newPositionId, staker, fromAgentId, toAgentId)`.
+
+**Built, following the existing Split feature's exact pattern**
+(`splitPosition()` in `src/lib/listLants.js` was the template throughout):
+- `src/lib/listLants.js`: added `SELLER_POOLS_MERGE_MOVE_ABI` (minimal ABI
+  for `mergeStakes`/`moveStake` + their events), `mergePositions()` and
+  `movePosition()` — same BrowserProvider+signer+wait+parse-logs shape as
+  `splitPosition()`, returning the new position id(s) parsed straight out
+  of the transaction receipt's `StakesMerged`/`StakeMoved` log.
+- `src/components/StakeANTS.jsx`:
+  - New `myPositions` state: the caller's full position list (uncapped by
+    the active tab/page/filter, `pageSize=100`), refetched on wallet
+    change and after a successful merge/move. Needed because merge
+    siblings can live outside whatever page of "Mine" happens to be open.
+  - `mergeCandidates(myPositions, p)`: pure filter implementing the
+    same-agent + same-lock-window rule above, excluding listed positions
+    and 1-ANT provider-activation stakes (same exclusions as Split).
+  - `doMerge`/`doMove` handlers: identical shape to `doSplit` — validate
+    wallet/pool address, validate the form, call the lib function, walk
+    through `phase` states (`merging`/`moving` → `done`/`error`), then
+    force a fresh on-chain read of every touched id via `ensureIds` (the
+    new position(s) won't be in Antscan's cache yet — same reasoning as
+    Split's own comment) and refresh `myPositions`.
+  - `canMerge`/`canMove` gating added to the `LantsNftCard` call site,
+    computed the same way as the existing `canSplit`/`canList`/`canOffer`
+    props (ownership + not listed + not an activation stake; merge
+    additionally requires at least one real candidate).
+  - Two new buttons on `LantsNftCard` next to the existing Split button,
+    and two new modals, `MergeModal` (checkbox list of eligible sibling
+    positions, running combined-total preview) and `MoveModal` (a
+    `<select>` of registered sellers excluding the position's current
+    one, reusing the `sellers` state already loaded for the seller-filter
+    dropdown) — both modeled directly on `SplitModal`.
+  - Mounted `<MergeModal>`/`<MoveModal>` next to the existing
+    `<SplitModal>` at the bottom of the component.
+- `src/i18n/en.js` (zh.js untouched, per the English-default/no-new-
+  translations policy above): added `stake.merge*`/`stake.move*` keys.
+  The two pre-existing `nav.stake`/`stake.title` keys were *changed*
+  (`'lANTS'` → `'IANTS'`), not added, so both en.js and zh.js were updated
+  for that one — it's a label edit, not a new translation.
+- `src/App.jsx`: moved the `stake` tab's `<a>`/render block to sit
+  immediately after `stakers` (previously it came after `$ANTS Info`), and
+  updated its neighboring comment block to describe Merge/Move and the
+  new position next to Stakers.
+
+**Verified live, no backend restart needed** (frontend-only change; the
+Express static handler in `server.js` (`staticDirFor`/`express.static`)
+reads `dist`/`dist-root` off disk per-request, so a rebuild alone is
+enough): ran `npm run build` and `BUILD_TARGET=root npm run build`, then
+confirmed the live site (`antseed-zh.com`) was already serving the new
+bundle hash (`index-Cb4amrVZ.js`) and that it contains both `IANTS` and
+the new `stake.merge*` i18n keys.
+
 ## Open questions (no obvious right answer — flag to the user, don't guess)
 
 - Should the admin routes (`/api/admin/sync`, `/api/admin/force-*-sync`)

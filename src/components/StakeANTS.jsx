@@ -15,7 +15,7 @@ import { useI18n } from '../i18n/index.jsx';
 import { useMarketTabRouter, marketTabHref } from '../hooks/useTabRouter';
 import {
   createAndPostListing, fulfillListing, cancelListing, makeOffer, cancelOffer, acceptOffer,
-  splitPosition, isProviderActivationStake,
+  splitPosition, mergePositions, movePosition, isProviderActivationStake,
 } from '../lib/listLants';
 
 const truncateAddress = (addr) => (addr ? `${addr.slice(0, 6)}...${addr.slice(-4)}` : '');
@@ -61,6 +61,23 @@ function sellerForAgent(sellers, agentId) {
   return sellers.find((s) => s.agentId != null && String(s.agentId) === id) || null;
 }
 
+// mergeStakes() on-chain requires every source position to land on the exact
+// same restructured start/end epoch after closing, which in practice only
+// happens for positions that already share both epochs (same agent, same
+// lock window) -- this mirrors the Stakers page's own "same locked time"
+// grouping rather than trying to replicate the contract's restructure math
+// client-side. Positions that are listed or are 1-ANT provider-activation
+// stakes can't be merged (same rule as split/list).
+function mergeCandidates(myPositions, p) {
+  if (!p) return [];
+  return myPositions.filter((o) => o.id !== p.id
+    && o.agentId === p.agentId
+    && o.stakeStartEpoch === p.stakeStartEpoch
+    && o.stakeEndEpoch === p.stakeEndEpoch
+    && !o.listed
+    && !isProviderActivationStake(o.amount));
+}
+
 function positionState(p, currentEpoch) {
   if (p.withdrawn) return 'withdrawn';
   if (p.closedAtEpoch) return 'closed';
@@ -79,7 +96,7 @@ function StakeANTS() {
   const [market, setMarket] = useState(null);
   const [marketLoading, setMarketLoading] = useState(true);
   const [marketError, setMarketError] = useState(false);
-  const [marketTab, setMarketTab] = useMarketTabRouter(); // 'listed' | 'all' | 'mine' -- URL-driven, see /stake/sales|iants|mine
+  const [marketTab, setMarketTab] = useMarketTabRouter(); // 'listed' | 'all' | 'mine' -- URL-driven, see /iants/sales|all|mine
   const [marketPage, setMarketPage] = useState(1);
   const [marketSort, setMarketSort] = useState('id');
   const [marketFilters, setMarketFilters] = useState({ agentId: '', minAmount: '', maxAmount: '', minLockDays: '', maxLockDays: '' });
@@ -93,6 +110,8 @@ function StakeANTS() {
   const [offersById, setOffersById] = useState({}); // tokenId -> { loading, items, error }
   const [offerActionState, setOfferActionState] = useState(null); // { offerId, phase, message }
   const [splitForm, setSplitForm] = useState(null); // { id, amount, phase, message, result }
+  const [mergeForm, setMergeForm] = useState(null); // { position, selectedIds: Set, phase, message, result }
+  const [moveForm, setMoveForm] = useState(null); // { position, toAgentId, phase, message, result }
   const [trades, setTrades] = useState(null);
   const [tradesLoading, setTradesLoading] = useState(false);
   const [tradesError, setTradesError] = useState(false);
@@ -104,6 +123,19 @@ function StakeANTS() {
   useEffect(() => {
     fetchSellers().then((data) => setSellers(data.filter((s) => s.agentId))).catch(() => {});
   }, []);
+
+  // The caller's full position list (uncapped by the active tab/page/filters)
+  // -- needed to find merge siblings even when the sibling isn't on the
+  // current "Mine" page. Refetched whenever the wallet changes or a
+  // merge/move actually completes (see doMerge/doMove).
+  const [myPositions, setMyPositions] = useState([]);
+  const refreshMyPositions = useCallback(() => {
+    if (!address) { setMyPositions([]); return; }
+    fetchLantsMarket({ owner: address, pageSize: 100, sort: 'id' })
+      .then((data) => setMyPositions(data?.items || []))
+      .catch(() => {});
+  }, [address]);
+  useEffect(() => { refreshMyPositions(); }, [refreshMyPositions]);
 
   const marketQuery = useMemo(() => ({
     page: marketPage,
@@ -274,6 +306,61 @@ function StakeANTS() {
       fetchLantsMarket({ ...marketQuery, wait: '1', ensureIds }).then(setMarket).catch(() => {});
     } catch (e) {
       setSplitForm((f) => ({ ...f, phase: 'error', message: e.shortMessage || e.message }));
+    }
+  };
+
+  const doMerge = async (position) => {
+    const poolsAddr = market?.contract;
+    const selected = [...(mergeForm?.selectedIds || [])];
+    if (!walletClient || !address || !poolsAddr) {
+      setMergeForm((f) => ({ ...(f || { position, selectedIds: new Set() }), phase: 'error', message: t('stake.buyNeedWallet') }));
+      return;
+    }
+    if (selected.length === 0) {
+      setMergeForm((f) => ({ ...f, phase: 'error', message: t('stake.mergePickAtLeastOne') }));
+      return;
+    }
+    try {
+      setMergeForm((f) => ({ ...f, phase: 'merging', message: t('stake.merging') }));
+      const result = await mergePositions({
+        walletClient, account: address, poolsAddress: poolsAddr,
+        positionIds: [position.id, ...selected],
+      });
+      setMergeForm({ position, selectedIds: new Set(selected), phase: 'done', message: t('stake.mergeOk'), result });
+      // Same reason as doSplit's ensureIds: the new position won't be in
+      // Antscan's cache yet, and neither should the merged-away sources
+      // still show as open -- force a real on-chain read of all of them.
+      const ensureIds = [position.id, ...selected, result.newPositionId].filter((x) => x != null).join(',');
+      fetchLantsMarket({ ...marketQuery, wait: '1', ensureIds }).then(setMarket).catch(() => {});
+      refreshMyPositions();
+    } catch (e) {
+      setMergeForm((f) => ({ ...f, phase: 'error', message: e.shortMessage || e.message }));
+    }
+  };
+
+  const doMove = async (position) => {
+    const poolsAddr = market?.contract;
+    const toAgentId = moveForm?.toAgentId;
+    if (!walletClient || !address || !poolsAddr) {
+      setMoveForm((f) => ({ ...(f || { position, toAgentId: null }), phase: 'error', message: t('stake.buyNeedWallet') }));
+      return;
+    }
+    if (!toAgentId) {
+      setMoveForm((f) => ({ ...f, phase: 'error', message: t('stake.movePickProvider') }));
+      return;
+    }
+    try {
+      setMoveForm((f) => ({ ...f, phase: 'moving', message: t('stake.moving') }));
+      const result = await movePosition({
+        walletClient, account: address, poolsAddress: poolsAddr,
+        positionId: position.id, toAgentId,
+      });
+      setMoveForm({ position, toAgentId, phase: 'done', message: t('stake.moveOk'), result });
+      const ensureIds = [position.id, result.newPositionId].filter((x) => x != null).join(',');
+      fetchLantsMarket({ ...marketQuery, wait: '1', ensureIds }).then(setMarket).catch(() => {});
+      refreshMyPositions();
+    } catch (e) {
+      setMoveForm((f) => ({ ...f, phase: 'error', message: e.shortMessage || e.message }));
     }
   };
 
@@ -529,6 +616,10 @@ function StakeANTS() {
                       offerActionState={offerActionState}
                       setSplitForm={setSplitForm}
                       canSplit={!!(isConnected && address && p.owner && address.toLowerCase() === p.owner.toLowerCase() && !p.listed && !isProviderActivationStake(p.amount) && p.amount > 1)}
+                      setMergeForm={setMergeForm}
+                      mergeCandidates={mergeCandidates(myPositions, p)}
+                      setMoveForm={setMoveForm}
+                      canMove={!!(isConnected && address && p.owner && address.toLowerCase() === p.owner.toLowerCase() && !p.listed && !isProviderActivationStake(p.amount))}
                     />
                   ))}
                 </div>
@@ -552,6 +643,8 @@ function StakeANTS() {
       <ListModal form={listForm} setForm={setListForm} onConfirm={doList} t={t} />
       <OfferModal form={offerForm} setForm={setOfferForm} onConfirm={doMakeOffer} t={t} />
       <SplitModal form={splitForm} setForm={setSplitForm} onConfirm={doSplit} t={t} />
+      <MergeModal form={mergeForm} setForm={setMergeForm} onConfirm={doMerge} t={t} />
+      <MoveModal form={moveForm} setForm={setMoveForm} onConfirm={doMove} sellers={sellers} t={t} />
     </div>
   );
 }
@@ -560,8 +653,9 @@ function LantsNftCard({
   position: p, seller, currentEpoch, genesis, epochDuration, t, lang, listing, setListForm, canList, onBuy, canBuy, buyState,
   activation, isOwner, address, onCancel, cancelState, setOfferForm, canOffer,
   offersOpen, offers, onToggleOffers, onAcceptOffer, onCancelOffer, offerActionState,
-  setSplitForm, canSplit,
+  setSplitForm, canSplit, setMergeForm, mergeCandidates, setMoveForm, canMove,
 }) {
+  const canMerge = isOwner && !p.listed && !isProviderActivationStake(p.amount) && (mergeCandidates?.length || 0) > 0;
   const sellerName = seller?.name || (p.agentId != null ? t('stake.agent', { id: p.agentId }) : '—');
   const state = (p.stakeStartEpoch != null && p.stakeEndEpoch != null) ? positionState(p, currentEpoch) : null;
   const dates = epochDates(p.stakeStartEpoch, p.stakeEndEpoch, genesis, epochDuration);
@@ -667,6 +761,24 @@ function LantsNftCard({
               onClick={() => setSplitForm({ position: p, amount: '', phase: null, message: null, result: null })}
             >
               {t('stake.splitPosition')}
+            </button>
+          )}
+          {canMerge && setMergeForm && (
+            <button
+              type="button"
+              className="lants-nft__listbtn"
+              onClick={() => setMergeForm({ position: p, candidates: mergeCandidates, selectedIds: new Set(), phase: null, message: null, result: null })}
+            >
+              {t('stake.mergePosition')}
+            </button>
+          )}
+          {canMove && setMoveForm && (
+            <button
+              type="button"
+              className="lants-nft__listbtn"
+              onClick={() => setMoveForm({ position: p, toAgentId: '', phase: null, message: null, result: null })}
+            >
+              {t('stake.movePosition')}
             </button>
           )}
         </div>
@@ -853,6 +965,101 @@ function SplitModal({ form, setForm, onConfirm, t }) {
         {form.result?.firstPositionId != null && (
           <div style={{ gridColumn: '1 / -1', color: 'var(--text-secondary)', fontSize: '0.8rem' }}>
             {t('stake.splitResult', { first: form.result.firstPositionId, second: form.result.secondPositionId })}
+          </div>
+        )}
+      </div>
+    </ActionModal>
+  );
+}
+
+function MergeModal({ form, setForm, onConfirm, t }) {
+  if (!form) return null;
+  const busy = form.phase === 'merging';
+  const p = form.position;
+  const candidates = form.candidates || [];
+  const toggle = (id) => {
+    const next = new Set(form.selectedIds);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    setForm({ ...form, selectedIds: next, phase: null });
+  };
+  const selectedTotal = candidates
+    .filter((c) => form.selectedIds.has(c.id))
+    .reduce((sum, c) => sum + (c.amount || 0), 0) + (p.amount || 0);
+  return (
+    <ActionModal titleKey="stake.mergePosition" position={p} onClose={() => setForm(null)} t={t}>
+      <div className="lants-nft__listform">
+        {candidates.length === 0 && (
+          <div style={{ gridColumn: '1 / -1', color: 'var(--text-secondary)', fontSize: '0.8125rem' }}>
+            {t('stake.mergeNoCandidates')}
+          </div>
+        )}
+        {candidates.map((c) => (
+          <label key={c.id} style={{ gridColumn: '1 / -1', display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 400 }}>
+            <input type="checkbox" checked={form.selectedIds.has(c.id)} onChange={() => toggle(c.id)} />
+            {t('stake.mergeCandidateRow', { id: c.id, amount: formatAnts(c.amount) })}
+          </label>
+        ))}
+        <button type="button" onClick={() => onConfirm(p)} disabled={busy || candidates.length === 0}>
+          {busy ? <Loader2 size={12} className="spin" /> : null}
+          {t('stake.mergeConfirm')}
+        </button>
+        <button type="button" onClick={() => setForm(null)}>{t('stake.listCancel')}</button>
+        {form.selectedIds.size > 0 && (
+          <div style={{ gridColumn: '1 / -1', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+            {t('stake.mergeHint', { total: formatAnts(selectedTotal) })}
+          </div>
+        )}
+        {form.message && (
+          <div style={{ color: form.phase === 'error' ? 'var(--danger)' : 'var(--text-secondary)', gridColumn: '1 / -1' }}>
+            {form.message}
+          </div>
+        )}
+        {form.result?.newPositionId != null && (
+          <div style={{ gridColumn: '1 / -1', color: 'var(--text-secondary)', fontSize: '0.8rem' }}>
+            {t('stake.mergeResult', { id: form.result.newPositionId })}
+          </div>
+        )}
+      </div>
+    </ActionModal>
+  );
+}
+
+function MoveModal({ form, setForm, onConfirm, sellers, t }) {
+  if (!form) return null;
+  const busy = form.phase === 'moving';
+  const p = form.position;
+  const targets = sellers.filter((s) => String(s.agentId) !== String(p.agentId));
+  return (
+    <ActionModal titleKey="stake.movePosition" position={p} onClose={() => setForm(null)} t={t}>
+      <div className="lants-nft__listform">
+        <label>
+          {t('stake.moveTarget')}
+          <select
+            value={form.toAgentId}
+            onChange={(e) => setForm({ ...form, toAgentId: e.target.value, phase: null })}
+          >
+            <option value="">{t('stake.moveChooseProvider')}</option>
+            {targets.map((s) => (
+              <option key={s.agentId} value={s.agentId}>{s.name || t('stake.agent', { id: s.agentId })}</option>
+            ))}
+          </select>
+        </label>
+        <button type="button" onClick={() => onConfirm(p)} disabled={busy}>
+          {busy ? <Loader2 size={12} className="spin" /> : null}
+          {t('stake.moveConfirm')}
+        </button>
+        <button type="button" onClick={() => setForm(null)}>{t('stake.listCancel')}</button>
+        <div style={{ gridColumn: '1 / -1', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+          {t('stake.moveHint')}
+        </div>
+        {form.message && (
+          <div style={{ color: form.phase === 'error' ? 'var(--danger)' : 'var(--text-secondary)', gridColumn: '1 / -1' }}>
+            {form.message}
+          </div>
+        )}
+        {form.result?.newPositionId != null && (
+          <div style={{ gridColumn: '1 / -1', color: 'var(--text-secondary)', fontSize: '0.8rem' }}>
+            {t('stake.moveResult', { id: form.result.newPositionId })}
           </div>
         )}
       </div>
