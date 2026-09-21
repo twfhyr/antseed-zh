@@ -269,6 +269,7 @@ export default {
   'table.deposited': '存入额',
   'table.requests': '请求数',
   'table.firstSeen': '首次出现',
+  'table.lastSeen': '最近活跃',
   'table.searchAddress': '按地址搜索...',
   'table.searchSellers': '搜索卖家...',
   'table.noBuyers': '未找到匹配的买家。',
@@ -284,6 +285,17 @@ export default {
   'tokenomics.refreshingHint': '正在加载最新链上数据，当前显示的是上次缓存的数值。',
   'table.showingOf': '显示 {shown} / {total}',
   'table.loadingMore': '加载更多…',
+
+  // 买家活动弹窗（点击"买家"标签页中的一行）——来自 Antscan 的真实账单和用量数据
+  'buyerActivity.title': '活动详情',
+  'buyerActivity.hint': '点击某一行查看该买家的完整活动记录。',
+  'buyerActivity.loading': '正在加载活动数据…',
+  'buyerActivity.notFound': '该地址暂无已同步的活动数据。',
+  'buyerActivity.withdrawnUsdc': '已提取 (USDC)',
+  'buyerActivity.inputTokens': '输入 Token 数',
+  'buyerActivity.outputTokens': '输出 Token 数',
+  'buyerActivity.channels': '通道数',
+  'buyerActivity.uniqueSellers': '交易过的卖家数',
 
   // 当前纪元子标签页（买家/卖家）— 详见 notes/epoch-features-plan.md
   'tabs.total': '总计',

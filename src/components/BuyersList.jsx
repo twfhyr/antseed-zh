@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Search, Loader2, Info } from 'lucide-react';
-import { fetchHistoryBuyers, fetchEpochBuyers } from '../api';
+import { Search, Loader2, Info, X } from 'lucide-react';
+import { fetchHistoryBuyers, fetchEpochBuyers, fetchBuyerActivity } from '../api';
 import { useI18n } from '../i18n/index.jsx';
 
 const PAGE_SIZE = 100;
@@ -26,6 +26,16 @@ function sumWei(a, b) {
   return ((a != null ? BigInt(a) : 0n) + (b != null ? BigInt(b) : 0n)).toString();
 }
 
+function num(v) {
+  if (v == null) return '—';
+  return Number(v).toLocaleString();
+}
+
+function fmtDate(unixSeconds) {
+  if (!unixSeconds) return '—';
+  return new Date(Number(unixSeconds) * 1000).toISOString().split('T')[0];
+}
+
 /** Used only in table column headers here, which sit at the top of
  *  `.table-container` (clips overflow for its rounded corners) — an
  *  upward-popping tooltip has nowhere to go there and gets cut off, so this
@@ -37,6 +47,73 @@ function InfoTip({ text }) {
       <Info size={12} />
       <span className="stat-info-tooltip stat-info-tooltip--below" role="tooltip">{text}</span>
     </span>
+  );
+}
+
+function ActivityRow({ label, value }) {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', padding: '0.5rem 0', borderBottom: '1px solid var(--border)' }}>
+      <span style={{ color: 'var(--text-secondary)' }}>{label}</span>
+      <span className="mono">{value}</span>
+    </div>
+  );
+}
+
+/**
+ * Every field here is real, already-synced Antscan data from the
+ * `buyers_onchain` table (see backend/sync-history.js) -- the same table
+ * the Total tab's row already came from, just the full row instead of the
+ * curated handful of columns the table shows. Never fabricated: a field
+ * Antscan hasn't populated shows as "—", and an address with no indexed
+ * activity at all shows the notFound message rather than a table of zeros.
+ */
+function BuyerActivityModal({ address, onClose, t }) {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    fetchBuyerActivity(address)
+      .then((row) => { if (!cancelled) setData(row); })
+      .catch((e) => { if (!cancelled) setError(e.message); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [address]);
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <h2>{t('buyerActivity.title')} — {short(address)}</h2>
+          <button type="button" className="modal-close" onClick={onClose}>
+            <X size={18} />
+          </button>
+        </div>
+        <div className="modal-body">
+          {loading ? (
+            <div className="empty-state">{t('buyerActivity.loading')}</div>
+          ) : error ? (
+            <div className="empty-state">{t('buyerActivity.notFound')}</div>
+          ) : (
+            <>
+              <ActivityRow label={t('table.spentUsdc')} value={usd(data.spent_usdc != null ? Number(data.spent_usdc) / 1e6 : null)} />
+              <ActivityRow label={t('table.deposited')} value={usd(data.deposited_usdc != null ? Number(data.deposited_usdc) / 1e6 : null)} />
+              <ActivityRow label={t('buyerActivity.withdrawnUsdc')} value={usd(data.withdrawn_usdc != null ? Number(data.withdrawn_usdc) / 1e6 : null)} />
+              <ActivityRow label={t('table.requests')} value={num(data.request_count)} />
+              <ActivityRow label={t('buyerActivity.inputTokens')} value={num(data.input_tokens)} />
+              <ActivityRow label={t('buyerActivity.outputTokens')} value={num(data.output_tokens)} />
+              <ActivityRow label={t('buyerActivity.channels')} value={num(data.channel_count)} />
+              <ActivityRow label={t('buyerActivity.uniqueSellers')} value={num(data.unique_sellers)} />
+              <ActivityRow label={t('table.firstSeen')} value={fmtDate(data.first_seen_at)} />
+              <ActivityRow label={t('table.lastSeen')} value={fmtDate(data.last_seen_at)} />
+            </>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -64,6 +141,7 @@ function BuyersList() {
   // Guards against double-firing while a page request is in flight; state
   // updates are async, so `loadingMore` alone can let two fetches through.
   const inFlight = useRef(false);
+  const [activeAddress, setActiveAddress] = useState(null); // row clicked -> activity modal
 
   const fetchPage = mode === 'epoch' ? fetchEpochBuyers : fetchHistoryBuyers;
 
@@ -190,7 +268,7 @@ function BuyersList() {
           ) : error ? (
             <tr><td colSpan={colSpan}><div className="empty-state">{error}</div></td></tr>
           ) : buyers.map((buyer) => (
-            <tr key={buyer.address}>
+            <tr key={buyer.address} onClick={() => setActiveAddress(buyer.address)} style={{ cursor: 'pointer' }} title={t('buyerActivity.hint')}>
               <td>
                 <div className="user-cell">
                   <div className="avatar">{(buyer.address || '??').slice(2, 4).toUpperCase()}</div>
@@ -238,6 +316,9 @@ function BuyersList() {
       </table>
       {/* Scroll sentinel — observed to trigger the next page. */}
       {!loading && !error && hasMore && <div ref={sentinelRef} style={{ height: 1 }} />}
+      {activeAddress && (
+        <BuyerActivityModal address={activeAddress} onClose={() => setActiveAddress(null)} t={t} />
+      )}
     </div>
   );
 }

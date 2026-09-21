@@ -286,6 +286,53 @@ listed so the reasoning doesn't get lost:
   later, not surfaced" pattern `Header.jsx` used before this round
   re-added them.
 
+## Buyer activity detail on click (new, 2026-09-21 session)
+
+User asked to show a buyer's bills + tokens used when clicking a row on the
+Buyers tab. Zero new data needed: `buyers_onchain` (synced from Antscan by
+`syncBuyersOnchain()`) already had `spent_usdc`/`deposited_usdc`/
+`withdrawn_usdc`/`request_count`/`input_tokens`/`output_tokens`/
+`channel_count`/`unique_sellers`/`first_seen_at`/`last_seen_at` per address
+— the Buyers tab's Total-mode row was just only ever rendering a curated
+few of those columns (per `REWRITE_PLAN.md`'s curation-over-completeness
+principle for the *list*), never exposing the rest anywhere.
+
+- New `GET /api/history/buyer/:address` (`readBuyerOnchain()` in
+  `backend/sync-history.js`) — single-row lookup, 404 (not an empty
+  object) for an address Antscan has never indexed, so the UI can
+  distinguish "no data yet" from "real zeros".
+- `BuyersList.jsx`: rows are now clickable (either sub-tab — this is
+  lifetime activity, not epoch-scoped) and open a `BuyerActivityModal`
+  (reuses the existing `.modal-overlay`/`.modal-content` shell from
+  `StakeANTS.jsx`'s list/offer/split modals) showing all ten fields, real
+  data only, `—` for anything null.
+- New i18n keys in both `en.js`/`zh.js` (`buyerActivity.*` + `table.lastSeen`).
+- **Forgot to restart `antseed-zh-dashboard.service` after editing
+  `backend/server.js`/`sync-history.js`** — the new route silently fell
+  through to the SPA catch-all (served `index.html`, 200, for every
+  request including a nonexistent address) until the restart. Caught by
+  actually testing against the real domain, not just checking the build
+  succeeded — worth remembering: backend changes need a process restart,
+  unlike a frontend rebuild which the running server picks up from disk
+  with no restart at all. Verified working after restarting: a real
+  address returns its real numbers, a nonexistent one 404s.
+- Rebuilt and shipped both `dist`/`dist-root` targets for this (running
+  `npm run build` to sanity-check the frontend change already went live
+  for the `/zh/` target before dist-root was rebuilt to match — both
+  targets are consistent now).
+
+## seed-pinned-peer.py dead reference removed (same session)
+
+Confirmed (again, `find /`) this file referenced by `antseed-buyer-110/
+heal/luck`'s `start-buyer.sh` scripts doesn't exist anywhere on the host —
+always silently failed via `|| true`, never actually seeded anything.
+Removed the whole `if [ "$PINNED_PEER" = apex ]; then python3
+seed-pinned-peer.py ...; fi` block from all three scripts (this lived
+outside the antseed-zh git repo, in each buyer's own `/root/.antseed-buyer-*`
+data dir — not something `git status` here would show). Verified via a real
+`systemctl restart antseed-buyer-heal` that the buyer still comes up
+correctly pinned and serving real requests without it.
+
 ## Open items
 
 ### Verify in a real browser (couldn't be done headlessly this session)

@@ -176,6 +176,13 @@ export async function fetchHistoryBuyers({ limit = 100, offset = 0, q = '' } = {
   return get(`/history/buyers?${query}`);
 }
 
+/** One buyer's full activity (spend, deposits/withdrawals, requests,
+ *  input/output tokens, channel count, unique sellers, first/last seen) --
+ *  the detail shown when a row is clicked on the Buyers tab. */
+export async function fetchBuyerActivity(address) {
+  return get(`/history/buyer/${encodeURIComponent(address)}`);
+}
+
 export async function fetchHistorySellers(limit = 200) {
   return get(`/history/sellers?limit=${limit}`);
 }

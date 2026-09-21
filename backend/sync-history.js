@@ -250,6 +250,16 @@ export function readBuyersOnchain(limit = 2000, offset = 0, q = '') {
   ).all(...args);
 }
 
+/** One buyer's full real activity row (spend, deposits/withdrawals, request
+ *  count, input/output tokens, channel count, unique sellers, first/last
+ *  seen) -- the "bills + tokens used" detail behind a click on the Buyers
+ *  tab. Same table `readBuyersOnchain` already lists from; this is just a
+ *  single-row lookup by address instead of a page. */
+export function readBuyerOnchain(address) {
+  return db.prepare('SELECT * FROM buyers_onchain WHERE address = ?')
+    .get(String(address).toLowerCase()) ?? null;
+}
+
 /** Total indexed buyers (matching `q`, if given), for pagination. */
 export function countBuyersOnchain(q = '') {
   if (q) {

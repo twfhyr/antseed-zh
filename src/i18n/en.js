@@ -272,6 +272,7 @@ export default {
   'table.deposited': 'Deposited',
   'table.requests': 'Requests',
   'table.firstSeen': 'First Seen',
+  'table.lastSeen': 'Last Seen',
   'table.searchAddress': 'Search by address...',
   'table.searchSellers': 'Search sellers...',
   'table.noBuyers': 'No buyers found matching your search.',
@@ -287,6 +288,18 @@ export default {
   'tokenomics.refreshingHint': 'Showing the last cached values while fresh on-chain data loads.',
   'table.showingOf': 'showing {shown} of {total}',
   'table.loadingMore': 'Loading more…',
+
+  // Buyer activity modal (click a row on the Buyers tab) — real per-address
+  // bills + token usage, synced from Antscan (see buyers_onchain table).
+  'buyerActivity.title': 'Activity',
+  'buyerActivity.hint': 'Click a row to see this buyer\'s full activity.',
+  'buyerActivity.loading': 'Loading activity…',
+  'buyerActivity.notFound': 'No indexed activity for this address yet.',
+  'buyerActivity.withdrawnUsdc': 'Withdrawn (USDC)',
+  'buyerActivity.inputTokens': 'Input Tokens',
+  'buyerActivity.outputTokens': 'Output Tokens',
+  'buyerActivity.channels': 'Channels',
+  'buyerActivity.uniqueSellers': 'Unique Sellers',
 
   // Current-epoch sub-tabs (Buyers/Sellers) — see notes/epoch-features-plan.md
   'tabs.total': 'Total',

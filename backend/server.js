@@ -8,7 +8,7 @@ import { syncFromOfficialNetwork } from './sync-official.js';
 import { readChainMetrics, updateChainMetrics, startChainPoller } from './chain-poller.js';
 import {
   runHistorySync, startHistorySync,
-  readLatestSnapshot, readDailyMetrics, readBuyersOnchain, countBuyersOnchain, readSellersOnchain,
+  readLatestSnapshot, readDailyMetrics, readBuyersOnchain, readBuyerOnchain, countBuyersOnchain, readSellersOnchain,
   readEpochMetrics,
 } from './sync-history.js';
 import {
@@ -921,6 +921,17 @@ app.get('/api/history/buyers', (req, res) => {
   const items = readBuyersOnchain(limit, offset, q);
   const total = countBuyersOnchain(q);
   res.json({ items, total, offset, limit, hasMore: offset + items.length < total });
+});
+
+// One buyer's full activity: spend/deposits/withdrawals, requests,
+// input/output tokens, channel count, unique sellers, first/last seen --
+// the detail behind clicking a row on the Buyers tab. 404 (not an empty
+// object) when Antscan has never indexed this address, so the UI can tell
+// "no data yet" apart from "zero activity".
+app.get('/api/history/buyer/:address', (req, res) => {
+  const row = readBuyerOnchain(req.params.address);
+  if (!row) return res.status(404).json({ error: 'no indexed activity for this address' });
+  res.json(row);
 });
 
 app.get('/api/history/sellers', (req, res) => {
