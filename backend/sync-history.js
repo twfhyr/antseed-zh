@@ -1,5 +1,5 @@
 // Historical/real data sync — replaces on-demand live refetching (and the
-// fabricated heuristics that used to live in sync-official.js) with a local
+// fabricated heuristics that used to live in the network-catalog sync) with a local
 // SQLite cache of real Antscan-sourced numbers.
 //
 // Design: on-chain history does not change once finalized, so we store it

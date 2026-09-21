@@ -4,7 +4,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { Interface, JsonRpcProvider, Contract, verifyMessage } from 'ethers';
 import db from './database.js';
-import { syncFromOfficialNetwork } from './sync-official.js';
+import { syncFromLocalDiscovery } from './sync-local-discovery.js';
 import { readChainMetrics, updateChainMetrics, startChainPoller } from './chain-poller.js';
 import {
   runHistorySync, startHistorySync,
@@ -364,8 +364,8 @@ app.get('/api/computed-stats', (_req, res) => {
   // held the 8 fabricated seed rows — and reported ~$98,242 of invented
   // volume as the network total. Buyer count came from the same fake table.
   // Both now come from the real Antscan network snapshot (the same source
-  // sync-official.js uses for the stats row), and are null when no snapshot
-  // has been synced yet rather than falling back to a guess.
+  // sync-local-discovery.js uses for the stats row), and are null when no
+  // snapshot has been synced yet rather than falling back to a guess.
   const snap = readLatestSnapshot();
   const sellerCount = db.prepare('SELECT COUNT(*) as c FROM sellers').get().c;
   const serviceCount = db.prepare('SELECT COUNT(*) as c FROM services').get().c;
@@ -844,6 +844,14 @@ function startEpochRewardsPoller(seconds = 3600) {
   refreshEpochRewards();
 }
 
+// Runs after the initial sync at startup (see app.listen below), so this is
+// the recurring half only -- no runImmediately option needed.
+function startLocalDiscoveryPoller(seconds = 600) {
+  setInterval(() => {
+    syncFromLocalDiscovery().catch((e) => console.error('[local-discovery] periodic sync failed:', e.message));
+  }, seconds * 1000);
+}
+
 function parsePageParams(req, defaultLimit = 100, maxLimit = 1000) {
   const limit = Math.min(Math.max(Number(req.query.limit) || defaultLimit, 1), maxLimit);
   const offset = Math.max(Number(req.query.offset) || 0, 0);
@@ -959,8 +967,8 @@ app.post('/api/admin/force-chain-sync', requireAdminAuth, async (_req, res) => {
 
 app.post('/api/admin/sync', requireAdminAuth, async (_req, res) => {
   try {
-    await syncFromOfficialNetwork();
-    res.json({ success: true, message: 'Synced from official network' });
+    await syncFromLocalDiscovery();
+    res.json({ success: true, message: 'Synced from local P2P discovery' });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -2671,8 +2679,13 @@ app.listen(PORT, '0.0.0.0', async () => {
   // in SQLite — closed days are never re-fetched/overwritten) so the DHT
   // sync below can match sellers to real on-chain earnings by agentId.
   await runHistorySync().catch((e) => console.error('[history-sync] initial run failed:', e.message));
-  // Sync live peer/service list from the official AntSeed network API
-  await syncFromOfficialNetwork();
+  // Sync live peer/service list via our own P2P discovery (see
+  // sync-local-discovery.js) -- best-effort, like every other external
+  // dependency here: a slow/failed discovery run must never take the whole
+  // dashboard down with it.
+  await syncFromLocalDiscovery().catch((e) => console.error('[local-discovery] initial sync failed:', e.message));
+  startLocalDiscoveryPoller(600);
+  console.log('Local P2P discovery sync started (refresh every 10 min).');
   // Start background poller for on-chain metrics (every 5 minutes)
   startChainPoller(300);
   console.log('Chain metrics poller started (refresh every 5 min).');

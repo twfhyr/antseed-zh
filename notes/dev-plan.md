@@ -417,6 +417,66 @@ Worth revisiting with `React.lazy()` / dynamic `import()` per tab if load
 time on a slow connection becomes a real complaint — not urgent for a
 dashboard, but noting it since it got measurably worse this session.
 
+## Sellers/services catalog now sourced from local P2P discovery, not network.antseed.com (2026-09-21)
+
+User asked, after a discussion about why epoch #23 only showed 18 sellers
+and Apex being absent from the live catalog: is there a local-buyer-API way
+to discover sellers instead of relying on an external service, and do
+sellers get real names that way. Investigated with the actual `antseed`
+CLI (updated 0.1.158 -> 0.1.162 first, then restarted every buyer/seller
+service to pick it up) and found `antseed network browse --json` — real
+P2P/DHT discovery through an already-connected local buyer daemon. Tested
+it live: 53-57/57 peers back with a real `displayName` every time (100%),
+vs `network.antseed.com/stats` (the *actual* prior dependency — this was
+never Antscan; Antscan is a separate, still-used dependency for on-chain
+settlement history that no P2P crawl could ever provide) leaving several
+nameless. Also turned out to carry real `onChainAgentId`/
+`onChainStakedAtSec`/`maxConcurrency`/per-service category+protocol data
+inline — richer than the old payload for several fields.
+
+Built the swap:
+- New `backend/sync-local-discovery.js` replaces the deleted
+  `backend/sync-official.js`. `fetchLocalPeers()` shells out to
+  `antseed network browse --top 500 --json` via `execFile`, with
+  `ANTSEED_DATA_DIR`/`ANTSEED_IDENTITY_HEX` pointed at
+  `antseed-buyer-duggy`'s data dir -- reuses that already-running systemd
+  daemon's live P2P connection rather than spinning up a competing node on
+  the same identity (confirmed: a cold connect-from-scratch crawl can take
+  well over a minute; a warm daemon answers faster).
+- Same DB tables (`sellers`, `services`, `stats`), same column names, so
+  the frontend (SellersList/ServicesList, both driven by camelize()'d
+  passthrough) needed zero changes.
+- Antscan cross-reference for `total_earned`/`unique_buyers`/
+  `total_requests` (by `agent_id`) is unchanged in spirit —
+  `buildAgentIdStatsMap()` replaces the old single-field
+  `buildAgentIdToEarnedMap()`, same never-fabricate-on-a-miss behavior.
+- **Real bug found and fixed while testing**: binding a plain JS `number`
+  into `sellers.total_requests` (a TEXT column, same BigInt-safety
+  convention as `sellers_onchain.request_count`) reliably produces a
+  `"189093.0"`-style artifact via better-sqlite3/SQLite's affinity
+  conversion -- reproduced it in isolation before fixing. The old code
+  never hit this because Antscan's own GraphQL responses arrive as strings
+  already; this is the first write path here to compute a number and bind
+  it straight into a TEXT column. Fixed by keeping it a string.
+- Added a periodic re-sync (`startLocalDiscoveryPoller`, 10 min) — the old
+  code only ever ran this at startup or via the admin endpoint; local
+  discovery is now cheap enough that keeping the catalog actually fresh is
+  reasonable. Both the initial and periodic call are wrapped in `.catch()`
+  (a lesson from earlier today with the Apex monitor and the offer/accept
+  bug: never let a best-effort external/subprocess dependency crash or
+  silently break the request path).
+- Verified end-to-end on the real domain: `/api/sellers` 57/57 named
+  (Apex included), `/api/services` shows real per-service categories
+  (e.g. `["chat", "confidential", "reasoning"]`, not the generic
+  `["general"]` fallback) and a real `maxConcurrency` (e.g. `2`), not the
+  old hardcoded default of `10`.
+- Not done: `joined`/`first_seen_at` show "unknown"/null for peers whose
+  on-chain stats duggy's daemon hasn't cached yet (`onChainStakedAtSec`
+  wasn't present for Apex on one test run, was on another via a different
+  buyer's identity) — this should fill in on its own as duggy's daemon
+  runs and its peer cache warms up; not something to chase further unless
+  it's still empty after it's been running a while.
+
 ## Open questions (no obvious right answer — flag to the user, don't guess)
 
 - Should the admin routes (`/api/admin/sync`, `/api/admin/force-*-sync`)

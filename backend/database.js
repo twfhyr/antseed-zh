@@ -137,24 +137,24 @@ function seedIfEmpty() {
   // fabricated stats row (156 buyers / $458,900.50 volume / 18.7% growth).
   // That violated the project's core rule: never present fabricated data as
   // real network data. The `sellers`/`services` tables are wiped and
-  // repopulated from the live DHT by sync-official.js, but `buyers` was
-  // never touched by any sync, so those 8 fake rows were being served
-  // verbatim by GET /api/buyers, and the fake stats row's `service_growth`
-  // (18.7) survived every sync because sync-official.js does not update
-  // that column.
+  // repopulated from our own local P2P discovery by sync-local-discovery.js,
+  // but `buyers` was never touched by any sync, so those 8 fake rows were
+  // being served verbatim by GET /api/buyers, and the fake stats row's
+  // `service_growth` (18.7) survived every sync because that sync does not
+  // update that column.
   //
   // Real data sources now used instead:
   //   buyers   -> buyers_onchain      (Antscan, via sync-history.js)
-  //   sellers  -> sellers_onchain     (Antscan) + sellers (live DHT)
-  //   services -> services            (live DHT, sync-official.js)
-  //   stats    -> network_snapshots   (Antscan) via sync-official.js
+  //   sellers  -> sellers_onchain     (Antscan) + sellers (local P2P discovery)
+  //   services -> services            (local P2P discovery, sync-local-discovery.js)
+  //   stats    -> network_snapshots   (Antscan) via sync-local-discovery.js
   //
   // Purge any fake rows left over in existing deployments' database files.
   db.prepare("DELETE FROM buyers WHERE id LIKE 'buyer_00%'").run();
 
-  // The stats row must exist (sync-official.js only ever UPDATEs it), but it
-  // starts as all-NULL so the UI renders "—" until a real sync populates it,
-  // rather than showing invented numbers.
+  // The stats row must exist (sync-local-discovery.js only ever UPDATEs it),
+  // but it starts as all-NULL so the UI renders "—" until a real sync
+  // populates it, rather than showing invented numbers.
   const statsCount = db.prepare('SELECT COUNT(*) as count FROM stats').get().count;
   if (statsCount === 0) {
     db.prepare(`
