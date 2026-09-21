@@ -985,6 +985,48 @@ position (no funded/owning test wallet available, same limitation noted
 in the previous round's live-test writeup) — this one is a code-review-
 level fix, not a live-verified one.
 
+## 2026-09-21: For-sale page implied MC/FDV, "ANTS" not "ANT", trimmed blurbs
+
+Three small requests, all shipped:
+
+1. **Implied MC/FDV based on the floor price, at the top level.** Every
+   per-listing card already computed `mcUsd`/`fdvUsd` from that listing's
+   own `perAntUsd` (`computeLantsMarket()` in `server.js`) -- by
+   definition, the floor listing's own values already *are* "implied MC/
+   FDV at the floor price," just never surfaced outside that one card.
+   Added `floorImpliedMcUsd`/`floorImpliedFdvUsd` to the market response
+   (the floor item's own already-computed values, no new math) and two
+   more `StatCard`s next to "ANTS Price" on the For-sale page.
+
+2. **"ANTS" is the token name, not "ANT."** Audited every standalone
+   `ANT` (not part of `ANTS`/`lANTS`) across `en.js`, `zh.js`,
+   `StakeANTS.jsx`, and `listLants.js` and fixed all of them --
+   "Floor per ANT" → "ANTS Price" (also simplified per point 3 below),
+   "Price per ANT (USDC)" → "Price per ANTS (USDC)", "1 ANT provider-
+   activation" → "1 ANTS," etc., including in code comments. `zh.js` got
+   the same mechanical `ANT`→`ANTS` symbol fix (a factual correction, not
+   new translation) but its blurb *sentences* were deliberately left
+   otherwise untouched — rewriting trimmed English content into Chinese
+   would be new translation work, against this session's standing "no new
+   zh.js translations" rule, and the switcher stays hidden regardless.
+
+3. **Trimmed the blurbs.** "remove unecessary words like no api key
+   needed or 1 nat [ANT] provider is filtered. no one cares" --
+   `stake.blurb`/`stake.marketBlurb`/`stake.noneListed` cut down to their
+   load-bearing sentences (what this page is, not a running list of
+   caveats about how it was built). `stake.floorPerAnt`'s value changed
+   from "Floor per ANT" to "ANTS Price" per the explicit ask to stop
+   calling it a "floor" stat, even though the underlying number is still
+   the cheapest live listing's per-ANTS price -- only the label changed.
+
+Backend field added (`server.js`), so the dashboard was restarted this
+round, not just rebuilt. Verified live: forced a fresh `/api/lants-market`
+recompute and confirmed `floorImpliedMcUsd`/`floorImpliedFdvUsd` are
+present (both `null` right now since there are zero active listings to
+compute a floor from -- same real state confirmed in the last few rounds'
+live tests); confirmed the live bundle contains "ANTS Price" and no longer
+contains the removed filler phrases.
+
 ## Open questions (no obvious right answer — flag to the user, don't guess)
 
 - Should the admin routes (`/api/admin/sync`, `/api/admin/force-*-sync`)

@@ -32,7 +32,7 @@ const formatUsd = (n) => {
   if (abs >= 0.01) return `$${n.toLocaleString(undefined, { maximumFractionDigits: 4 })}`;
   return `$${n.toPrecision(3)}`;
 };
-// Implied MC/FDV are always large (supply * a per-ANT price), so they need
+// Implied MC/FDV are always large (supply * a per-ANTS price), so they need
 // M/B suffixes rather than formatUsd's full-precision output.
 const formatUsdCompact = (n) => {
   if (n === undefined || n === null || Number.isNaN(n)) return '—';
@@ -84,7 +84,7 @@ function sellerForAgent(sellers, agentId) {
 // happens for positions that already share both epochs (same agent, same
 // lock window) -- this mirrors the Stakers page's own "same locked time"
 // grouping rather than trying to replicate the contract's restructure math
-// client-side. Positions that are listed or are 1-ANT provider-activation
+// client-side. Positions that are listed or are 1-ANTS provider-activation
 // stakes can't be merged (same rule as split/list) so they never get a key.
 function mergeGroupKey(p) {
   if (p.listed || isProviderActivationStake(p.amount)) return null;
@@ -94,7 +94,7 @@ function mergeGroupKey(p) {
 
 // Groups the caller's own positions by mergeGroupKey -- a group of 2+ is
 // shown as one mergeable cluster on the Mine tab; anything left alone
-// (unique lock window, listed, or a 1-ANT activation stake) renders as a
+// (unique lock window, listed, or a 1-ANTS activation stake) renders as a
 // plain standalone card with no merge affordance at all. Moving a position
 // away (new agentId) or merging it (new lock window/epoch) naturally drops
 // it out of its old group and, if that leaves a former partner alone, that
@@ -145,7 +145,7 @@ function StakeANTS() {
   const [marketError, setMarketError] = useState(false);
   const [marketTab, setMarketTab] = useMarketTabRouter(); // 'listed' | 'all' | 'mine' -- URL-driven, see /iants/sales|all|mine
   const [marketPage, setMarketPage] = useState(1);
-  // Defaults to per-ANT price (cheapest first) rather than id -- the same
+  // Defaults to per-ANTS price (cheapest first) rather than id -- the same
   // "rank by unit price, not by total" convention a BRC-20 marketplace
   // uses, and the one this page's own sort already implements server-side
   // (paginateMarketItems's 'price' sorter keys off listing.perAntUsd, never
@@ -294,7 +294,7 @@ function StakeANTS() {
       setListForm((f) => ({ ...(f || { position, price: '', days: 30 }), phase: 'error', message: t('stake.listNeedWallet') }));
       return;
     }
-    // The form collects a per-ANT price (like a BRC-20 marketplace) -- the
+    // The form collects a per-ANTS price (like a BRC-20 marketplace) -- the
     // actual Seaport order still needs one flat total, computed here rather
     // than asking the user to do the multiplication themselves.
     const perAnt = Number(listForm?.price);
@@ -701,6 +701,8 @@ function StakeANTS() {
                       sub={market.floorTokenId != null ? `#${market.floorTokenId}` : ''}
                       accent="var(--clay)"
                     />
+                    <StatCard label={t('stake.impliedMc')} value={formatUsdCompact(market.floorImpliedMcUsd)} sub="" />
+                    <StatCard label={t('stake.impliedFdv')} value={formatUsdCompact(market.floorImpliedFdvUsd)} sub="" />
                     <StatCard label={t('stake.listed')} value={market.listedCount ?? '—'} sub="" />
                     <StatCard label={t('stake.collectionNfts')} value={market.totalNfts ?? '—'} sub="" />
                   </div>
@@ -1140,8 +1142,8 @@ function SplitModal({ form, setForm, onConfirm, t }) {
   const busy = form.phase === 'splitting';
   const p = form.position;
   const splitAmountNum = Number(form.amount);
-  // Either resulting half landing on exactly 1 ANT can't be listed here --
-  // the market view hides 1-ANT positions as provider-activation stakes,
+  // Either resulting half landing on exactly 1 ANTS can't be listed here --
+  // the market view hides 1-ANTS positions as provider-activation stakes,
   // and there's no on-chain way to tell those apart from a deliberate split.
   const splitWouldMakeUnlistable = splitAmountNum > 0 && splitAmountNum < p.amount
     && (isProviderActivationStake(splitAmountNum) || isProviderActivationStake(p.amount - splitAmountNum));

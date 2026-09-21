@@ -1701,6 +1701,12 @@ async function computeLantsMarket(extraIds = []) {
     openseaRelayEnabled: !!(await resolveOpenSeaApiKey()),
     floorPerAntUsd,
     floorTokenId: floorItem ? floorItem.id : null,
+    // Same figures already computed per-listing (listing.mcUsd/fdvUsd,
+    // above) -- the floor item's own values, surfaced at the top level so
+    // the "For sale" page's stat cards can show an implied MC/FDV for the
+    // collection as a whole without recomputing anything.
+    floorImpliedMcUsd: floorItem?.listing?.mcUsd ?? null,
+    floorImpliedFdvUsd: floorItem?.listing?.fdvUsd ?? null,
     sellers: [...sellerMap.values()].sort((a, b) => a.agentId - b.agentId),
     source: os.source,
     fetchedAt: Date.now(),

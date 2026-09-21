@@ -69,7 +69,7 @@ function stringify(value) {
 
 /**
  * List an lANTS NFT for a flat total price in USDC (not native ETH). The
- * caller (StakeANTS.jsx's doList) computes that total from a per-ANT price
+ * caller (StakeANTS.jsx's doList) computes that total from a per-ANTS price
  * the person actually typed, the same way a BRC-20 marketplace prices by
  * unit and shows the total -- Seaport itself has no notion of "per unit",
  * an order is always for one flat amount.
@@ -167,7 +167,7 @@ export async function cancelListing({ walletClient, account, tokenId }) {
 
 /**
  * Offer USDC for a specific lANTS NFT (a flat total, computed by the
- * caller from a per-ANT price -- see createAndPostListing's comment) -- the
+ * caller from a per-ANTS price -- see createAndPostListing's comment) -- the
  * owner doesn't have to be selling yet; they can review and accept later
  * (or never). Unlike the old WETH version, there's no wrap-ETH-first step:
  * USDC is a token the offerer already holds directly, nothing to convert.
