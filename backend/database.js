@@ -287,6 +287,24 @@ db.exec(`
     fetched_at INTEGER
   );
 
+  -- Raw open lANTS stake positions (Antscan, via sync-history.js's
+  -- syncStakePositions()) -- the Stakers tab groups these by (owner,
+  -- lockDays) at read time; this table is a local persisted cache so
+  -- /api/stakers never waits on a live Antscan call. See notes/dev-plan.md
+  -- (2026-09-21 loading-speed pass) for why this exists as its own table
+  -- instead of an in-memory-only cache.
+  CREATE TABLE IF NOT EXISTS stake_positions (
+    id INTEGER PRIMARY KEY,
+    owner TEXT,
+    agent_id TEXT,
+    amount TEXT,
+    weight_amount TEXT,
+    stake_start_epoch INTEGER,
+    stake_end_epoch INTEGER,
+    closed_at_epoch INTEGER,
+    fetched_at INTEGER
+  );
+
   CREATE TABLE IF NOT EXISTS daily_metrics (
     day TEXT PRIMARY KEY,
     day_start INTEGER NOT NULL,

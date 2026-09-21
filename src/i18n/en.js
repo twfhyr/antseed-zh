@@ -8,12 +8,15 @@ export default {
   'nav.antsInfo': '$ANTS Info',
   'nav.claim': 'Claim ANTS',
   'nav.channels': 'Channels',
-  'nav.stake': 'Staking',
+  'nav.stake': 'IANTS',
+  'nav.stakers': 'Stakers',
   'nav.rewards': 'Rewards',
   'nav.about': 'About',
 
-  // Staking tab (lANTS position NFTs + unclaimed usage-reward stake)
-  'stake.title': 'Staking',
+  // lANTS tab — a marketplace for trading/managing lANTS position NFTs
+  // (list, buy, offer, split, history), not a rewards dashboard — see the
+  // separate Staking tab below for checking/claiming pool rewards.
+  'stake.title': 'IANTS',
   'stake.blurb': 'Locked ANTS positions are lANTS NFTs, one per stake into a seller pool. Listed NFTs trade directly here via Seaport. Floor per ANT is the cheapest listing price divided by ANTS locked in that NFT, not a guessed token price.',
   'stake.marketTitle': 'For sale',
   'stake.marketBlurb': 'Tradable lANTS NFTs, listed and bought right here via Seaport — no OpenSea account or API key needed. 1 ANT provider-activation stakes are hidden. Floor per ANT uses live listings only. Listings also try to cross-post to OpenSea when possible, but never depend on it.',
@@ -57,6 +60,24 @@ export default {
   'stake.splitUnlistableWarning': "One resulting piece is exactly 1 ANT — this site treats 1-ANT positions as provider-activation stakes and won't let you list it.",
   'stake.splitResult': 'New position IDs: #{first} and #{second}',
   'stake.splitAmountInvalid': 'Enter an amount greater than 0 and less than the full position.',
+  'stake.mergePosition': 'Merge',
+  'stake.mergeNoCandidates': 'No other position with this seller and the exact same lock window is eligible to merge.',
+  'stake.mergeCandidateRow': '#{id} — {amount} ANTS',
+  'stake.mergeConfirm': 'Confirm merge',
+  'stake.merging': 'Merging positions…',
+  'stake.mergeOk': 'Merged — a single new position was minted to your wallet',
+  'stake.mergeHint': 'Combined size: {total} ANTS in one new position. All sources are burned and the new position starts "Pending" until next epoch.',
+  'stake.mergeResult': 'New position ID: #{id}',
+  'stake.mergePickAtLeastOne': 'Pick at least one other position to merge with.',
+  'stake.movePosition': 'Move',
+  'stake.moveTarget': 'Move stake to',
+  'stake.moveChooseProvider': 'Choose a seller…',
+  'stake.moveConfirm': 'Confirm move',
+  'stake.moving': 'Moving stake…',
+  'stake.moveOk': 'Moved — a new position was minted with the same principal and end date',
+  'stake.moveHint': 'Your principal and unlock date stay the same; only the seller this position backs changes. A protocol-wide move penalty may reduce future reward weight (0% currently). The old NFT is burned and a new one is minted, starting "Pending" until next epoch.',
+  'stake.moveResult': 'New position ID: #{id}',
+  'stake.movePickProvider': 'Choose a seller to move this stake to.',
   'stake.activationStake': 'Provider activation (1 ANT). Not listed.',
   'stake.marketError': 'Could not load the lANTS market. Showing — rather than a guess.',
   'stake.marketLoading': 'Loading lANTS listings...',
@@ -151,6 +172,15 @@ export default {
   'stake.stakedBuyer': 'Staked epoch {epoch} into agent {agent} for {lock} epoch(s)',
   'stake.stakingSeller': 'Restaking epoch {epoch} into your own agent pool for {lock} epoch(s)…',
   'stake.stakedSeller': 'Restaked epoch {epoch} for {lock} epoch(s)',
+
+  // Stakers tab — a staker-centric public list of the same lANTS positions
+  // the lANTS marketplace tab lists NFT-by-NFT: address, amount staked,
+  // lock length. Positions from the same address with the same lock length
+  // are combined server-side (see backend/server.js's computeStakers()).
+  'stakers.blurb': 'Every open lANTS staking position, grouped by staker and lock length — the same positions the lANTS tab lists NFT-by-NFT, shown staker-first instead.',
+  'stakers.amountStaked': 'Amount Staked',
+  'stakers.lockedFor': 'Locked For',
+  'stakers.noStakers': 'No stakers found matching your search.',
 
   // Header
   'header.telegram': 'Telegram',

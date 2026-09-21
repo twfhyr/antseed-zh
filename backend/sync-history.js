@@ -15,6 +15,7 @@ import db from './database.js';
 import {
   fetchNetworkSnapshot, fetchBuyers, fetchSellers, fetchDailyMetrics,
   fetchEpochMetrics, fetchSellerEpochCount, fetchBuyerEpochCount,
+  fetchOpenStakePositions,
 } from './antscan.js';
 import { readChainMetrics } from './chain-poller.js';
 
@@ -109,6 +110,36 @@ export async function syncSellersOnchain() {
   });
   tx(items);
   return { count: items.length, totalCount: result?.totalCount ?? items.length };
+}
+
+/** Raw open lANTS stake positions (owner, amount, lock epochs) -- feeds the
+ *  Stakers tab (see backend/server.js's readStakePositions()/computeStakers()).
+ *  Small (tens, not thousands, per fetchOpenStakePositions's own comment),
+ *  so a full wipe-and-reinsert each cycle is simplest and avoids stale rows
+ *  lingering after a position closes/withdraws (matches the sellers/services
+ *  local-discovery sync's own wipe-and-reinsert convention). */
+export async function syncStakePositions() {
+  const { items } = await fetchOpenStakePositions();
+  const insert = db.prepare(`
+    INSERT INTO stake_positions (id, owner, agent_id, amount, weight_amount, stake_start_epoch, stake_end_epoch, closed_at_epoch, fetched_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const now = Date.now();
+  const tx = db.transaction((rows) => {
+    db.prepare('DELETE FROM stake_positions').run();
+    for (const p of rows) {
+      insert.run(
+        p.id, p.owner, p.agentId != null ? String(p.agentId) : null, p.amount, p.weightAmount,
+        p.stakeStartEpoch, p.stakeEndEpoch, p.closedAtEpoch, now
+      );
+    }
+  });
+  tx(items);
+  return { count: items.length };
+}
+
+export function readStakePositions() {
+  return db.prepare('SELECT * FROM stake_positions').all();
 }
 
 /** Daily time series — only overwrites rows that aren't closed yet. */
@@ -215,6 +246,7 @@ export async function runHistorySync() {
   try { results.sellers = await syncSellersOnchain(); } catch (e) { console.error('[history-sync] sellers failed:', e.message); }
   try { results.daily = await syncDailyMetrics(); } catch (e) { console.error('[history-sync] daily failed:', e.message); }
   try { results.epochs = await syncEpochMetrics(); } catch (e) { console.error('[history-sync] epochs failed:', e.message); }
+  try { results.stakePositions = await syncStakePositions(); } catch (e) { console.error('[history-sync] stakePositions failed:', e.message); }
   db.prepare('INSERT OR REPLACE INTO sync_meta (key, value, updated_at) VALUES (?, ?, ?)')
     .run('last_history_sync', JSON.stringify({ ok: true }), Date.now());
   return results;
