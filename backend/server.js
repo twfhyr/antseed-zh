@@ -9,7 +9,7 @@ import { readChainMetrics, updateChainMetrics, startChainPoller } from './chain-
 import {
   runHistorySync, startHistorySync,
   readLatestSnapshot, readDailyMetrics, readBuyersOnchain, readBuyerOnchain, countBuyersOnchain, readSellersOnchain,
-  readEpochMetrics,
+  readEpochMetrics, readStakePositions,
 } from './sync-history.js';
 import {
   fetchBuyerEpochs, fetchSellerEpochs, fetchPoolEpochs, fetchOpenStakePositions, fetchStakingEpoch,
@@ -749,8 +749,19 @@ async function syncCurrentEpochRewards() {
   // network-wide, then summed back per owner. previewStakerRewards is a
   // pure on-chain simulation (no indexing transaction required) — see
   // SellerPoolsRewardsClient in @antseed/node.
+  //
+  // poolDataFresh tracks whether this cycle actually got a real answer from
+  // the chain -- a plain empty Map here is ambiguous between "confirmed:
+  // nobody has a position" and "the RPC call timed out, we simply don't
+  // know". Real logs show previewStakerRewards failing (RPC timeout) on
+  // ~40% of sync attempts; the upsert below must not treat that as "clear
+  // every seller/buyer's staking reward to null" -- it needs to leave the
+  // last real value alone until a fresh one actually arrives.
   const poolRewardByOwner = new Map();
-  if (sellerPoolsRewardsClient && positionsByOwner.size > 0) {
+  let poolDataFresh = false;
+  if (positionsByOwner.size === 0) {
+    poolDataFresh = true; // confirmed: no open positions network-wide at all right now
+  } else if (sellerPoolsRewardsClient) {
     try {
       const allIds = [...positionsByOwner.values()].flat();
       const amounts = await sellerPoolsRewardsClient.previewStakerRewards(allIds);
@@ -761,6 +772,7 @@ async function syncCurrentEpochRewards() {
         cursor += ids.length;
         poolRewardByOwner.set(owner, sum);
       }
+      poolDataFresh = true;
     } catch (e) {
       console.error('[epoch-rewards] previewStakerRewards failed:', e.message);
     }
@@ -782,12 +794,18 @@ async function syncCurrentEpochRewards() {
   }
 
   const now = Date.now();
+  // When this cycle's previewStakerRewards call failed, the insert path
+  // (a brand-new address/epoch row) still has nothing better than null to
+  // write -- but the update path, for a row that already exists, keeps
+  // whatever pool_reward_wei was already there instead of overwriting a
+  // real prior value with "we don't know this round".
+  const poolRewardUpdateClause = poolDataFresh ? 'pool_reward_wei = excluded.pool_reward_wei' : 'pool_reward_wei = pool_reward_wei';
   const upsertBuyer = db.prepare(`
     INSERT INTO buyer_epoch_rewards (address, epoch, points, volume_usdc, requests, usage_reward_wei, pool_reward_wei, fetched_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(address, epoch) DO UPDATE SET
       points = excluded.points, volume_usdc = excluded.volume_usdc, requests = excluded.requests,
-      usage_reward_wei = excluded.usage_reward_wei, pool_reward_wei = excluded.pool_reward_wei, fetched_at = excluded.fetched_at
+      usage_reward_wei = excluded.usage_reward_wei, ${poolRewardUpdateClause}, fetched_at = excluded.fetched_at
   `);
   const upsertSeller = db.prepare(`
     INSERT INTO seller_epoch_rewards (address, agent_id, epoch, points, volume_usdc, requests, staked_ants_wei, usage_reward_wei, pool_reward_wei, fetched_at)
@@ -795,7 +813,7 @@ async function syncCurrentEpochRewards() {
     ON CONFLICT(address, epoch) DO UPDATE SET
       agent_id = excluded.agent_id, points = excluded.points, volume_usdc = excluded.volume_usdc, requests = excluded.requests,
       staked_ants_wei = excluded.staked_ants_wei, usage_reward_wei = excluded.usage_reward_wei,
-      pool_reward_wei = excluded.pool_reward_wei, fetched_at = excluded.fetched_at
+      ${poolRewardUpdateClause}, fetched_at = excluded.fetched_at
   `);
   const tx = db.transaction(() => {
     for (const b of buyers) {
@@ -824,7 +842,7 @@ async function syncCurrentEpochRewards() {
     }
   });
   tx();
-  console.log(`[epoch-rewards] synced epoch ${epoch}: ${buyers.length} buyers, ${sellers.length} sellers, ${positionsByOwner.size} stakers.`);
+  console.log(`[epoch-rewards] synced epoch ${epoch}: ${buyers.length} buyers, ${sellers.length} sellers, ${positionsByOwner.size} stakers${poolDataFresh ? '' : ' (staking rewards NOT refreshed this cycle -- previous values kept)'}.`);
 }
 
 /** Deduplicated: a second caller mid-sync joins the in-flight run instead of starting another. */
@@ -901,6 +919,69 @@ app.get('/api/epoch/sellers', (req, res) => {
     LIMIT ? OFFSET ?
   `).all(epoch, ...args, limit, offset);
   res.json({ epoch, items: rows, total, offset, limit, hasMore: offset + rows.length < total });
+});
+
+// ─── Stakers: a staker-centric view of the same lANTS positions the
+// marketplace lists NFT-by-NFT (see computeLantsMarket) -- one row per
+// (staker address, lock length) instead of one row per NFT, since a
+// staker's positions in different sellers' pools with the same lock
+// duration are genuinely "the same kind of commitment" from that address's
+// point of view. Real on-chain data only: closedAtEpoch != 0 (a
+// split/merge/move burn, same exclusion computeLantsMarket already applies)
+// and the mandatory 1-ANT provider-activation stake (never a real staking
+// choice) are both filtered out, matching the marketplace's own rules.
+//
+// Reads from the local `stake_positions` table (synced every 5 min by
+// sync-history.js's syncStakePositions(), piggybacking on the existing
+// history-sync cadence) instead of calling Antscan live -- 2026-09-21
+// loading-speed pass: this used to hit fetchOpenStakePositions() directly
+// behind a 90s in-memory cache, so every cache-miss request blocked on a
+// live GraphQL round-trip. A local table read is synchronous and instant,
+// so there's nothing left to cache here at all. ───
+function computeStakers() {
+  const epochDuration = readChainMetrics()?.emissions?.epochDuration ?? null;
+  const positions = readStakePositions();
+
+  const groups = new Map(); // `${owner}|${lockDays}` -> { owner, lockDays, amountWei, positionCount }
+  for (const p of positions) {
+    if (Number(p.closed_at_epoch || 0) !== 0) continue; // burned via split/merge/move, not really open
+    const owner = (p.owner || '').toLowerCase();
+    if (!owner) continue;
+    const amountAnts = p.amount != null ? Number(p.amount) / 1e18 : 0;
+    if (isProviderActivationStake(amountAnts)) continue; // the mandatory 1-ANT stake, not a real stake choice
+    const startEpoch = p.stake_start_epoch != null ? Number(p.stake_start_epoch) : null;
+    const endEpoch = p.stake_end_epoch != null ? Number(p.stake_end_epoch) : null;
+    const lockDays = (startEpoch != null && endEpoch != null && epochDuration)
+      ? Math.round((endEpoch - startEpoch) * epochDuration / 86400)
+      : null;
+    const key = `${owner}|${lockDays}`;
+    if (!groups.has(key)) groups.set(key, { owner, lockDays, amountWei: 0n, positionCount: 0 });
+    const g = groups.get(key);
+    g.amountWei += BigInt(p.amount || 0);
+    g.positionCount += 1;
+  }
+
+  const rows = [...groups.values()].map((g) => ({
+    address: g.owner,
+    lockDays: g.lockDays,
+    amount: Number(g.amountWei) / 1e18,
+    positionCount: g.positionCount,
+  }));
+  rows.sort((a, b) => b.amount - a.amount || a.address.localeCompare(b.address));
+  return rows;
+}
+
+app.get('/api/stakers', (req, res) => {
+  try {
+    const { limit, offset, q } = parsePageParams(req);
+    const all = computeStakers();
+    const rows = q ? all.filter((r) => r.address.includes(q)) : all;
+    const total = rows.length;
+    const items = rows.slice(offset, offset + limit);
+    res.json({ items, total, offset, limit, hasMore: offset + items.length < total });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.post('/api/admin/force-epoch-rewards-sync', requireAdminAuth, async (_req, res) => {
@@ -1901,8 +1982,18 @@ app.get('/api/lants-market', async (req, res) => {
     // wait=1, so they're guaranteed to show up in THIS response rather than
     // waiting for the next 90s refresh cycle (which itself might still miss
     // them if Antscan hasn't indexed them yet -- see computeLantsMarket).
+    //
+    // Real bug found 2026-09-21 (root cause of every /iants load being
+    // slow): ''.split(',') is [''] (one empty-string element, not zero),
+    // and Number('') is 0 -- a finite number, not NaN -- so an absent/empty
+    // ensureIds query param used to produce [0] here instead of []. That
+    // made `ensureIds.length > 0` true on every single request, which made
+    // forceFresh true unconditionally, which bypassed the 90s cache
+    // entirely: every page load was a full blocking Antscan + on-chain
+    // refresh (1.8-6s observed) instead of an instant cache hit. Filtering
+    // out empty segments before mapping to Number fixes it.
     const ensureIds = String(req.query.ensureIds || '')
-      .split(',').map((s) => Number(s.trim())).filter(Number.isFinite);
+      .split(',').map((s) => s.trim()).filter(Boolean).map(Number).filter(Number.isFinite);
     const forceFresh = req.query.wait === '1' || ensureIds.length > 0;
     const fresh = !forceFresh && lantsMarketCache && Date.now() - lantsMarketCacheAt < LANTS_MARKET_TTL_MS;
     let base;

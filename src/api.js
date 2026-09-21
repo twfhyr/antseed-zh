@@ -31,6 +31,14 @@ export async function fetchSellers() {
   return get('/sellers');
 }
 
+/** Stakers, one row per (address, lock length) -- positions with the same
+ *  lock duration from the same address are combined server-side.
+ *  Resolves to `{ items, total, offset, limit, hasMore }`. */
+export async function fetchStakers({ limit = 100, offset = 0, q = '' } = {}) {
+  const query = `limit=${limit}&offset=${offset}` + (q ? `&q=${encodeURIComponent(q)}` : '');
+  return get(`/stakers?${query}`);
+}
+
 export async function fetchServices() {
   return get('/services');
 }

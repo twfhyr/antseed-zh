@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <!-- %BASE_URL% so the icon resolves under both deploy targets: the
@@ -13,11 +13,12 @@
     <meta name="description" content="Live buyer/seller stats, service catalog, and $ANTS tokenomics for the AntSeed peer-to-peer AI inference network — a community-built dashboard, not an official AntSeed product." />
 
     <!-- Social share preview (link unfurls in Slack/Twitter/iMessage/etc).
-         English on purpose — the app UI defaults to zh, but these tags are
-         read by crawlers/bots, not rendered by the zh/en toggle, so they
-         need their own fixed language. Kept in this static index.html
-         (not injected by React) since most crawlers don't execute JS.
-         Modeled on antseed.com's own og/twitter tags. -->
+         Kept in this static index.html (not injected by React) since most
+         crawlers don't execute JS. Modeled on antseed.com's own og/twitter
+         tags. English matches the app's default language (en, since
+         2026-09-21 -- the zh/en toggle itself is hidden now, see
+         Header.jsx/src/i18n/index.jsx). -->
+
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="antseed-zh" />
     <meta property="og:url" content="https://antseed-zh.com/" />

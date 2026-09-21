@@ -44,8 +44,15 @@ it when you add a new one.
   be redeployed again — a hardcoded address for it is a bug waiting to
   happen, not a simplification (this already happened once; see
   `notes/dev-plan.md`'s "Recently fixed" section).
-- **New user-facing strings need both `src/i18n/en.js` and `src/i18n/zh.js`
-  entries.** `zh` is the default locale — don't ship English-only copy.
+- **New user-facing strings only need an `src/i18n/en.js` entry.** `en` is
+  the default and only reachable locale as of 2026-09-21 (site owner
+  decision) — the language switcher is hidden (`Header.jsx`), so `zh.js` is
+  frozen at whatever it already covers, not maintained going forward. A key
+  missing from `zh.js` already falls back to `en.js` (`t()` in
+  `src/i18n/index.jsx`), so this is safe by construction, not just a
+  convention to remember. Don't add new `zh.js` entries for new features;
+  don't delete `zh.js` either (a returning visitor with `zh` already saved
+  in `localStorage` still renders it for the keys that exist).
 - **If you add a tab to `App.jsx`, also register it in
   `src/hooks/useTabRouter.js`'s `TAB_PATHS`.** A tab not in `VALID_TABS`
   silently falls back to `overview` on direct navigation or reload — this

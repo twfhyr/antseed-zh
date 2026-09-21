@@ -9,7 +9,8 @@ const TAB_PATHS = {
   services: 'services',
   tokenomics: 'tokenomics',
   'ants-info': 'ants-info',
-  stake: 'stake',
+  stake: 'iants',
+  stakers: 'stakers',
   rewards: 'rewards',
   about: 'about',
 };
@@ -73,12 +74,19 @@ export function useTabRouter() {
   return [activeTab, setActiveTab];
 }
 
-// ─── Stake tab's market sub-tab (/stake/sales, /stake/iants, /stake/mine) ───
-// A second path segment under 'stake' only, so a filtered view of the lANTS
-// market is itself a shareable/bookmarkable link. Bare /stake (no second
+// ─── lANTS tab's market sub-tab (/iants/sales, /iants/all, /iants/mine) ───
+// A second path segment under 'iants' only, so a filtered view of the lANTS
+// market is itself a shareable/bookmarkable link. Bare /iants (no second
 // segment) stays a valid alias for the default sub-tab, same pattern as
 // 'ants-info' above for the top-level tabs.
-const MARKET_TAB_PATHS = { listed: 'sales', all: 'iants', mine: 'mine', history: 'history' };
+//
+// The tab's own URL segment is 'iants' (2026-09-21, was 'stake') -- lowercase
+// L reading as a capital i, matching how "iants" was already used here for
+// the "All NFTs" sub-tab before the rename. That sub-tab's own segment was
+// renamed sales/'iants'/mine/history -> sales/all/mine/history so it no
+// longer collides with the parent (a literal /iants/iants would otherwise
+// result); the tab key ('all') is unchanged, only its own URL segment moved.
+const MARKET_TAB_PATHS = { listed: 'sales', all: 'all', mine: 'mine', history: 'history' };
 const MARKET_PATH_TABS = Object.fromEntries(
   Object.entries(MARKET_TAB_PATHS).map(([tab, p]) => [p, tab])
 );
@@ -88,20 +96,21 @@ function marketTabFromLocation() {
   const path = window.location.pathname;
   const rel = path.startsWith(BASE) ? path.slice(BASE.length) : path.replace(/^\//, '');
   const [first, second] = rel.split('/');
-  if (first !== 'stake') return null;
+  if (first !== 'iants') return null;
   return MARKET_PATH_TABS[second] || null;
 }
 
 export function marketTabHref(tab) {
   const segment = MARKET_TAB_PATHS[tab] || MARKET_TAB_PATHS[MARKET_DEFAULT_TAB];
-  return `${BASE}stake/${segment}`;
+  return `${BASE}iants/${segment}`;
 }
 
 /**
  * Drives the lANTS market's tab (For sale / All NFTs / Mine) from the URL's
  * second path segment, same shareable-link rationale as useTabRouter. Only
- * meaningful while the Stake tab itself is mounted -- StakeANTS.jsx only
- * exists in the tree when activeTab === 'stake', so every call here is
+ * meaningful while the lANTS tab itself is mounted -- StakeANTS.jsx only
+ * exists in the tree when activeTab === 'stake' (internal key unchanged;
+ * only its URL segment and nav label changed), so every call here is
  * implicitly scoped to that.
  */
 export function useMarketTabRouter() {

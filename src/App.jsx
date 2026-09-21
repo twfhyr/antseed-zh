@@ -5,6 +5,7 @@ import BuyersList from './components/BuyersList';
 import TokenomicsTab from './components/TokenomicsTab';
 import ANTSInfo from './components/ANTSInfo';
 import StakeANTS from './components/StakeANTS';
+import Stakers from './components/Stakers';
 import RewardsANTS from './components/RewardsANTS';
 import Overview from './components/Overview';
 import About from './components/About';
@@ -138,6 +139,39 @@ return (
           >
             {t('nav.sellers')}
           </a>
+          {/* Stakers (new 2026-09-21): a staker-centric public view of the
+              same lANTS positions the IANTS marketplace tab lists NFT-by-NFT
+              (each position IS a lANTS NFT) -- address, amount staked, lock
+              length. No wallet needed, next to Sellers since it's the same
+              kind of public list. Positions from the same address with the
+              same lock length are combined server-side (see
+              backend/server.js's computeStakers()). */}
+          <a
+            href={tabHref('stakers')}
+            className={`tab ${activeTab === 'stakers' ? 'active' : ''}`}
+            onClick={(e) => { e.preventDefault(); setActiveTab('stakers'); }}
+          >
+            {t('nav.stakers')}
+          </a>
+          {/* Wallet-connect UI here deliberately reverses the earlier
+              "no wallet-connect UI by default" decision (see notes/dev-plan.md)
+              — explicit call by the site owner 2026-09-18, not a default.
+              ClaimANTS.jsx / ChannelsView.jsx stay hidden.
+              'stake' (StakeANTS.jsx, labelled "IANTS") is the lANTS NFT
+              marketplace: list/buy/offer/split/merge/move/history for a
+              connected or searched address, plus the epoch-22+ usage-reward
+              claim/stake flow -- trading and managing positions, not
+              rewards. (Renamed from "Staking" 2026-09-21 once Stakers, above,
+              took that name for a different, public-list purpose; moved next
+              to Stakers and relabelled "IANTS" 2026-09-21 since the two are
+              two views of the same underlying NFTs.) */}
+          <a
+            href={tabHref('stake')}
+            className={`tab ${activeTab === 'stake' ? 'active' : ''}`}
+            onClick={(e) => { e.preventDefault(); setActiveTab('stake'); }}
+          >
+            {t('nav.stake')}
+          </a>
           <a
             href={tabHref('services')}
             className={`tab ${activeTab === 'services' ? 'active' : ''}`}
@@ -159,19 +193,6 @@ return (
           >
             {t('nav.antsInfo')}
           </a>
-          {/* Staking (was Stake ANTS) deliberately reverses the earlier
-              "no wallet-connect UI by default" decision (see notes/dev-plan.md)
-              — explicit call by the site owner 2026-09-18, not a default.
-              ClaimANTS.jsx / ChannelsView.jsx stay hidden. StakeANTS.jsx now
-              shows lANTS position NFTs for a connected or searched address,
-              plus the epoch-22+ usage-reward claim/stake flow. */}
-          <a
-            href={tabHref('stake')}
-            className={`tab ${activeTab === 'stake' ? 'active' : ''}`}
-            onClick={(e) => { e.preventDefault(); setActiveTab('stake'); }}
-          >
-            {t('nav.stake')}
-          </a>
           <a
             href={tabHref('rewards')}
             className={`tab ${activeTab === 'rewards' ? 'active' : ''}`}
@@ -191,6 +212,7 @@ return (
         {activeTab === 'overview' && <Overview />}
         {activeTab === 'buyers' && <BuyersList />}
         {activeTab === 'sellers' && <SellersList sellers={sellers} />}
+        {activeTab === 'stakers' && <Stakers />}
         {activeTab === 'services' && <ServicesList services={services} />}
         {activeTab === 'tokenomics' && <TokenomicsTab />}
         {activeTab === 'ants-info' && <ANTSInfo />}

@@ -88,7 +88,7 @@ Express Server (PORT 3001)
 | backend/lants-positions.js | Cached lANTS position metadata (`lants_positions` table) for server-side pagination/filtering without re-hitting the chain |
 | backend/opensea-list.js | Best-effort cross-post of a local Seaport listing to OpenSea's orderbook; persists the free instant API key to `backend/private/` so it survives restarts |
 | backend/opensea-lants.js | Scrapes OpenSea's public lANTS collection page for listing prices (one input to the merged market view, never the source of truth) |
-| src/lib/listLants.js | Client-side Seaport order creation/fulfillment (list/buy/cancel/offer/accept) via `@opensea/seaport-js`, loaded on demand |
+| src/lib/listLants.js | Client-side Seaport order creation/fulfillment (list/buy/cancel/offer/accept) via `@opensea/seaport-js`, plus direct on-chain split/merge/move calls against `AntseedSellerPools`, loaded on demand |
 | src/App.jsx | Root component: URL-driven tab routing (see hooks/useTabRouter.js), top-level data fetch |
 | src/api.js | Thin fetch wrapper for /api/* endpoints, base-path-aware |
 | src/components/Overview.jsx | Landing tab: stat cards + daily/epoch history charts |
@@ -100,7 +100,8 @@ Express Server (PORT 3001)
 | src/components/ClaimANTS.jsx | Five-bucket rewards view + wallet claim flows |
 | src/components/ChannelsView.jsx | Payment channels: list, requestClose, withdraw |
 | src/components/ANTSInfo.jsx | On-chain ANTS data, contract addresses, reward-mechanics explainer |
-| src/components/StakeANTS.jsx | lANTS position NFTs (claim/stake usage rewards) + the paginated self-hosted Seaport marketplace (list/buy/cancel/offer/accept) |
+| src/components/StakeANTS.jsx | IANTS tab (`/iants`): the paginated self-hosted Seaport lANTS marketplace (list/buy/cancel/offer/accept) plus split/merge/move position management on the Mine sub-tab — see `docs/ARCHITECTURE.md`'s "lANTS Marketplace" section |
+| src/components/Stakers.jsx | Stakers tab (`/stakers`): public, no-wallet list of the same lANTS positions grouped by staker address + lock length, reading `/api/stakers` |
 | src/components/About.jsx | Node showcase (this seller's peer info, connection guide) |
 | vite.config.js | Vite config; `BUILD_TARGET=root` switches base path + outDir (see README Deployment) |
 | package.json | dev script uses concurrently to run both servers |

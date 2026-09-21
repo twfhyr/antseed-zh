@@ -8,12 +8,14 @@ export default {
   'nav.antsInfo': 'ANTS 详情',
   'nav.claim': '领取 ANTS',
   'nav.channels': '支付通道',
-  'nav.stake': '质押',
+  'nav.stake': 'IANTS',
+  'nav.stakers': '质押者',
   'nav.rewards': '奖励',
   'nav.about': '关于',
 
-  // 质押页（lANTS 仓位 NFT + 未领取使用量奖励再质押）
-  'stake.title': '质押',
+  // lANTS 页——交易/管理 lANTS 仓位 NFT 的市场（挂牌、购买、出价、拆分、历史），
+  // 不是奖励面板——查看/领取质押池奖励请见下方独立的"质押"页。
+  'stake.title': 'IANTS',
   'stake.blurb': '锁定的 ANTS 仓位是 lANTS NFT，每向一个卖家资金池质押一次就会铸造一张。挂牌的 NFT 直接通过 Seaport 在本站交易。每 ANT 地板价 = 最便宜的挂牌价 ÷ 该 NFT 锁定的 ANTS，不是猜的代币价格。',
   'stake.marketTitle': '出售中',
   'stake.marketBlurb': '可交易的 lANTS NFT，直接在本站通过 Seaport 挂牌和购买——不需要 OpenSea 账号或 API key。1 ANT 的卖家激活质押已隐藏。每 ANT 地板价只使用真实挂牌。挂牌会尽量同步到 OpenSea，但从不依赖它。',
@@ -151,6 +153,14 @@ export default {
   'stake.stakedBuyer': '已把第 {epoch} 纪元奖励质押进代理 {agent}，锁定 {lock} 个纪元',
   'stake.stakingSeller': '正在把第 {epoch} 纪元奖励再质押进你自己的代理资金池，锁定 {lock} 个纪元…',
   'stake.stakedSeller': '已把第 {epoch} 纪元奖励再质押 {lock} 个纪元',
+
+  // 质押者页——按质押者汇总同样的 lANTS 仓位（上方 lANTS 市场页是逐个 NFT
+  // 展示），显示地址、质押数量、锁定时长。同一地址、锁定时长相同的仓位会在
+  // 服务端合并（见 backend/server.js 的 computeStakers()）。
+  'stakers.blurb': '每一个未平仓的 lANTS 质押仓位，按质押者和锁定时长分组——与 lANTS 页逐个 NFT 展示的是同一批仓位，只是换成按质押者呈现。',
+  'stakers.amountStaked': '质押数量',
+  'stakers.lockedFor': '锁定时长',
+  'stakers.noStakers': '未找到匹配的质押者。',
 
   // 页头
   'header.telegram': '电报群',
