@@ -9,7 +9,7 @@ import { useI18n } from '../i18n/index.jsx';
 // owner, for the Staking tab (App.jsx). Claim ANTS / Channels stay
 // unlinked from the nav; this button doesn't change that.
 function Header() {
-const { lang, setLang, t } = useI18n();
+const { t } = useI18n();
 
 return (
 <header className="app-header">
@@ -27,14 +27,6 @@ return (
 </div>
 
   <div className="app-header__actions">
-    <button
-      className="deposit-btn"
-      onClick={() => setLang(lang === 'zh' ? 'en' : 'zh')}
-      title="Switch language / 切换语言"
-      style={{ minWidth: '2.5rem' }}
-    >
-      {lang === 'zh' ? 'EN' : '中文'}
-    </button>
     <a
     href="https://t.me/antseed_zh"
     target="_blank"

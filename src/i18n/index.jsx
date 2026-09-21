@@ -5,14 +5,19 @@ import zh from './zh.js';
 const DICTS = { en, zh };
 const STORAGE_KEY = 'antseed-zh:lang';
 
-const I18nContext = createContext({ lang: 'zh', t: (k) => k, setLang: () => {} });
+const I18nContext = createContext({ lang: 'en', t: (k) => k, setLang: () => {} });
 
 function getInitialLang() {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (stored === 'en' || stored === 'zh') return stored;
   } catch {}
-  return 'zh'; // zh default, per project decision
+  return 'en'; // en default, per site owner decision 2026-09-21 (was zh) -- the
+  // switcher itself is now hidden (see Header.jsx), but the stored-preference
+  // path is left intact rather than ripped out: a `zh` value already saved in
+  // a returning visitor's localStorage still renders zh, it's just no longer
+  // reachable to pick going forward. `t()`'s fallback already prefers en.js
+  // for a key missing from zh.js, so half-translated content never breaks.
 }
 
 export function I18nProvider({ children }) {
