@@ -441,19 +441,21 @@ contract would also reject it since the position is escrowed to the
 marketplace via approval, not literally transferred, so this is a UI-level
 safeguard against confusing a buyer who has a pending fulfillment).
 
-All three share one shape end-to-end, which is why they were built as
-near-copies of each other (`splitPosition`/`mergePositions`/`movePosition`
-in `src/lib/listLants.js`, `doSplit`/`doMerge`/`doMove` in
-`StakeANTS.jsx`): build a minimal single-function ABI, send the tx from the
-connected wallet via `ethers`' `BrowserProvider`, wait for the receipt,
-parse the resulting event out of the receipt's logs with `Interface.
-parseLog()` to recover the new position id(s), then call
-`fetchLantsMarket({ ...marketQuery, wait: '1', ensureIds })` with those new
-(and old, for merge) ids — same reasoning as a fresh listing/buy: the new
-position(s) won't be in Antscan's cache yet, so the ids are passed
-explicitly to force a synchronous on-chain read of exactly those tokens
-(see `/api/lants-market`'s `ensureIds` handling above) instead of waiting
-for the next background refresh.
+All three call one of `splitPosition`/`mergePositions`/`movePosition` in
+`src/lib/listLants.js`, which share one shape end-to-end: build a minimal
+single-function ABI, send the tx from the connected wallet via `ethers`'
+`BrowserProvider`, wait for the receipt, parse the resulting event out of
+the receipt's logs with `Interface.parseLog()` to recover the new position
+id(s), then call `fetchLantsMarket({ ...marketQuery, wait: '1', ensureIds })`
+with those new (and old, for merge) ids — same reasoning as a fresh
+listing/buy: the new position(s) won't be in Antscan's cache yet, so the
+ids are passed explicitly to force a synchronous on-chain read of exactly
+those tokens (see `/api/lants-market`'s `ensureIds` handling above) instead
+of waiting for the next background refresh. `StakeANTS.jsx`'s
+`doSplit`/`doMergeSelected`/`doMove` chain a `refreshMyPositions()` call
+*after* that market refresh resolves (not alongside it) for the same
+reason `myPositions` exists at all — see the Merge writeup below for the
+real race this fixed.
 
 **Split** (`splitStake(positionId, splitAmountWei)` → `StakeSplit(positionId,
 firstPositionId, secondPositionId)`): breaks one position into two, each
@@ -474,18 +476,45 @@ caller, share the same `agentId`, and — after each is closed for
 restructuring — resolve to the *exact same* normalized start/end epoch, or
 the whole call reverts (`InvalidValue`). In practice that only happens for
 positions that already share both `stakeStartEpoch` and `stakeEndEpoch`, so
-the frontend's `mergeCandidates()` filters to "same seller + identical lock
-window" as a safe, simple stand-in for replicating the contract's
-restructure math client-side — deliberately the same "same locked time"
-grouping the Stakers tab already uses for its own combined rows. UI gate
-(`canMerge`): caller owns it, not listed, not a 1-ANT activation stake,
-**and** at least one other eligible position exists (computed against
-`myPositions`, a separate uncapped fetch of the caller's full position
-list — not just whatever page of "Mine" happens to be open, since a
-sibling could be on a different page). The Merge modal lists every
-candidate as a checkbox with a running combined-total preview. Burns every
-selected source, mints one new position for the combined amount, starting
-"Pending" until next epoch.
+`mergeGroupKey()`/`groupMyPositions()` in `StakeANTS.jsx` filter to "same
+seller + identical lock window" as a safe, simple stand-in for replicating
+the contract's restructure math client-side — deliberately the same "same
+locked time" grouping the Stakers tab already uses for its own combined
+rows.
+
+**UI (2026-09-21, redesigned from an earlier per-card "Merge" button after
+live feedback):** the Mine tab groups the caller's positions
+(`myPositions` — an uncapped fetch of every position they own, not just
+whatever page of "Mine" happens to be open, since a mergeable sibling could
+be on a different page) by `mergeGroupKey()`; any group of 2+ renders as one
+`MergeGroup` block — a bordered cluster showing every member card with a
+checkbox on it (`mergeCheckbox` prop) instead of each card getting its own
+button, plus one "Merge selected (n)" action for the whole group. Any 2+
+checked members can be merged together — there's no fixed "base" position
+the way a per-card entry point would imply. A position with no eligible
+partner (unique lock window, listed, or a 1-ANT activation stake) renders
+as a plain standalone card with no merge affordance at all. Unlike List/
+Offer/Split/Move, Merge has no modal: there's no extra input to collect
+beyond "which ones," and the checkboxes already are that input, so
+`doMergeSelected` fires directly off the group's button — the same
+directness as Cancel/Buy elsewhere on this tab.
+
+Groups are recomputed fresh from `myPositions` on every render, so a group
+dissolves or reforms automatically: **the real bug this caught in
+testing** was that moving one of two mergeable positions to a different
+seller left the other one still showing as mergeable for a few seconds,
+against a partner that had just moved away. Root cause was a race, not a
+missing check — `doMove`'s `refreshMyPositions()` call used to fire
+*alongside* its own `wait=1` market refresh instead of after it, so it
+could return first with the pre-move data. Fixed by chaining
+`refreshMyPositions()` in a `.then()` after that refresh resolves; see its
+comment in `StakeANTS.jsx` for why that ordering alone is enough (the
+market refresh's cache write completes before its response is even sent).
+Merging or moving a position away removes it from `myPositions` on the
+next refresh, so any group it was part of either shrinks (if 2+ remain) or
+disappears (if only one position is left with no partner) with no separate
+"undo the group" step needed. Burns every selected source, mints one new
+position for the combined amount, starting "Pending" until next epoch.
 
 **Move** (`moveStake(positionId, toAgentId)` → `StakeMoved(oldPositionId,
 newPositionId, staker, fromAgentId, toAgentId)`): re-points a position at a

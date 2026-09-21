@@ -760,6 +760,78 @@ confirmed the live site (`antseed-zh.com`) was already serving the new
 bundle hash (`index-Cb4amrVZ.js`) and that it contains both `IANTS` and
 the new `stake.merge*` i18n keys.
 
+## 2026-09-21: Merge redesigned to a grouped list after live testing; a real Move/Merge race fixed
+
+User tested Move live ("works pretty well") and gave direct feedback on
+Merge before testing it further:
+
+> for the merge i would suggest put all nfts which are eligible for
+> merging in a group and owners could choose any of them to merge. also
+> don't use the button list here but list. another thing to notice that i
+> have two nfts which can be merged but after move one of them to another
+> provider it should be not aviable to merge so no meaning to show merge
+> of the other one. the newly minted nft not show the merge button.
+> actually just use a group to put the same items together while once
+> move out it becomes a new group.
+
+Two changes, both in `src/components/StakeANTS.jsx`:
+
+**1. Merge UX rebuilt as a grouped list, not a per-card button+modal.**
+The old flow put a "Merge" button on every eligible card, opening a modal
+anchored on that one card with checkboxes for its siblings — implying a
+"base" position that doesn't actually exist in `mergeStakes()`, which just
+takes an unordered array. New flow: `groupMyPositions()` clusters the
+Mine tab's positions by `mergeGroupKey()` (same seller + identical lock
+window); any cluster of 2+ renders as one `MergeGroup` block — every
+member card shown together with a checkbox on it, plus a single "Merge
+selected (n)" button for the whole group. Any 2+ checked can be merged,
+with no fixed anchor. A position with no eligible partner renders as a
+plain card with no merge affordance at all — matching "the newly minted
+nft [should] not show the merge button" once it no longer shares a lock
+window with anything. Also dropped the modal entirely: merge needs no
+extra input beyond "which ones," which the checkboxes already are, so
+`doMergeSelected` fires directly off the group's button (same directness
+as Cancel/Buy elsewhere on this page) instead of adding a confirmation
+step that would just repeat the same list.
+
+**2. Real bug, not just a UX gap:** after Move, the sibling position kept
+showing as merge-eligible for a few seconds against a partner that had
+just moved away. Root cause was a race: `doMove` (and the old `doMerge`)
+fired `refreshMyPositions()` *alongside* the action's own `wait=1` market
+refresh instead of after it, so the myPositions refetch could return
+first with pre-move data. Fixed by chaining `refreshMyPositions()` in a
+`.then()` after the market refresh resolves — no extra `force`/`wait`
+needed on that second call either, since the first call's `wait=1` already
+forced a full recompute into the *shared* (not owner-scoped)
+`lantsMarketCache`, and that write completes before the response is even
+sent, so the very next request lands well inside the 90s freshness window
+regardless. `refreshMyPositions({ force: true })` is kept only for the
+`.catch()` fallback path, where that recompute may not have happened at
+all. Since groups are recomputed fresh from `myPositions` on every
+render, fixing the staleness automatically fixed the stated symptom too —
+"once move out it becomes a new group" now just falls out of
+`groupMyPositions()` re-running on correct data, no separate "disband the
+group" logic needed.
+
+New CSS: `.lants-merge-group`/`.lants-merge-group__header`/
+`.lants-merge-group__actions` (a dashed-border cluster spanning the full
+grid row) and `.lants-nft__mergecheck` (the per-card checkbox) in
+`src/index.css`. i18n: replaced the old per-card-modal keys
+(`mergePosition`, `mergeConfirm`, `mergeCandidateRow`, `mergeNoCandidates`,
+`mergePickAtLeastOne`) with group-oriented ones (`mergeGroupLabel`,
+`mergeGroupTotal`, `mergeSelect`, `mergeSelectedConfirm`) in `en.js` only,
+keeping `merging`/`mergeOk`/`mergeHint`/`mergeResult` since those still
+apply. `docs/ARCHITECTURE.md`'s Merge subsection rewritten to describe the
+grouped UI and the race fix instead of the retired modal.
+
+Verified live the same way as every other frontend-only round this
+session: `npm run build` + `BUILD_TARGET=root npm run build`, then
+confirmed `antseed-zh.com` was serving the new bundle hash and that it
+contains the new `mergeGroupLabel`/`mergeSelectedConfirm`/`mergeSelect`
+i18n keys. Pushed as a follow-up commit on the open PR
+(`feat/iants-stakers-and-perf`, #13) rather than a new one, since it's
+addressing review feedback on work already under review there.
+
 ## Open questions (no obvious right answer — flag to the user, don't guess)
 
 - Should the admin routes (`/api/admin/sync`, `/api/admin/force-*-sync`)

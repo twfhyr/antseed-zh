@@ -67,15 +67,44 @@ function sellerForAgent(sellers, agentId) {
 // lock window) -- this mirrors the Stakers page's own "same locked time"
 // grouping rather than trying to replicate the contract's restructure math
 // client-side. Positions that are listed or are 1-ANT provider-activation
-// stakes can't be merged (same rule as split/list).
-function mergeCandidates(myPositions, p) {
-  if (!p) return [];
-  return myPositions.filter((o) => o.id !== p.id
-    && o.agentId === p.agentId
-    && o.stakeStartEpoch === p.stakeStartEpoch
-    && o.stakeEndEpoch === p.stakeEndEpoch
-    && !o.listed
-    && !isProviderActivationStake(o.amount));
+// stakes can't be merged (same rule as split/list) so they never get a key.
+function mergeGroupKey(p) {
+  if (p.listed || isProviderActivationStake(p.amount)) return null;
+  if (p.agentId == null || p.stakeStartEpoch == null || p.stakeEndEpoch == null) return null;
+  return `${p.agentId}|${p.stakeStartEpoch}|${p.stakeEndEpoch}`;
+}
+
+// Groups the caller's own positions by mergeGroupKey -- a group of 2+ is
+// shown as one mergeable cluster on the Mine tab; anything left alone
+// (unique lock window, listed, or a 1-ANT activation stake) renders as a
+// plain standalone card with no merge affordance at all. Moving a position
+// away (new agentId) or merging it (new lock window/epoch) naturally drops
+// it out of its old group and, if that leaves a former partner alone, that
+// partner just stops appearing in any group next render -- there's no
+// separate "undo the group" step needed, the grouping is recomputed fresh
+// from myPositions every time.
+function groupMyPositions(myPositions) {
+  const groups = new Map();
+  for (const p of myPositions) {
+    const key = mergeGroupKey(p);
+    if (!key) continue;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(p);
+  }
+  const grouped = new Set();
+  const blocks = [];
+  for (const [key, items] of groups) {
+    if (items.length < 2) continue;
+    const sorted = [...items].sort((a, b) => a.id - b.id);
+    sorted.forEach((p) => grouped.add(p.id));
+    blocks.push({ type: 'group', key, items: sorted });
+  }
+  for (const p of myPositions) {
+    if (!grouped.has(p.id)) blocks.push({ type: 'single', item: p });
+  }
+  const minId = (b) => (b.type === 'group' ? b.items[0].id : b.item.id);
+  blocks.sort((a, b) => minId(a) - minId(b));
+  return blocks;
 }
 
 function positionState(p, currentEpoch) {
@@ -110,7 +139,8 @@ function StakeANTS() {
   const [offersById, setOffersById] = useState({}); // tokenId -> { loading, items, error }
   const [offerActionState, setOfferActionState] = useState(null); // { offerId, phase, message }
   const [splitForm, setSplitForm] = useState(null); // { id, amount, phase, message, result }
-  const [mergeForm, setMergeForm] = useState(null); // { position, selectedIds: Set, phase, message, result }
+  const [mergeSelected, setMergeSelected] = useState(() => new Set()); // position ids checked for merging, across all groups
+  const [mergeState, setMergeState] = useState(null); // { ids, phase, message, result } -- last merge action's status
   const [moveForm, setMoveForm] = useState(null); // { position, toAgentId, phase, message, result }
   const [trades, setTrades] = useState(null);
   const [tradesLoading, setTradesLoading] = useState(false);
@@ -125,17 +155,40 @@ function StakeANTS() {
   }, []);
 
   // The caller's full position list (uncapped by the active tab/page/filters)
-  // -- needed to find merge siblings even when the sibling isn't on the
-  // current "Mine" page. Refetched whenever the wallet changes or a
-  // merge/move actually completes (see doMerge/doMove).
+  // -- this drives the whole Mine tab now (grouping needs every position,
+  // not just whatever page happens to be open). Refetched whenever the
+  // wallet changes or a merge/move actually completes (see doMergeSelected/
+  // doMove). `force` asks the backend for a synchronous on-chain refresh
+  // instead of its normal 90s cache -- only needed as a fallback when the
+  // action's own market refresh failed outright (see below).
+  //
+  // Real bug found while building this: doMergeSelected/doMove used to
+  // fire this alongside their own `wait=1` market refresh (not after it),
+  // so this request could win the race and return first with the OLD
+  // data -- a position that had just moved/merged away could keep showing
+  // as a live merge candidate for a few seconds. Fixed by chaining this
+  // call in a `.then()` after that refresh resolves instead: no `force`
+  // needed there either, since the other call's `wait=1` already forced a
+  // full recompute into the shared (not owner-scoped) server-side cache,
+  // and that write completes before its response is even sent -- so by
+  // the time this fires, a plain cached read is already current. `force`
+  // is reserved for the `.catch()` path, where that recompute may not
+  // have happened at all.
   const [myPositions, setMyPositions] = useState([]);
-  const refreshMyPositions = useCallback(() => {
-    if (!address) { setMyPositions([]); return; }
-    fetchLantsMarket({ owner: address, pageSize: 100, sort: 'id' })
+  const refreshMyPositions = useCallback(({ force = false } = {}) => {
+    if (!address) { setMyPositions([]); return Promise.resolve(); }
+    return fetchLantsMarket({ owner: address, pageSize: 100, sort: 'id', wait: force ? '1' : undefined })
       .then((data) => setMyPositions(data?.items || []))
       .catch(() => {});
   }, [address]);
   useEffect(() => { refreshMyPositions(); }, [refreshMyPositions]);
+
+  // Mine tab's own render list: myPositions clustered into mergeable groups
+  // (2+ positions, same seller, same lock window) plus everything else as
+  // standalone cards -- see groupMyPositions' own comment. Recomputed fresh
+  // on every myPositions change, so a group dissolves/reforms automatically
+  // the moment a member is split/merged/moved away, without any extra state.
+  const mineBlocks = useMemo(() => groupMyPositions(myPositions), [myPositions]);
 
   const marketQuery = useMemo(() => ({
     page: marketPage,
@@ -309,32 +362,54 @@ function StakeANTS() {
     }
   };
 
-  const doMerge = async (position) => {
+  const toggleMergeSelect = (id) => {
+    setMergeSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  // No modal here on purpose: unlike List/Offer/Move, a merge needs no extra
+  // input beyond "which ones" -- that's exactly what the group's checkboxes
+  // already capture, so checking 2+ boxes and pressing the group's own
+  // "Merge selected" button (see MergeGroup below) is the whole flow.
+  const doMergeSelected = async (ids) => {
     const poolsAddr = market?.contract;
-    const selected = [...(mergeForm?.selectedIds || [])];
     if (!walletClient || !address || !poolsAddr) {
-      setMergeForm((f) => ({ ...(f || { position, selectedIds: new Set() }), phase: 'error', message: t('stake.buyNeedWallet') }));
+      setMergeState({ ids, phase: 'error', message: t('stake.buyNeedWallet') });
       return;
     }
-    if (selected.length === 0) {
-      setMergeForm((f) => ({ ...f, phase: 'error', message: t('stake.mergePickAtLeastOne') }));
-      return;
-    }
+    if (ids.length < 2) return;
     try {
-      setMergeForm((f) => ({ ...f, phase: 'merging', message: t('stake.merging') }));
-      const result = await mergePositions({
-        walletClient, account: address, poolsAddress: poolsAddr,
-        positionIds: [position.id, ...selected],
+      setMergeState({ ids, phase: 'merging', message: t('stake.merging') });
+      const result = await mergePositions({ walletClient, account: address, poolsAddress: poolsAddr, positionIds: ids });
+      setMergeState({ ids, phase: 'done', message: t('stake.mergeOk'), result });
+      setMergeSelected((prev) => {
+        const next = new Set(prev);
+        ids.forEach((id) => next.delete(id));
+        return next;
       });
-      setMergeForm({ position, selectedIds: new Set(selected), phase: 'done', message: t('stake.mergeOk'), result });
       // Same reason as doSplit's ensureIds: the new position won't be in
       // Antscan's cache yet, and neither should the merged-away sources
       // still show as open -- force a real on-chain read of all of them.
-      const ensureIds = [position.id, ...selected, result.newPositionId].filter((x) => x != null).join(',');
-      fetchLantsMarket({ ...marketQuery, wait: '1', ensureIds }).then(setMarket).catch(() => {});
-      refreshMyPositions();
+      // refreshMyPositions is chained AFTER this resolves (not fired
+      // alongside it) so the Mine grid's grouping can't read a stale
+      // myPositions snapshot that still shows an already-merged-away
+      // source as a live candidate -- see refreshMyPositions's own comment.
+      const ensureIds = [...ids, result.newPositionId].filter((x) => x != null).join(',');
+      // The .then() case doesn't need force:true on the follow-up read --
+      // fetchLantsMarket's wait=1 above already forced a full recompute and
+      // that (shared, not owner-scoped) cache write completes before this
+      // response is even sent, so the very next request lands well inside
+      // its 90s freshness window regardless. force:true is only for the
+      // .catch() fallback, where that recompute may not have happened at
+      // all and this read is the only chance to get current data.
+      fetchLantsMarket({ ...marketQuery, wait: '1', ensureIds })
+        .then((data) => { setMarket(data); return refreshMyPositions(); })
+        .catch(() => refreshMyPositions({ force: true }));
     } catch (e) {
-      setMergeForm((f) => ({ ...f, phase: 'error', message: e.shortMessage || e.message }));
+      setMergeState({ ids, phase: 'error', message: e.shortMessage || e.message });
     }
   };
 
@@ -357,8 +432,13 @@ function StakeANTS() {
       });
       setMoveForm({ position, toAgentId, phase: 'done', message: t('stake.moveOk'), result });
       const ensureIds = [position.id, result.newPositionId].filter((x) => x != null).join(',');
-      fetchLantsMarket({ ...marketQuery, wait: '1', ensureIds }).then(setMarket).catch(() => {});
-      refreshMyPositions();
+      // See doMergeSelected's comment: refreshMyPositions is chained after
+      // this resolves, not fired in parallel with it, so a sibling position
+      // still sharing this one's old lock window can't briefly keep showing
+      // "eligible to merge" against a position that just moved away.
+      fetchLantsMarket({ ...marketQuery, wait: '1', ensureIds })
+        .then((data) => { setMarket(data); return refreshMyPositions(); })
+        .catch(() => refreshMyPositions({ force: true }));
     } catch (e) {
       setMoveForm((f) => ({ ...f, phase: 'error', message: e.shortMessage || e.message }));
     }
@@ -454,6 +534,42 @@ function StakeANTS() {
 
   const poolsAddress = market?.contract;
 
+  // Shared by both the listed/all grid (below) and the Mine tab's grouped/
+  // standalone cards -- one place for the ownership/listing/activation-stake
+  // checks every action's gating already depended on, instead of three
+  // near-identical copies. `market` must exist by the time this is called
+  // (both render paths already guard on it).
+  const commonCardProps = (p) => ({
+    seller: p.sellerName ? { name: p.sellerName } : sellerForAgent(sellers, p.agentId),
+    currentEpoch: market?.currentEpoch,
+    genesis: market.genesis,
+    epochDuration: market.epochDuration,
+    poolsAddress,
+    t, lang,
+    listing: p.listing,
+    setListForm,
+    canList: !!(isConnected && address && p.owner && address.toLowerCase() === p.owner.toLowerCase() && !p.listed && !isProviderActivationStake(p.amount)),
+    onBuy: () => doBuy(p),
+    canBuy: !!(isConnected && address && p.owner && address.toLowerCase() !== p.owner.toLowerCase() && p.listed && p.fulfillableHere),
+    buyState: buyState?.id === p.id ? buyState : null,
+    isOwner: !!(isConnected && address && p.owner && address.toLowerCase() === p.owner.toLowerCase()),
+    address,
+    onCancel: doCancel,
+    cancelState: cancelState?.id === p.id ? cancelState : null,
+    setOfferForm,
+    canOffer: marketTab !== 'mine' && !!(isConnected && address && p.owner && address.toLowerCase() !== p.owner.toLowerCase() && !isProviderActivationStake(p.amount)),
+    offersOpen: offersOpenFor === p.id,
+    offers: offersById[p.id],
+    onToggleOffers: toggleOffers,
+    onAcceptOffer: doAcceptOffer,
+    onCancelOffer: doCancelOffer,
+    offerActionState,
+    setSplitForm,
+    canSplit: !!(isConnected && address && p.owner && address.toLowerCase() === p.owner.toLowerCase() && !p.listed && !isProviderActivationStake(p.amount) && p.amount > 1),
+    setMoveForm,
+    canMove: !!(isConnected && address && p.owner && address.toLowerCase() === p.owner.toLowerCase() && !p.listed && !isProviderActivationStake(p.amount)),
+  });
+
   return (
     <div className="table-container" style={{ padding: '2rem' }}>
       <div style={{ maxWidth: '960px' }}>
@@ -530,6 +646,45 @@ function StakeANTS() {
                   page={marketPage} pageSize={MARKET_PAGE_SIZE} onPageChange={setMarketPage}
                   t={t} lang={lang}
                 />
+              ) : marketTab === 'mine' ? (
+              <>
+              {/* Kept here (outside any one group) rather than inside
+                  MergeGroup, since a successful merge removes its own
+                  source positions from myPositions on refresh -- the group
+                  that triggered it can vanish or reshuffle a moment later,
+                  which would otherwise take a same-scoped status message
+                  down with it before anyone could read it. */}
+              {mergeState?.message && (
+                <div style={{ fontSize: '0.8125rem', color: mergeState.phase === 'error' ? 'var(--danger)' : 'var(--text-secondary)', margin: '0 0 1rem' }}>
+                  {mergeState.message}
+                  {mergeState.phase === 'done' && mergeState.result?.newPositionId != null
+                    && ` — ${t('stake.mergeResult', { id: mergeState.result.newPositionId })}`}
+                </div>
+              )}
+              {mineBlocks.length === 0 && (
+                <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', margin: '1rem 0' }}>
+                  {t('stake.mineEmpty')}
+                </div>
+              )}
+              {mineBlocks.length > 0 && (
+                <div className="lants-nft-grid">
+                  {mineBlocks.map((block) => block.type === 'single' ? (
+                    <LantsNftCard key={`m-${block.item.id}`} position={block.item} {...commonCardProps(block.item)} />
+                  ) : (
+                    <MergeGroup
+                      key={`g-${block.key}`}
+                      items={block.items}
+                      selected={mergeSelected}
+                      onToggle={toggleMergeSelect}
+                      mergeState={mergeState}
+                      onMerge={doMergeSelected}
+                      cardProps={commonCardProps}
+                      t={t}
+                    />
+                  ))}
+                </div>
+              )}
+              </>
               ) : (
               <>
               <div className="lants-filters">
@@ -580,47 +735,13 @@ function StakeANTS() {
 
               {marketItems.length === 0 && (
                 <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', margin: '1rem 0' }}>
-                  {marketTab === 'mine' ? t('stake.mineEmpty') : t('stake.noneMatch')}
+                  {t('stake.noneMatch')}
                 </div>
               )}
               {marketItems.length > 0 && (
                 <div className="lants-nft-grid">
                   {marketItems.map((p) => (
-                    <LantsNftCard
-                      key={`m-${p.id}`}
-                      position={p}
-                      seller={p.sellerName ? { name: p.sellerName } : sellerForAgent(sellers, p.agentId)}
-                      currentEpoch={market?.currentEpoch}
-                      genesis={market.genesis}
-                      epochDuration={market.epochDuration}
-                      poolsAddress={poolsAddress}
-                      t={t}
-                      lang={lang}
-                      listing={p.listing}
-                      setListForm={setListForm}
-                      canList={!!(isConnected && address && p.owner && address.toLowerCase() === p.owner.toLowerCase() && !p.listed && !isProviderActivationStake(p.amount))}
-                      onBuy={() => doBuy(p)}
-                      canBuy={!!(isConnected && address && p.owner && address.toLowerCase() !== p.owner.toLowerCase() && p.listed && p.fulfillableHere)}
-                      buyState={buyState?.id === p.id ? buyState : null}
-                      isOwner={!!(isConnected && address && p.owner && address.toLowerCase() === p.owner.toLowerCase())}
-                      address={address}
-                      onCancel={doCancel}
-                      cancelState={cancelState?.id === p.id ? cancelState : null}
-                      setOfferForm={setOfferForm}
-                      canOffer={marketTab !== 'mine' && !!(isConnected && address && p.owner && address.toLowerCase() !== p.owner.toLowerCase() && !isProviderActivationStake(p.amount))}
-                      offersOpen={offersOpenFor === p.id}
-                      offers={offersById[p.id]}
-                      onToggleOffers={toggleOffers}
-                      onAcceptOffer={doAcceptOffer}
-                      onCancelOffer={doCancelOffer}
-                      offerActionState={offerActionState}
-                      setSplitForm={setSplitForm}
-                      canSplit={!!(isConnected && address && p.owner && address.toLowerCase() === p.owner.toLowerCase() && !p.listed && !isProviderActivationStake(p.amount) && p.amount > 1)}
-                      setMergeForm={setMergeForm}
-                      mergeCandidates={mergeCandidates(myPositions, p)}
-                      setMoveForm={setMoveForm}
-                      canMove={!!(isConnected && address && p.owner && address.toLowerCase() === p.owner.toLowerCase() && !p.listed && !isProviderActivationStake(p.amount))}
-                    />
+                    <LantsNftCard key={`m-${p.id}`} position={p} {...commonCardProps(p)} />
                   ))}
                 </div>
               )}
@@ -643,7 +764,6 @@ function StakeANTS() {
       <ListModal form={listForm} setForm={setListForm} onConfirm={doList} t={t} />
       <OfferModal form={offerForm} setForm={setOfferForm} onConfirm={doMakeOffer} t={t} />
       <SplitModal form={splitForm} setForm={setSplitForm} onConfirm={doSplit} t={t} />
-      <MergeModal form={mergeForm} setForm={setMergeForm} onConfirm={doMerge} t={t} />
       <MoveModal form={moveForm} setForm={setMoveForm} onConfirm={doMove} sellers={sellers} t={t} />
     </div>
   );
@@ -653,9 +773,8 @@ function LantsNftCard({
   position: p, seller, currentEpoch, genesis, epochDuration, t, lang, listing, setListForm, canList, onBuy, canBuy, buyState,
   activation, isOwner, address, onCancel, cancelState, setOfferForm, canOffer,
   offersOpen, offers, onToggleOffers, onAcceptOffer, onCancelOffer, offerActionState,
-  setSplitForm, canSplit, setMergeForm, mergeCandidates, setMoveForm, canMove,
+  setSplitForm, canSplit, setMoveForm, canMove, mergeCheckbox,
 }) {
-  const canMerge = isOwner && !p.listed && !isProviderActivationStake(p.amount) && (mergeCandidates?.length || 0) > 0;
   const sellerName = seller?.name || (p.agentId != null ? t('stake.agent', { id: p.agentId }) : '—');
   const state = (p.stakeStartEpoch != null && p.stakeEndEpoch != null) ? positionState(p, currentEpoch) : null;
   const dates = epochDates(p.stakeStartEpoch, p.stakeEndEpoch, genesis, epochDuration);
@@ -684,6 +803,12 @@ function LantsNftCard({
         listingLabel={listing ? formatListing(listing) : null}
       />
       <figcaption className="lants-nft__caption">
+        {mergeCheckbox && (
+          <label className="lants-nft__mergecheck">
+            <input type="checkbox" checked={mergeCheckbox.checked} onChange={mergeCheckbox.onToggle} />
+            {t('stake.mergeSelect')}
+          </label>
+        )}
         {listing && (
           <div className="lants-nft__price">
             <span>{t('stake.listedPrice')}: {formatListing(listing)}</span>
@@ -761,15 +886,6 @@ function LantsNftCard({
               onClick={() => setSplitForm({ position: p, amount: '', phase: null, message: null, result: null })}
             >
               {t('stake.splitPosition')}
-            </button>
-          )}
-          {canMerge && setMergeForm && (
-            <button
-              type="button"
-              className="lants-nft__listbtn"
-              onClick={() => setMergeForm({ position: p, candidates: mergeCandidates, selectedIds: new Set(), phase: null, message: null, result: null })}
-            >
-              {t('stake.mergePosition')}
             </button>
           )}
           {canMove && setMoveForm && (
@@ -972,55 +1088,48 @@ function SplitModal({ form, setForm, onConfirm, t }) {
   );
 }
 
-function MergeModal({ form, setForm, onConfirm, t }) {
-  if (!form) return null;
-  const busy = form.phase === 'merging';
-  const p = form.position;
-  const candidates = form.candidates || [];
-  const toggle = (id) => {
-    const next = new Set(form.selectedIds);
-    if (next.has(id)) next.delete(id); else next.add(id);
-    setForm({ ...form, selectedIds: next, phase: null });
-  };
-  const selectedTotal = candidates
-    .filter((c) => form.selectedIds.has(c.id))
-    .reduce((sum, c) => sum + (c.amount || 0), 0) + (p.amount || 0);
+// One mergeable cluster on the Mine tab: every position sharing the same
+// seller + lock window, rendered together with a checkbox per card instead
+// of each card getting its own "Merge" button (see groupMyPositions). Any
+// 2+ checked here can be merged directly -- there's no fixed "base"
+// position the way the old per-card modal anchored on one -- so this has
+// no modal step of its own, just an inline "Merge selected" action, the
+// same directness as Cancel/Buy elsewhere on this page.
+function MergeGroup({ items, selected, onToggle, mergeState, onMerge, cardProps, t }) {
+  const selectedIds = items.map((p) => p.id).filter((id) => selected.has(id));
+  const totalAmount = items.reduce((sum, p) => sum + (p.amount || 0), 0);
+  const selectedTotal = items.filter((p) => selected.has(p.id)).reduce((sum, p) => sum + (p.amount || 0), 0);
+  const busy = mergeState?.phase === 'merging' && selectedIds.some((id) => mergeState.ids.includes(id));
+  const seller = items[0].sellerName ? { name: items[0].sellerName } : null;
+  const sellerLabel = seller?.name || t('stake.agent', { id: items[0].agentId });
   return (
-    <ActionModal titleKey="stake.mergePosition" position={p} onClose={() => setForm(null)} t={t}>
-      <div className="lants-nft__listform">
-        {candidates.length === 0 && (
-          <div style={{ gridColumn: '1 / -1', color: 'var(--text-secondary)', fontSize: '0.8125rem' }}>
-            {t('stake.mergeNoCandidates')}
-          </div>
-        )}
-        {candidates.map((c) => (
-          <label key={c.id} style={{ gridColumn: '1 / -1', display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 400 }}>
-            <input type="checkbox" checked={form.selectedIds.has(c.id)} onChange={() => toggle(c.id)} />
-            {t('stake.mergeCandidateRow', { id: c.id, amount: formatAnts(c.amount) })}
-          </label>
+    <div className="lants-merge-group">
+      <div className="lants-merge-group__header">
+        <span>{t('stake.mergeGroupLabel', { n: items.length })} — <strong>{sellerLabel}</strong></span>
+        <span>{t('stake.mergeGroupTotal', { total: formatAnts(totalAmount) })}</span>
+      </div>
+      <div className="lants-nft-grid">
+        {items.map((p) => (
+          <LantsNftCard
+            key={`m-${p.id}`}
+            position={p}
+            {...cardProps(p)}
+            mergeCheckbox={{ checked: selected.has(p.id), onToggle: () => onToggle(p.id) }}
+          />
         ))}
-        <button type="button" onClick={() => onConfirm(p)} disabled={busy || candidates.length === 0}>
+      </div>
+      <div className="lants-merge-group__actions">
+        <button type="button" onClick={() => onMerge(selectedIds)} disabled={selectedIds.length < 2 || busy}>
           {busy ? <Loader2 size={12} className="spin" /> : null}
-          {t('stake.mergeConfirm')}
+          {t('stake.mergeSelectedConfirm', { n: selectedIds.length })}
         </button>
-        <button type="button" onClick={() => setForm(null)}>{t('stake.listCancel')}</button>
-        {form.selectedIds.size > 0 && (
-          <div style={{ gridColumn: '1 / -1', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+        {selectedIds.length >= 2 && (
+          <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
             {t('stake.mergeHint', { total: formatAnts(selectedTotal) })}
-          </div>
-        )}
-        {form.message && (
-          <div style={{ color: form.phase === 'error' ? 'var(--danger)' : 'var(--text-secondary)', gridColumn: '1 / -1' }}>
-            {form.message}
-          </div>
-        )}
-        {form.result?.newPositionId != null && (
-          <div style={{ gridColumn: '1 / -1', color: 'var(--text-secondary)', fontSize: '0.8rem' }}>
-            {t('stake.mergeResult', { id: form.result.newPositionId })}
-          </div>
+          </span>
         )}
       </div>
-    </ActionModal>
+    </div>
   );
 }
 
