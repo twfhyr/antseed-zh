@@ -234,8 +234,10 @@ Full live map served by `/api/chain-stats` → `contracts`. Core entries:
 ### Overview
 
 Locked ANTS positions (`AntseedSellerPools`) are ERC-721 NFTs — "lANTS". The
-**IANTS tab** (`/iants`, `src/components/StakeANTS.jsx` — labelled "lANTS"
-in-tab, "IANTS" in the nav since it sits next to Stakers as of 2026-09-21)
+**lANTS tab** (`/lants`, `src/components/StakeANTS.jsx` — briefly labelled
+"IANTS" for a few hours on 2026-09-21 after moving next to Stakers, reverted
+to "lANTS" the same day on founder feedback: the name is locked ANTS,
+lowercase L, not a capital I)
 lets holders list, buy, cancel, make offers on, accept offers, split, merge,
 and move these NFTs entirely on **antseed-zh's own order book** (for the
 trading actions) or directly against `AntseedSellerPools` on-chain (for
@@ -251,7 +253,7 @@ The **Stakers tab** (`/stakers`, next to Sellers) is a separate, public,
 no-wallet-needed view of the *same underlying positions* — grouped by
 staker address and lock length instead of listed NFT-by-NFT. See "Stakers
 tab (public, read-only)" near the end of this section for how it relates to
-the IANTS tab and why the two are kept as separate tabs rather than merged.
+the lANTS tab and why the two are kept as separate tabs rather than merged.
 
 This replaced an earlier approach that called OpenSea's API directly for
 listing, which failed in production with "no API key" — OpenSea's free
@@ -284,7 +286,7 @@ Every listing and offer this site creates is denominated in **USDC**
 `DepositModal.jsx` already used for real deposits), not native ETH or
 WETH. This replaced an earlier version where listings used a native-ETH
 consideration item and offers used WETH — changed after live user
-feedback: "IANTS feels more like BRC-20, so its trading should use
+feedback: "lANTS feels more like BRC-20, so its trading should use
 similar ways… denominate in USDC and allow users [to] buy or pay in USDC
 while not show[ing] ETH any more" (referencing BRC-20 marketplace UIs
 like unisat.io's).
@@ -637,19 +639,19 @@ both halves, so a freshly-split pair is always merge-eligible with each
 other). **To test Move**, you only need one non-listed, non-activation
 position and at least two registered sellers to choose between.
 
-### Stakers tab (public, read-only) vs. the IANTS tab
+### Stakers tab (public, read-only) vs. the lANTS tab
 
 Both tabs read the same underlying `AntseedSellerPools` positions, but for
 different purposes and audiences:
 
-| | IANTS tab | Stakers tab |
+| | lANTS tab | Stakers tab |
 |---|---|---|
 | Shown as | one card per NFT (`lants-market` items) | one row per staker, positions with the same address + lock length combined |
 | Needs a wallet? | only to act (list/buy/split/merge/move) — browsing doesn't | never — fully public |
 | Data source | `/api/lants-market` (Antscan + on-chain + local order book, 90s cache) | `/api/stakers` → local `stake_positions` SQLite table, synced every 5 min alongside the rest of `runHistorySync()` (no live Antscan call on the request path — this was a 2026-09-21 loading-speed fix, see `notes/dev-plan.md`) |
 | Purpose | trade/manage individual positions | "how much is staked, by whom, for how long" at a glance |
 
-They're deliberately two tabs, not one view with a toggle: the IANTS tab's
+They're deliberately two tabs, not one view with a toggle: the lANTS tab's
 unit of interaction is the NFT (you split/merge/move *a specific position*),
 while the Stakers tab's unit is the *person* (their combined stake). Forcing
 both into one table would mean either losing the per-NFT actions or losing

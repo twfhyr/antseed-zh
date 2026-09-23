@@ -8,7 +8,7 @@ import { syncFromLocalDiscovery } from './sync-local-discovery.js';
 import { readChainMetrics, updateChainMetrics, startChainPoller } from './chain-poller.js';
 import {
   runHistorySync, startHistorySync,
-  readLatestSnapshot, readDailyMetrics, readBuyersOnchain, readBuyerOnchain, countBuyersOnchain, readSellersOnchain,
+  readLatestSnapshot, readDailyMetrics, readBuyersOnchain, readBuyerOnchain, countBuyersOnchain, readSellersOnchain, readSellerOnchain,
   readEpochMetrics, readStakePositions,
 } from './sync-history.js';
 import {
@@ -1037,6 +1037,16 @@ app.get('/api/history/buyer/:address', (req, res) => {
 app.get('/api/history/sellers', (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 5000, 5000);
   res.json(readSellersOnchain(limit));
+});
+
+// One seller's full activity -- the seller-side mirror of
+// /api/history/buyer/:address. 404 (not an empty object) when Antscan has
+// never indexed this address, same "no data yet" vs "zero activity"
+// distinction as the buyer route.
+app.get('/api/history/seller/:address', (req, res) => {
+  const row = readSellerOnchain(req.params.address);
+  if (!row) return res.status(404).json({ error: 'no indexed activity for this address' });
+  res.json(row);
 });
 
 app.post('/api/admin/force-history-sync', requireAdminAuth, async (_req, res) => {
@@ -2768,6 +2778,63 @@ app.get('/api/rewards', async (req, res) => {
     res.json(data);
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// ─── Chat / image-gen proxy ─────────────────────────────────────────
+// Thin passthrough to the local antseed-buyer-longley-funs proxy
+// (http://127.0.0.1:8390), which pays Apex Ant in USDC to run
+// grok-imagine-image-quality. Anyone can hit this endpoint from the site or
+// an external agent. The site owner (buyer wallet) pays.
+const CHAT_BUYER_URL = process.env.CHAT_BUYER_URL || 'http://127.0.0.1:8390';
+const CHAT_MODEL     = process.env.CHAT_MODEL     || 'grok-imagine-image-quality';
+const CHAT_IMAGE_SIZE = process.env.CHAT_IMAGE_SIZE || '1024x1024';
+const CHAT_RATE_WINDOW_MS   = 60_000;
+const CHAT_RATE_LIMIT       = parseInt(process.env.CHAT_RATE_LIMIT || '60', 10); // per IP per min
+const _chatRateLog = new Map(); // ip -> [tsMs, ...]
+function chatRateOk(ip) {
+  if (CHAT_RATE_LIMIT <= 0) return true; // 0 = disabled
+  const now = Date.now();
+  const arr = (_chatRateLog.get(ip) || []).filter(t => now - t < CHAT_RATE_WINDOW_MS);
+  if (arr.length >= CHAT_RATE_LIMIT) { _chatRateLog.set(ip, arr); return false; }
+  arr.push(now);
+  _chatRateLog.set(ip, arr);
+  return true;
+}
+
+app.post('/api/chat/image', async (req, res) => {
+  try {
+    const ip = (req.headers['x-forwarded-for'] || '').toString().split(',')[0].trim() || req.ip || 'unknown';
+    if (!chatRateOk(ip)) return res.status(429).json({ error: `rate limit: ${CHAT_RATE_LIMIT} requests per minute per IP` });
+
+    // Passthrough: caller can send any OpenAI-images compatible body. We fill
+    // in model + size + n + response_format defaults only when missing, so an
+    // agent calling this endpoint feels like calling the model directly.
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const payload = {
+      model: body.model || CHAT_MODEL,
+      prompt: typeof body.prompt === 'string' ? body.prompt : '',
+      n: body.n || 1,
+      size: body.size || CHAT_IMAGE_SIZE,
+      response_format: body.response_format || 'b64_json',
+      ...(body.moderation ? { moderation: body.moderation } : { moderation: 'low' }),
+    };
+
+    const upstream = await fetch(`${CHAT_BUYER_URL}/v1/images/generations`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'authorization': 'Bearer sk-antseed-zh-chat' },
+      body: JSON.stringify(payload),
+    });
+    const text = await upstream.text();
+    if (!upstream.ok) {
+      return res.status(upstream.status).json({ error: `buyer proxy ${upstream.status}: ${text.slice(0, 500)}` });
+    }
+    // Passthrough: return the upstream JSON body as-is so caller code that
+    // expects the OpenAI images shape works unchanged.
+    res.set('content-type', upstream.headers.get('content-type') || 'application/json');
+    return res.send(text);
+  } catch (e) {
+    return res.status(500).json({ error: e?.message || String(e) });
   }
 });
 

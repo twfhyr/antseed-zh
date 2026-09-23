@@ -8,15 +8,25 @@ export default {
   'nav.antsInfo': '$ANTS Info',
   'nav.claim': 'Claim ANTS',
   'nav.channels': 'Channels',
-  'nav.stake': 'IANTS',
+  'nav.stake': 'lANTS',
   'nav.stakers': 'Stakers',
+  'nav.portfolio': 'Portfolio',
   'nav.rewards': 'Rewards',
   'nav.about': 'About',
+  'nav.chat': 'Chat',
+  'chat.title': 'Generate an image',
+  'chat.subtitle': 'Public OpenAI-images endpoint: POST https://antseed-zh.com/api/chat/image with {"prompt":"..."}. Paid by the site owner, backed by antseed-buyer-longley-funs on Apex Ant with grok-imagine-image-quality.',
+  'chat.generate': 'Generate',
+  'chat.generating': 'Generating...',
+  'chat.error': 'Error',
+  'chat.howItWorks': 'How does this work?',
+  'chat.howItWorksBody': 'The request is forwarded to a local AntSeed buyer daemon that opens a payment channel with Apex Ant and pays about $0.03 to run grok-imagine-image-quality. The image is returned inline. No account or wallet required.',
+  'chat.apiHint': 'API endpoint:',
 
   // lANTS tab — a marketplace for trading/managing lANTS position NFTs
   // (list, buy, offer, split, history), not a rewards dashboard — see the
   // separate Staking tab below for checking/claiming pool rewards.
-  'stake.title': 'IANTS',
+  'stake.title': 'lANTS',
   'stake.blurb': 'Locked ANTS positions are lANTS NFTs, one per stake into a seller pool. Listed NFTs trade directly here via Seaport.',
   'stake.marketTitle': 'For sale',
   'stake.marketBlurb': 'Tradable lANTS NFTs, listed and bought right here via Seaport.',
@@ -334,6 +344,35 @@ export default {
   'buyerActivity.outputTokens': 'Output Tokens',
   'buyerActivity.channels': 'Channels',
   'buyerActivity.uniqueSellers': 'Unique Sellers',
+
+  // Portfolio tab (2026-09-22): connected/searched wallet's own buyer +
+  // seller activity (same Antscan-synced data as the Buyers/Sellers tabs'
+  // detail modals, just self-scoped) plus lANTS holdings (same positions
+  // the lANTS tab's Mine sub-tab lists, read-only summary here).
+  'portfolio.title': 'Portfolio',
+  'portfolio.blurb': 'Your activity on the network as a buyer and seller, plus your locked ANTS (lANTS) holdings.',
+  'portfolio.viewing': 'Viewing',
+  'portfolio.readOnly': '(read-only)',
+  'portfolio.searchPlaceholder': '0x... enter a Base address',
+  'portfolio.searchButton': 'Search',
+  'portfolio.connectPrompt': 'Connect your wallet or search an address to view its portfolio.',
+  'portfolio.buyerSection': 'As a Buyer',
+  'portfolio.sellerSection': 'As a Seller',
+  'portfolio.lantsSection': 'lANTS Holdings',
+  'portfolio.noBuyerActivity': 'No indexed buyer activity for this address.',
+  'portfolio.noSellerActivity': 'No indexed seller activity for this address.',
+  'portfolio.noLants': 'No lANTS positions for this address.',
+  'portfolio.manageLink': 'Manage in lANTS →',
+  'portfolio.earnedUsdc': 'Earned (USDC)',
+  'portfolio.stakedUsdc': 'Stake (USDC)',
+  'portfolio.uniqueBuyers': 'Unique Buyers',
+  'portfolio.agentId': 'Agent',
+  'portfolio.amount': 'Amount',
+  'portfolio.lockedFor': 'Locked For',
+  'portfolio.daysRemaining': '{days} days remaining',
+  'portfolio.expired': 'Unlocked',
+  'portfolio.listed': 'Listed for sale',
+  'portfolio.totalLants': 'Total lANTS',
 
   // Current-epoch sub-tabs (Buyers/Sellers) — see notes/epoch-features-plan.md
   'tabs.total': 'Total',

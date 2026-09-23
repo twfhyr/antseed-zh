@@ -1045,6 +1045,87 @@ whoever picks this up once there's real trading volume to justify it.
 No code changed. Not committed -- doc-only, and this session's standing
 rule is explicit-ask-only for commits regardless.
 
+## 2026-09-21: IANTS reverted to lANTS on founder feedback -- label and URL
+
+Founder: "the character should be lants which means locked ants rather
+than iants." The rename to "IANTS" (capital I) earlier this same session
+was wrong -- the real name is "lANTS" (lowercase L, for *locked* ANTS),
+which this codebase already used correctly everywhere else (the NFT
+itself, `AntseedSellerPools`, every other mention of "lANTS NFT").
+Reverted both the displayed label and the URL:
+
+- `nav.stake`/`stake.title` i18n keys: `'IANTS'` -> `'lANTS'` in both
+  `en.js` and `zh.js` (a label correction, not a new translation --
+  same exception this session has used for every prior rename).
+- URL: `TAB_PATHS.stake` and the market sub-tab's base segment
+  (`src/hooks/useTabRouter.js`) both changed `'iants'` -> `'lants'`
+  (`/lants`, `/lants/sales|all|mine|history`).
+- Added a **legacy alias**: `PATH_TABS.iants = 'stake'` and
+  `marketTabFromLocation()` now accepts either `lants` or `iants` as the
+  first path segment. `/iants` was only the canonical URL for a few
+  hours today, but a live site can already have that link shared
+  somewhere -- the alias means an old `/iants` (or `/iants/mine` etc.)
+  link still lands on the right tab instead of 404ing or silently
+  falling back to Overview. `tabHref`/`marketTabHref` (the functions that
+  *generate* links) only ever emit the canonical `lants` now, so the
+  alias never leaks back out into a newly-created link.
+- Updated every other "IANTS"/`/iants` mention across live code comments
+  and docs (`App.jsx`, `docs/ARCHITECTURE.md`, `docs/README.md`,
+  `README.md`) to `lANTS`/`/lants`, leaving only clearly-marked
+  historical notes ("briefly relabelled IANTS, reverted the same day")
+  where the old name is referenced as history, not current fact.
+
+Verified live: rebuilt both targets, confirmed the live bundle contains
+"lANTS" and the live site's `/lants` and legacy `/iants` both return 200
+and resolve to the right tab. Frontend-only, no backend restart needed.
+
+## Portfolio tab (2026-09-22)
+
+User asked: add a portfolio section showing the connected wallet's
+activity as a buyer and seller, plus its lANTS holdings. New tab,
+`/portfolio`, placed right after Stakers and before lANTS.
+
+**Reused existing data sources rather than building new ones where
+possible:**
+- Buyer activity: `fetchBuyerActivity` (existing, from the Buyers tab's
+  detail modal) -- unchanged.
+- lANTS holdings: `fetchLantsMarket({owner: address})` -- the exact same
+  call StakeANTS.jsx's Mine sub-tab already makes. Read-only summary here
+  (amount, lock days remaining, seller name, listed status); actual
+  management (list/split/merge/move) stays on the lANTS tab, linked to via
+  `marketTabHref('mine')`.
+
+**New, since no seller-side equivalent existed:**
+- `readSellerOnchain(address)` in `backend/sync-history.js`, mirroring
+  `readBuyerOnchain` exactly (`sellers_onchain` is keyed by `address`
+  already, same as `buyers_onchain`).
+- `GET /api/history/seller/:address` in `backend/server.js`, mirroring
+  `/api/history/buyer/:address` -- 404 (not an empty object) when Antscan
+  has never indexed the address, same "no data yet" vs "zero activity"
+  distinction.
+- `fetchSellerActivity(address)` in `src/api.js`.
+
+Not connected: same "search any address" fallback as ClaimANTS.jsx's "Look
+Up Any Address", so the tab stays useful without a wallet too.
+
+**Real bug caught while shipping**: rebuilding the frontend (`npm run
+build`) ships live immediately from disk (no restart), but the new
+*backend* route needed an actual `systemctl restart
+antseed-zh-dashboard` to take effect -- without it, the new endpoint
+200'd the SPA-fallback HTML instead of JSON (the exact same class of bug
+noted in the buyer-activity-detail round). Caught by curling the live
+endpoint before and after the restart, not assumed.
+
+Verified against the real live backend, not just that it builds: seller
+endpoint returns real data for a known seller (agent #47218, real
+earned/stake/request figures); buyer endpoint correctly 404s for a
+seller-only address; lANTS holdings correctly show 0 positions for that
+same seller wallet and a real position (19,795.3 ANTS, 728-day lock, 730
+days remaining, seller "Open Forge") for a known staker address. No
+browser tool available in this environment, so the actual rendered page
+was not visually clicked through -- only the data layer (all three
+API calls, all success/empty/not-found branches) was exercised for real.
+
 ## Open questions (no obvious right answer — flag to the user, don't guess)
 
 - Should the admin routes (`/api/admin/sync`, `/api/admin/force-*-sync`)

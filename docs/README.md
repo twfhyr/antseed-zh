@@ -100,7 +100,7 @@ Express Server (PORT 3001)
 | src/components/ClaimANTS.jsx | Five-bucket rewards view + wallet claim flows |
 | src/components/ChannelsView.jsx | Payment channels: list, requestClose, withdraw |
 | src/components/ANTSInfo.jsx | On-chain ANTS data, contract addresses, reward-mechanics explainer |
-| src/components/StakeANTS.jsx | IANTS tab (`/iants`): the paginated self-hosted Seaport lANTS marketplace (list/buy/cancel/offer/accept) plus split/merge/move position management on the Mine sub-tab — see `docs/ARCHITECTURE.md`'s "lANTS Marketplace" section |
+| src/components/StakeANTS.jsx | lANTS tab (`/lants`): the paginated self-hosted Seaport lANTS marketplace (list/buy/cancel/offer/accept) plus split/merge/move position management on the Mine sub-tab — see `docs/ARCHITECTURE.md`'s "lANTS Marketplace" section |
 | src/components/Stakers.jsx | Stakers tab (`/stakers`): public, no-wallet list of the same lANTS positions grouped by staker address + lock length, reading `/api/stakers` |
 | src/components/About.jsx | Node showcase (this seller's peer info, connection guide) |
 | vite.config.js | Vite config; `BUILD_TARGET=root` switches base path + outDir (see README Deployment) |

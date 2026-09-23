@@ -143,7 +143,7 @@ function StakeANTS() {
   const [market, setMarket] = useState(null);
   const [marketLoading, setMarketLoading] = useState(true);
   const [marketError, setMarketError] = useState(false);
-  const [marketTab, setMarketTab] = useMarketTabRouter(); // 'listed' | 'all' | 'mine' -- URL-driven, see /iants/sales|all|mine
+  const [marketTab, setMarketTab] = useMarketTabRouter(); // 'listed' | 'all' | 'mine' -- URL-driven, see /lants/sales|all|mine
   const [marketPage, setMarketPage] = useState(1);
   // Defaults to per-ANTS price (cheapest first) rather than id -- the same
   // "rank by unit price, not by total" convention a BRC-20 marketplace

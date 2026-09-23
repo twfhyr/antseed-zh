@@ -9,14 +9,26 @@ const TAB_PATHS = {
   services: 'services',
   tokenomics: 'tokenomics',
   'ants-info': 'ants-info',
-  stake: 'iants',
+  // 'lants', not 'iants' -- founder feedback 2026-09-21: the name is
+  // "lANTS" (locked ANTS), not "IANTS". Was briefly 'iants' earlier the
+  // same day; see the legacy alias below so that short-lived URL still
+  // resolves instead of 404ing/falling back to Overview.
+  stake: 'lants',
   stakers: 'stakers',
+  portfolio: 'portfolio',
   rewards: 'rewards',
+  chat: 'chat',
   about: 'about',
 };
 const PATH_TABS = Object.fromEntries(
   Object.entries(TAB_PATHS).filter(([, p]) => p).map(([tab, p]) => [p, tab])
 );
+// Legacy path alias: anyone who already bookmarked/shared /iants during
+// its few hours as the canonical URL still lands on the right tab. Only
+// affects incoming-URL resolution (PATH_TABS) -- urlForTab/tabHref always
+// emit the canonical 'lants' from TAB_PATHS above, so this never leaks
+// back out into a generated link.
+PATH_TABS.iants = 'stake';
 const VALID_TABS = new Set(Object.keys(TAB_PATHS));
 
 // import.meta.env.BASE_URL is '/' on the root domain build and '/zh/' on the
@@ -74,18 +86,19 @@ export function useTabRouter() {
   return [activeTab, setActiveTab];
 }
 
-// ─── lANTS tab's market sub-tab (/iants/sales, /iants/all, /iants/mine) ───
-// A second path segment under 'iants' only, so a filtered view of the lANTS
-// market is itself a shareable/bookmarkable link. Bare /iants (no second
+// ─── lANTS tab's market sub-tab (/lants/sales, /lants/all, /lants/mine) ───
+// A second path segment under 'lants' only, so a filtered view of the lANTS
+// market is itself a shareable/bookmarkable link. Bare /lants (no second
 // segment) stays a valid alias for the default sub-tab, same pattern as
 // 'ants-info' above for the top-level tabs.
 //
-// The tab's own URL segment is 'iants' (2026-09-21, was 'stake') -- lowercase
-// L reading as a capital i, matching how "iants" was already used here for
-// the "All NFTs" sub-tab before the rename. That sub-tab's own segment was
-// renamed sales/'iants'/mine/history -> sales/all/mine/history so it no
-// longer collides with the parent (a literal /iants/iants would otherwise
-// result); the tab key ('all') is unchanged, only its own URL segment moved.
+// The tab's own URL segment is 'lants' (2026-09-21, briefly 'iants' the
+// same day before founder feedback corrected the name back to "lANTS" --
+// see TAB_PATHS' legacy alias above; /iants/<sub> links from that window
+// still resolve below, same reasoning). That sub-tab's own segment is kept
+// as sales/all/mine/history (not reusing the parent segment name) so it
+// never collides with the parent -- a literal /lants/lants would otherwise
+// result; the tab key ('all') is unchanged, only its own URL segment moved.
 const MARKET_TAB_PATHS = { listed: 'sales', all: 'all', mine: 'mine', history: 'history' };
 const MARKET_PATH_TABS = Object.fromEntries(
   Object.entries(MARKET_TAB_PATHS).map(([tab, p]) => [p, tab])
@@ -96,13 +109,13 @@ function marketTabFromLocation() {
   const path = window.location.pathname;
   const rel = path.startsWith(BASE) ? path.slice(BASE.length) : path.replace(/^\//, '');
   const [first, second] = rel.split('/');
-  if (first !== 'iants') return null;
+  if (first !== 'lants' && first !== 'iants') return null; // 'iants' = legacy alias, see above
   return MARKET_PATH_TABS[second] || null;
 }
 
 export function marketTabHref(tab) {
   const segment = MARKET_TAB_PATHS[tab] || MARKET_TAB_PATHS[MARKET_DEFAULT_TAB];
-  return `${BASE}iants/${segment}`;
+  return `${BASE}lants/${segment}`;
 }
 
 /**

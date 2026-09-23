@@ -6,8 +6,10 @@ import TokenomicsTab from './components/TokenomicsTab';
 import ANTSInfo from './components/ANTSInfo';
 import StakeANTS from './components/StakeANTS';
 import Stakers from './components/Stakers';
+import Portfolio from './components/Portfolio';
 import RewardsANTS from './components/RewardsANTS';
 import Overview from './components/Overview';
+import Chat from './components/Chat';
 import About from './components/About';
 import Header from './components/Header';
 import DepositModal from './components/DepositModal';
@@ -140,7 +142,7 @@ return (
             {t('nav.sellers')}
           </a>
           {/* Stakers (new 2026-09-21): a staker-centric public view of the
-              same lANTS positions the IANTS marketplace tab lists NFT-by-NFT
+              same lANTS positions the lANTS marketplace tab lists NFT-by-NFT
               (each position IS a lANTS NFT) -- address, amount staked, lock
               length. No wallet needed, next to Sellers since it's the same
               kind of public list. Positions from the same address with the
@@ -153,18 +155,33 @@ return (
           >
             {t('nav.stakers')}
           </a>
+          {/* Portfolio (new 2026-09-22): one wallet's activity as a buyer
+              + seller, plus its lANTS holdings, all in one place. Defaults
+              to the connected wallet; supports searching any address too
+              when not connected, same pattern as ClaimANTS.jsx. Placed
+              right after Stakers and before lANTS -- a natural "what do I
+              have" overview before drilling into lANTS management or
+              Rewards specifically. */}
+          <a
+            href={tabHref('portfolio')}
+            className={`tab ${activeTab === 'portfolio' ? 'active' : ''}`}
+            onClick={(e) => { e.preventDefault(); setActiveTab('portfolio'); }}
+          >
+            {t('nav.portfolio')}
+          </a>
           {/* Wallet-connect UI here deliberately reverses the earlier
               "no wallet-connect UI by default" decision (see notes/dev-plan.md)
               — explicit call by the site owner 2026-09-18, not a default.
               ClaimANTS.jsx / ChannelsView.jsx stay hidden.
-              'stake' (StakeANTS.jsx, labelled "IANTS") is the lANTS NFT
+              'stake' (StakeANTS.jsx, labelled "lANTS") is the lANTS NFT
               marketplace: list/buy/offer/split/merge/move/history for a
               connected or searched address, plus the epoch-22+ usage-reward
               claim/stake flow -- trading and managing positions, not
               rewards. (Renamed from "Staking" 2026-09-21 once Stakers, above,
               took that name for a different, public-list purpose; moved next
-              to Stakers and relabelled "IANTS" 2026-09-21 since the two are
-              two views of the same underlying NFTs.) */}
+              to Stakers 2026-09-21. Briefly relabelled "IANTS" the same day,
+              reverted to "lANTS" -- locked ANTS -- on founder feedback the
+              same day: the character is lowercase L, not capital I.) */}
           <a
             href={tabHref('stake')}
             className={`tab ${activeTab === 'stake' ? 'active' : ''}`}
@@ -201,6 +218,13 @@ return (
             {t('nav.rewards')}
           </a>
           <a
+            href={tabHref('chat')}
+            className={`tab ${activeTab === 'chat' ? 'active' : ''}`}
+            onClick={(e) => { e.preventDefault(); setActiveTab('chat'); }}
+          >
+            {t('nav.chat')}
+          </a>
+          <a
             href={tabHref('about')}
             className={`tab ${activeTab === 'about' ? 'active' : ''}`}
             onClick={(e) => { e.preventDefault(); setActiveTab('about'); }}
@@ -213,11 +237,13 @@ return (
         {activeTab === 'buyers' && <BuyersList />}
         {activeTab === 'sellers' && <SellersList sellers={sellers} />}
         {activeTab === 'stakers' && <Stakers />}
+        {activeTab === 'portfolio' && <Portfolio />}
         {activeTab === 'services' && <ServicesList services={services} />}
         {activeTab === 'tokenomics' && <TokenomicsTab />}
         {activeTab === 'ants-info' && <ANTSInfo />}
         {activeTab === 'stake' && <StakeANTS />}
         {activeTab === 'rewards' && <RewardsANTS />}
+        {activeTab === 'chat' && <Chat />}
         {activeTab === 'about' && <About />}
       </main>
       <DepositModal isOpen={depositOpen} onClose={() => setDepositOpen(false)} buyerAddress={buyerAddress} />

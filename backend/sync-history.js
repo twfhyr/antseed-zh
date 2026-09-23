@@ -305,6 +305,15 @@ export function readSellersOnchain(limit = 2000) {
   return db.prepare('SELECT * FROM sellers_onchain ORDER BY CAST(earned_usdc AS INTEGER) DESC LIMIT ?').all(limit);
 }
 
+/** One seller's full real activity row (earned, stake, requests, input/
+ *  output tokens, unique buyers, channel count, first/last seen) --
+ *  the seller-side mirror of readBuyerOnchain, same table
+ *  `readSellersOnchain` already lists from, keyed by wallet address. */
+export function readSellerOnchain(address) {
+  return db.prepare('SELECT * FROM sellers_onchain WHERE address = ?')
+    .get(String(address).toLowerCase()) ?? null;
+}
+
 export function readDailyMetrics(days = 90) {
   return db.prepare('SELECT * FROM daily_metrics ORDER BY day_start DESC LIMIT ?').all(days).reverse();
 }

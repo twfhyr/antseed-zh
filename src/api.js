@@ -195,6 +195,13 @@ export async function fetchHistorySellers(limit = 200) {
   return get(`/history/sellers?limit=${limit}`);
 }
 
+/** One seller's full activity (earned, stake, requests, input/output
+ *  tokens, unique buyers, channel count, first/last seen) -- the
+ *  seller-side mirror of fetchBuyerActivity. */
+export async function fetchSellerActivity(address) {
+  return get(`/history/seller/${encodeURIComponent(address)}`);
+}
+
 /** Current-epoch buyer points + potential-reward estimates, paginated.
  *  Resolves to `{ epoch, items, total, offset, limit, hasMore }`. */
 export async function fetchEpochBuyers({ limit = 100, offset = 0, q = '' } = {}) {
