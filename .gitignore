@@ -9,3 +9,4 @@ backend/*.log
 .opencode/
 opencode.json
 ref/
+backend/private/

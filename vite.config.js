@@ -6,6 +6,14 @@ import { fileURLToPath } from 'url'
 
 // BUILD_TARGET=root builds for the dedicated domain (antseed-zh.com, served
 // at /); default builds for the /zh subpath proxy (5.223.54.56:8088/zh/).
+//
+// There used to be a third target here, BUILD_TARGET=market
+// (antseedmarkets.com, dist-market, __SITE_VARIANT__='market') -- removed
+// 2026-09-24 the same day antseedmarkets.com moved to its own standalone
+// repo (../antseedmarkets/) with its own nginx site and static deploy to
+// /var/www/antseedmarkets. Nothing proxies to this backend for that domain
+// any more, so the variant was genuinely dead, not just unused -- see
+// notes/dev-plan.md's now-removed entry on this.
 const isRoot = process.env.BUILD_TARGET === 'root'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))

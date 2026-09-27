@@ -85,6 +85,19 @@ db.exec(`
     cancelled_at INTEGER
   );
 
+  CREATE TABLE IF NOT EXISTS lants_listing_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    token_id INTEGER NOT NULL,
+    event_type TEXT NOT NULL,
+    reason TEXT,
+    offerer TEXT,
+    position_owner TEXT,
+    details TEXT,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_lants_listing_events_token ON lants_listing_events(token_id, created_at);
+  CREATE INDEX IF NOT EXISTS idx_lants_listing_events_created ON lants_listing_events(created_at);
+
   CREATE TABLE IF NOT EXISTS lants_offers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     token_id INTEGER NOT NULL,
@@ -225,6 +238,21 @@ PRIMARY KEY (operator, buyer)
 );
 `);
 
+// ─── Town board (Luck/Heal/Duggy autonomous-agent game) ───
+// One row per agent turn. Agents are driven entirely by their own model —
+// nothing here is ever written by a human or by the frontend; only
+// backend/agent-turn.mjs (run on a schedule, one buyer identity per agent)
+// inserts rows. The frontend only reads.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS town_board (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_name TEXT NOT NULL,
+    content TEXT NOT NULL,
+    model TEXT,
+    created_at INTEGER NOT NULL
+  );
+`);
+
 const obCount = db.prepare('SELECT COUNT(*) as count FROM operator_buyers').get().count;
 if (obCount === 0) {
 db.prepare('INSERT INTO operator_buyers (operator, buyer) VALUES (?, ?)').run(
@@ -304,6 +332,24 @@ db.exec(`
     closed_at_epoch INTEGER,
     fetched_at INTEGER
   );
+
+  -- Append-only earnings-over-time record for the site's own seller
+  -- (antseed-zh, address 0x412282c4...), since sellers_onchain only ever
+  -- holds the latest snapshot (ON CONFLICT DO UPDATE), not history -- user
+  -- asked 2026-09-23 to start recording earned USDC from real buyer usage.
+  -- One row per observed change (deduped -- see recordSellerEarnings() in
+  -- sync-history.js), not one row per sync cycle, so this stays a real
+  -- earnings timeline rather than a flood of identical snapshots.
+  CREATE TABLE IF NOT EXISTS seller_earnings_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    address TEXT NOT NULL,
+    earned_usdc TEXT NOT NULL,
+    request_count TEXT,
+    unique_buyers INTEGER,
+    recorded_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_seller_earnings_history_address
+    ON seller_earnings_history(address, recorded_at);
 
   CREATE TABLE IF NOT EXISTS daily_metrics (
     day TEXT PRIMARY KEY,
@@ -391,6 +437,28 @@ db.exec(`
     pool_reward_wei TEXT,
     fetched_at INTEGER NOT NULL,
     PRIMARY KEY (address, epoch)
+  );
+
+  -- Permanent cache of a recognized-usage epoch's reward once it's been
+  -- claimed (either to a wallet or staked -- buyerEpochClaimed/
+  -- agentEpochClaimed don't distinguish the two, see loadBuyerUsageRewards/
+  -- loadSellerUsageRewards). A claimed epoch's points/amount are immutable
+  -- forever, so once cached here it never needs an on-chain read again --
+  -- added 2026-09-24 so the Rewards tab can show full history back to
+  -- epoch 22 without the per-epoch multicall growing without bound as more
+  -- epochs close. 'subject' is the buyer's own address (lowercased) for
+  -- side='buyer', or the seller's agentId (as a string) for side='seller'
+  -- -- seller rewards are keyed by agent, not by whichever wallet currently
+  -- owns it. Only ever written for claimed=1 rows; never for still-pending
+  -- epochs, which must stay live reads.
+  CREATE TABLE IF NOT EXISTS reward_epoch_cache (
+    subject TEXT NOT NULL,
+    side TEXT NOT NULL,
+    epoch INTEGER NOT NULL,
+    points TEXT NOT NULL,
+    amount TEXT NOT NULL,
+    cached_at INTEGER NOT NULL,
+    PRIMARY KEY (subject, side, epoch)
   );
 `);
 }

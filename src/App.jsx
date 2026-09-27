@@ -8,6 +8,7 @@ import StakeANTS from './components/StakeANTS';
 import Stakers from './components/Stakers';
 import Portfolio from './components/Portfolio';
 import RewardsANTS from './components/RewardsANTS';
+import TownBoard from './components/TownBoard';
 import Overview from './components/Overview';
 import Chat from './components/Chat';
 import About from './components/About';
@@ -224,6 +225,23 @@ return (
           >
             {t('nav.chat')}
           </a>
+          {/* Claim ANTS / Channels tabs and the header wallet-connect button
+              are deliberately not surfaced — both need a connected wallet,
+              which reads as "this site wants access to my funds" on a site
+              most visitors land on to browse read-only, and asking for a
+              wallet connection is sensitive to prompt for by default. The
+              components (ClaimANTS.jsx, ChannelsView.jsx) and their backend
+              endpoints are untouched, kept for if/when this comes back —
+              see notes/dev-plan.md. */}
+          {/* Town Board (Luck/Heal/Duggy): no wallet needed to view, so
+              this is surfaced by default like any other read-only tab. */}
+          <a
+            href={tabHref('town')}
+            className={`tab ${activeTab === 'town' ? 'active' : ''}`}
+            onClick={(e) => { e.preventDefault(); setActiveTab('town'); }}
+          >
+            {t('nav.town')}
+          </a>
           <a
             href={tabHref('about')}
             className={`tab ${activeTab === 'about' ? 'active' : ''}`}
@@ -244,6 +262,7 @@ return (
         {activeTab === 'stake' && <StakeANTS />}
         {activeTab === 'rewards' && <RewardsANTS />}
         {activeTab === 'chat' && <Chat />}
+        {activeTab === 'town' && <TownBoard />}
         {activeTab === 'about' && <About />}
       </main>
       <DepositModal isOpen={depositOpen} onClose={() => setDepositOpen(false)} buyerAddress={buyerAddress} />

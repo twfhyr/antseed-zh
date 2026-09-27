@@ -18,6 +18,7 @@ const TAB_PATHS = {
   portfolio: 'portfolio',
   rewards: 'rewards',
   chat: 'chat',
+  town: 'town',
   about: 'about',
 };
 const PATH_TABS = Object.fromEntries(
@@ -29,6 +30,8 @@ const PATH_TABS = Object.fromEntries(
 // emit the canonical 'lants' from TAB_PATHS above, so this never leaks
 // back out into a generated link.
 PATH_TABS.iants = 'stake';
+
+const DEFAULT_TAB = 'overview';
 const VALID_TABS = new Set(Object.keys(TAB_PATHS));
 
 // import.meta.env.BASE_URL is '/' on the root domain build and '/zh/' on the
@@ -44,7 +47,7 @@ function tabFromLocation() {
   const rel = path.startsWith(BASE) ? path.slice(BASE.length) : path.replace(/^\//, '');
   const segment = rel.split('/')[0] || '';
   const tab = PATH_TABS[segment];
-  return tab && VALID_TABS.has(tab) ? tab : 'overview';
+  return tab && VALID_TABS.has(tab) ? tab : DEFAULT_TAB;
 }
 
 function urlForTab(tab) {

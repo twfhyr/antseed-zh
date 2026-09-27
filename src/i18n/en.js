@@ -12,6 +12,7 @@ export default {
   'nav.stakers': 'Stakers',
   'nav.portfolio': 'Portfolio',
   'nav.rewards': 'Rewards',
+  'nav.town': 'Town Board',
   'nav.about': 'About',
   'nav.chat': 'Chat',
   'chat.title': 'Generate an image',

@@ -8,7 +8,7 @@ import { syncFromLocalDiscovery } from './sync-local-discovery.js';
 import { readChainMetrics, updateChainMetrics, startChainPoller } from './chain-poller.js';
 import {
   runHistorySync, startHistorySync,
-  readLatestSnapshot, readDailyMetrics, readBuyersOnchain, readBuyerOnchain, countBuyersOnchain, readSellersOnchain, readSellerOnchain,
+  readLatestSnapshot, readDailyMetrics, readBuyersOnchain, readBuyerOnchain, countBuyersOnchain, readSellersOnchain, readSellerOnchain, readSellerEarningsHistory,
   readEpochMetrics, readStakePositions,
 } from './sync-history.js';
 import {
@@ -16,7 +16,10 @@ import {
 } from './antscan.js';
 import { fetchOpenSeaLantsMarket, OPENSEA_COLLECTION_URL, isProviderActivationStake } from './opensea-lants.js';
 import { postSeaportListing, resolveOpenSeaApiKey, SEAPORT_V16 } from './opensea-list.js';
-import { saveListing, getListing, allActiveListings, invalidateListing } from './lants-listings.js';
+import {
+  saveListing, getListing, getListingRecord, allActiveListings, invalidateListing,
+  recordListingEvent, recentListingEvents,
+} from './lants-listings.js';
 import { upsertPositions } from './lants-positions.js';
 import {
   saveOffer, getOffer, offersForToken, offererForOffer,
@@ -243,6 +246,15 @@ app.put('/api/buyers/:id', requireAdminAuth, (req, res) => {
 app.delete('/api/buyers/:id', requireAdminAuth, (req, res) => {
   const result = db.prepare('DELETE FROM buyers WHERE id = ?').run(req.params.id);
   res.json({ deleted: result.changes });
+});
+
+// ─── Town board (Luck/Heal/Duggy autonomous-agent game) ───
+// Read-only: rows are written only by backend/agent-turn.mjs, never by a
+// request handler here. Humans are observers only, per the game's design.
+app.get('/api/town-board', (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 50, 200);
+  const rows = db.prepare('SELECT * FROM town_board ORDER BY id DESC LIMIT ?').all(limit);
+  res.json(rows.map(camelize).reverse());
 });
 
 // ─── Sellers ───
@@ -1049,6 +1061,14 @@ app.get('/api/history/seller/:address', (req, res) => {
   res.json(row);
 });
 
+// Real earnings-over-time for a tracked address (currently just
+// antseed-zh's own seller) -- one row per observed change in earned_usdc,
+// not a fixed-interval snapshot. See recordSellerEarnings() in
+// sync-history.js for which addresses are tracked.
+app.get('/api/history/seller/:address/earnings', (req, res) => {
+  res.json({ items: readSellerEarningsHistory(req.params.address) });
+});
+
 app.post('/api/admin/force-history-sync', requireAdminAuth, async (_req, res) => {
   try {
     const data = await runHistorySync();
@@ -1200,6 +1220,13 @@ async function strict(read) {
   }
 }
 
+// The recognized-usage cutover epoch on Base mainnet (2026-09-10 09:54:21
+// UTC) -- the first epoch usage rewards exist for at all. Matches
+// FIRST_REWARDED_EPOCH in farmer/src/projects/antseed/claim.ts and
+// EPOCH22_FROM_BLOCK in farmer/scripts/farmer-antseed-report.mjs (same
+// real protocol fact, not a coincidence).
+const RECOGNIZED_USAGE_FIRST_EPOCH = 22;
+
 async function resolveStack() {
   if (stackCache && Date.now() - stackCache.resolvedAt < STACK_TTL_MS) return stackCache;
 
@@ -1235,8 +1262,15 @@ async function resolveStack() {
 
   const boundary = active && effectiveEpoch !== null ? Math.min(currentEpoch, effectiveEpoch) : currentEpoch;
   const legacyEpochs = boundary !== null ? Array.from({ length: Math.max(0, boundary) }, (_, epoch) => epoch) : [];
-  const recognizedEpochs = active && effectiveEpoch !== null && currentEpoch !== null
-    ? Array.from({ length: Math.max(0, currentEpoch - effectiveEpoch) }, (_, i) => effectiveEpoch + i)
+  // Full history back to the recognized-usage cutover, not just a recent
+  // window around effectiveEpoch -- the per-epoch reward-cache table
+  // (reward_epoch_cache) is what keeps this from growing into an
+  // ever-larger multicall as more epochs close: every epoch that's already
+  // claimed is served from SQLite, only genuinely-still-pending epochs
+  // (in practice just the 1-2 most recent) ever need a fresh on-chain
+  // read. See loadBuyerUsageRewards/loadSellerUsageRewards.
+  const recognizedEpochs = active && currentEpoch !== null
+    ? Array.from({ length: Math.max(0, currentEpoch - RECOGNIZED_USAGE_FIRST_EPOCH) }, (_, i) => RECOGNIZED_USAGE_FIRST_EPOCH + i)
     : [];
 
   const lockedRewardsPool = await safe(async () => {
@@ -1463,8 +1497,12 @@ function sellerNameByAgentId() {
   return map;
 }
 
-async function loadOnChainPosition(id) {
-  if (!sellerPoolsClient) return null;
+function summarizedError(e) {
+  return e?.shortMessage || e?.reason || e?.message || String(e);
+}
+
+async function loadOnChainPositionResult(id) {
+  if (!sellerPoolsClient) return { ok: false, error: 'sellerPoolsClient unavailable' };
   try {
     const p = await sellerPoolsClient.position(id);
     // closedAtEpoch != 0 means this id was closed by a restructure (split/
@@ -1473,8 +1511,10 @@ async function loadOnChainPosition(id) {
     // until someone calls withdrawStake). Treat it the same as withdrawn:
     // dead, never tradable, regardless of what the stale `positions[id]`
     // mapping entry still says about owner/amount.
-    if (!p || p.withdrawn || p.closedAtEpoch) return null;
-    return {
+    if (!p) return { ok: true, position: null, reason: 'empty_position' };
+    if (p.withdrawn) return { ok: true, position: null, reason: 'withdrawn' };
+    if (p.closedAtEpoch) return { ok: true, position: null, reason: 'closed_at_epoch' };
+    return { ok: true, position: {
       id: p.id,
       owner: p.owner,
       agentId: p.agentId,
@@ -1484,9 +1524,39 @@ async function loadOnChainPosition(id) {
       stakeEndEpoch: p.stakeEndEpoch,
       closedAtEpoch: p.closedAtEpoch,
       withdrawn: p.withdrawn,
-    };
-  } catch {
+    } };
+  } catch (e) {
+    return { ok: false, error: summarizedError(e) };
+  }
+}
+
+async function loadOnChainPosition(id) {
+  const result = await loadOnChainPositionResult(id);
+  if (!result.ok) {
+    console.warn('[lants-listing-monitor] position read failed', JSON.stringify({ tokenId: Number(id), error: result.error }));
     return null;
+  }
+  return result.position;
+}
+
+function localListingPrice(local) {
+  const usdc = Number(local.priceWei) / 1e6;
+  return { usd: usdc, unit: usdc, symbol: 'USDC' };
+}
+
+function recordListingReadFailure(tokenId, local, result, source) {
+  const eventId = recordListingEvent({
+    tokenId,
+    eventType: 'position_read_failed',
+    reason: 'preserved_active_listing_after_chain_read_failure',
+    offerer: local?.offerer || null,
+    details: { source, error: result.error },
+    dedupMs: 5 * 60_000,
+  });
+  if (eventId) {
+    console.warn('[lants-listing-monitor] preserved active listing after position read failure', JSON.stringify({
+      tokenId: Number(tokenId), offerer: local?.offerer || null, source, error: result.error,
+    }));
   }
 }
 
@@ -1533,6 +1603,7 @@ async function computeLantsMarket(extraIds = []) {
 
   const osItems = os.items || [];
   const localListings = new Map(allActiveListings().map((l) => [l.tokenId, l]));
+  const forcedReadIds = new Set([...extraIds.map(Number), ...localListings.keys()]);
 
   // Real bug fixed 2026-09-20: this used to be osItems.length ? osItems ids
   // : antscan ids -- i.e. antscan-known positions were silently dropped
@@ -1555,22 +1626,33 @@ async function computeLantsMarket(extraIds = []) {
   // Without this, a sold-but-not-yet-reindexed listing keeps showing as
   // for-sale (and fulfillable) indefinitely for anyone whose Antscan sync
   // hasn't caught up.
-  const missing = [...ids].filter((id) => !byAntscan.has(id) || extraIds.includes(id));
+  const missing = [...ids].filter((id) => !byAntscan.has(id) || forcedReadIds.has(id));
   // Ids the caller already knows about (e.g. the two positions minted by a
   // splitStake() tx that just confirmed, or a listing just bought) always
   // get a real on-chain read, even past the cap below -- otherwise a
   // freshly split/staked/sold position would stay stale until Antscan's
   // own indexer catches up.
-  const capped = missing.length <= 40 ? missing : missing.filter((id) => extraIds.includes(id));
+  const capped = missing.length <= 40 ? missing : missing.filter((id) => forcedReadIds.has(id));
+  const positionReadFailures = new Map();
   if (capped.length > 0) {
-    const extra = await Promise.all(capped.map((id) => loadOnChainPosition(id)));
+    const extra = await Promise.all(capped.map((id) => loadOnChainPositionResult(id)));
     capped.forEach((id, i) => {
-      const p = extra[i];
-      if (p) byAntscan.set(p.id, p);
+      const result = extra[i];
+      if (!result.ok) {
+        positionReadFailures.set(id, result);
+        const local = localListings.get(id);
+        if (local) recordListingReadFailure(id, local, result, 'market-refresh');
+        return;
+      }
+      const p = result.position;
+      if (p) {
+        p.chainOwner = p.owner;
+        byAntscan.set(p.id, p);
+      }
       // A null read for an explicitly-ensured id that already had a (now
       // stale) cached entry means it's genuinely gone on-chain -- drop the
       // stale entry rather than leaving it in place unrefreshed.
-      else if (extraIds.includes(id)) byAntscan.delete(id);
+      else if (forcedReadIds.has(id)) byAntscan.delete(id);
     });
   }
 
@@ -1605,19 +1687,33 @@ async function computeLantsMarket(extraIds = []) {
     const local = localListings.get(id);
     let listing = null;
     if (local) {
-      if (pos?.owner && pos.owner.toLowerCase() === local.offerer) {
+      // Indexer/Antscan ownership can lag hours behind a real wallet that
+      // just listed. Invalidating against that lagged owner made live
+      // listings vanish from For sale until the next indexer catch-up.
+      // Only the on-chain owner from loadOnChainPosition is allowed to
+      // cancel a listing here; display owner may still be indexer-corrected.
+      const liveOwner = (pos?.chainOwner || (!positionReadFailures.has(id) && pos?.owner) || '').toLowerCase();
+      if (liveOwner && liveOwner === local.offerer) {
         // price_wei has no separate currency column -- every listing this
         // site creates is USDC (6 decimals) as of 2026-09-21, and there
         // were zero active listings at the moment of that switch (checked
         // live before shipping it), so there's no stale ETH-denominated row
         // to misread here.
-        const usdc = Number(local.priceWei) / 1e6;
-        listing = { usd: usdc, unit: usdc, symbol: 'USDC' };
+        listing = localListingPrice(local);
+      } else if (positionReadFailures.has(id)) {
+        // Never cancel a real signed order just because a transient Base RPC /
+        // Antscan/indexer read failed. Keep it visible and record a monitor
+        // event so the exact token, owner, and error are available later.
+        listing = localListingPrice(local);
       } else {
         // Also covers a closed-via-restructure position (pos is null here,
         // loadOnChainPosition already excluded it) that still had a stale
         // local listing -- invalidate it so it stops recurring.
-        invalidateListing(id);
+        invalidateListing(id, {
+          reason: pos ? 'owner_mismatch' : 'position_closed_or_withdrawn',
+          positionOwner: pos?.owner || null,
+          details: { source: 'market-refresh', offerer: local.offerer },
+        });
       }
     }
     if (!listing) listing = sea?.listing || null;
@@ -1652,7 +1748,7 @@ async function computeLantsMarket(extraIds = []) {
       : null;
     items.push({
       id,
-      owner: pos?.owner || sea?.owner || null,
+      owner: pos?.owner || sea?.owner || (listing && local ? local.offerer : null),
       agentId,
       sellerName: agentId != null ? (names.get(String(agentId)) || null) : null,
       amount,
@@ -1737,6 +1833,105 @@ function refreshLantsMarket(extraIds = []) {
   return lantsMarketRefreshing;
 }
 
+let lantsListingMonitorRunning = false;
+async function runLantsListingMonitor({ source = 'background-monitor' } = {}) {
+  if (lantsListingMonitorRunning) return { skipped: true, reason: 'already_running' };
+  lantsListingMonitorRunning = true;
+  const stats = { checked: 0, readFailures: 0, invalidated: 0 };
+  try {
+    for (const listing of allActiveListings()) {
+      stats.checked += 1;
+      const result = await loadOnChainPositionResult(listing.tokenId);
+      if (!result.ok) {
+        stats.readFailures += 1;
+        recordListingReadFailure(listing.tokenId, listing, result, source);
+        continue;
+      }
+      const pos = result.position;
+      if (!pos) {
+        const changed = invalidateListing(listing.tokenId, {
+          reason: result.reason || 'position_closed_or_withdrawn',
+          details: { source },
+        });
+        if (changed) stats.invalidated += 1;
+        continue;
+      }
+      if (pos.owner?.toLowerCase() !== listing.offerer) {
+        const changed = invalidateListing(listing.tokenId, {
+          reason: 'owner_mismatch',
+          positionOwner: pos.owner,
+          details: { source, offerer: listing.offerer },
+        });
+        if (changed) stats.invalidated += 1;
+      }
+    }
+    if (stats.invalidated > 0) {
+      lantsMarketCache = null;
+      lantsMarketCacheAt = 0;
+    }
+    if (stats.readFailures > 0 || stats.invalidated > 0) {
+      console.warn('[lants-listing-monitor] scan completed', JSON.stringify(stats));
+    }
+    return stats;
+  } finally {
+    lantsListingMonitorRunning = false;
+  }
+}
+
+function startLantsListingMonitor(seconds = 600) {
+  setInterval(() => {
+    runLantsListingMonitor().catch((e) => console.error('[lants-listing-monitor] scan failed:', summarizedError(e)));
+  }, seconds * 1000);
+  setTimeout(() => {
+    runLantsListingMonitor({ source: 'startup-monitor' }).catch((e) => console.error('[lants-listing-monitor] startup scan failed:', summarizedError(e)));
+  }, 20_000);
+}
+
+// ERC-721 Transfer(address indexed from, address indexed to, uint256 indexed
+// tokenId) -- standard topic0, same on every ERC-721 including the lANTS
+// SellerPools NFT.
+const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
+
+// Closes a real gap found 2026-09-27: /api/lants/trade and
+// /api/lants/offer/accept used to record whatever {seller, buyer, priceWei,
+// txHash} a caller posted with NO verification at all -- this API has
+// app.use(cors()) with no origin restriction, so anyone, not just this
+// site's own frontend, could POST a fully fabricated "sale" that would show
+// up in the public trade history and feed the Implied MC/FDV stat. Requires
+// a real txHash and checks a Transfer log for this exact tokenId to the
+// claimed buyer actually exists in that transaction's receipt before a
+// trade is ever recorded -- a caller can't produce that without a real,
+// gas-paying on-chain transfer of a token they actually owned. Returns the
+// verified real seller (the Transfer's `from`) so callers stop trusting
+// whatever `seller` the client claims, too.
+async function verifyOnchainTransfer(txHash, tokenId, expectedBuyer) {
+  if (!txHash || typeof txHash !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(txHash)) {
+    return { ok: false, error: 'a real txHash is required to record a trade' };
+  }
+  if (!expectedBuyer) return { ok: false, error: 'buyer required' };
+  let receipt;
+  try {
+    receipt = await multicallProvider.getTransactionReceipt(txHash);
+  } catch (e) {
+    return { ok: false, error: `could not fetch transaction: ${e.message}` };
+  }
+  if (!receipt) return { ok: false, error: 'transaction not found (not yet mined, or wrong hash)' };
+  if (receipt.status !== 1) return { ok: false, error: 'transaction did not succeed on-chain' };
+  const wantedTokenTopic = '0x' + BigInt(tokenId).toString(16).padStart(64, '0');
+  const wantedToTopic = '0x' + expectedBuyer.toLowerCase().replace(/^0x/, '').padStart(64, '0');
+  const match = receipt.logs.find((log) =>
+    log.address?.toLowerCase() === emissionsCfg.sellerPoolsAddress?.toLowerCase()
+    && log.topics?.[0] === TRANSFER_TOPIC
+    && log.topics?.[3] === wantedTokenTopic
+    && log.topics?.[2] === wantedToTopic
+  );
+  if (!match) {
+    return { ok: false, error: `no Transfer of lANTS #${tokenId} to ${expectedBuyer} found in that transaction` };
+  }
+  const seller = '0x' + match.topics[1].slice(-40);
+  return { ok: true, seller: seller.toLowerCase() };
+}
+
 app.post('/api/lants/list', async (req, res) => {
   try {
     const { tokenId, order, protocolAddress } = req.body || {};
@@ -1745,7 +1940,12 @@ app.post('/api/lants/list', async (req, res) => {
     }
     const id = Number(tokenId);
     if (!Number.isFinite(id)) return res.status(400).json({ error: 'tokenId required' });
-    const pos = await loadOnChainPosition(id);
+    const posResult = await loadOnChainPositionResult(id);
+    if (!posResult.ok) {
+      recordListingEvent({ tokenId: id, eventType: 'position_read_failed', reason: 'list_precheck_failed', details: { error: posResult.error }, dedupMs: 60_000 });
+      return res.status(503).json({ error: 'could not verify position on-chain; retry shortly', detail: posResult.error });
+    }
+    const pos = posResult.position;
     if (!pos) return res.status(400).json({ error: 'position not found or withdrawn' });
     if (isProviderActivationStake(pos.amount)) {
       return res.status(400).json({ error: '1 ANT provider-activation stakes are not listed' });
@@ -1782,6 +1982,11 @@ app.post('/api/lants/list', async (req, res) => {
 
     lantsMarketCache = null;
     lantsMarketCacheAt = 0;
+    try {
+      await refreshLantsMarket([id]);
+    } catch (e) {
+      console.warn('[lants-list] cache refresh after save failed', e.message);
+    }
     res.json({ ok: true, local: true, posted });
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message, detail: e.detail || null });
@@ -1796,22 +2001,78 @@ app.get('/api/lants/order/:tokenId', (req, res) => {
   res.json(listing);
 });
 
+app.get('/api/lants/listing-monitor', requireAdminAuth, (_req, res) => {
+  res.json({ activeListings: allActiveListings().length, events: recentListingEvents({ limit: 100 }) });
+});
+
+app.post('/api/lants/listing-monitor/run', requireAdminAuth, async (_req, res) => {
+  try {
+    res.json(await runLantsListingMonitor({ source: 'manual-api' }));
+  } catch (e) {
+    res.status(500).json({ error: summarizedError(e) });
+  }
+});
+
+app.get('/api/lants/listing-diagnostics/:tokenId', requireAdminAuth, async (req, res) => {
+  const id = Number(req.params.tokenId);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'tokenId required' });
+  const listing = getListingRecord(id);
+  const cachedPosition = db.prepare('SELECT * FROM lants_positions WHERE id = ?').get(id) || null;
+  const offers = offersForToken(id);
+  const localTrades = db.prepare('SELECT * FROM lants_trades WHERE token_id = ? ORDER BY created_at DESC LIMIT 20').all(id).map((row) => ({
+    id: row.id,
+    tokenId: row.token_id,
+    seller: row.seller,
+    buyer: row.buyer,
+    priceWei: row.price_wei,
+    currency: row.currency,
+    tradeType: row.trade_type,
+    txHash: row.tx_hash,
+    amount: row.amount,
+    agentId: row.agent_id,
+    createdAt: row.created_at,
+  }));
+  const chain = await loadOnChainPositionResult(id);
+  res.json({
+    tokenId: id,
+    active: Boolean(listing && !listing.cancelledAt),
+    listing,
+    cachedPosition,
+    chain,
+    offers,
+    localTrades,
+    events: recentListingEvents({ tokenId: id, limit: 100 }),
+  });
+});
+
 // Records a completed listing purchase for the History tab -- called by the
-// buyer's browser right after their fulfillOrder() tx confirms. Like
-// offer/accept, this does no on-chain verification of its own; the
-// transaction the buyer just sent is what actually moved the NFT/ETH.
+// buyer's browser right after their fulfillOrder() tx confirms. Verifies
+// the claimed transaction actually transferred this token to this buyer
+// before recording anything (see verifyOnchainTransfer's comment) -- seller
+// is taken from that verified transfer, never from the request body.
+// priceWei prefers the stored listing's own (itself a verified signed
+// Seaport order, see /api/lants/list) over the client-submitted value,
+// since a real Transfer alone doesn't prove what price was actually paid.
 app.post('/api/lants/trade', async (req, res) => {
   try {
-    const { tokenId, seller, buyer, priceWei, currency, txHash } = req.body || {};
+    const { tokenId, buyer, priceWei, currency, txHash } = req.body || {};
     const id = Number(tokenId);
     if (!Number.isFinite(id)) return res.status(400).json({ error: 'tokenId required' });
-    if (!seller || !buyer || !priceWei) return res.status(400).json({ error: 'seller, buyer, priceWei required' });
+    if (!buyer) return res.status(400).json({ error: 'buyer required' });
+    const verified = await verifyOnchainTransfer(txHash, id, buyer);
+    if (!verified.ok) return res.status(400).json({ error: verified.error });
+    const listingRecord = getListingRecord(id);
+    const trustedPriceWei = (listingRecord && listingRecord.offerer === verified.seller)
+      ? listingRecord.priceWei
+      : priceWei;
+    if (!trustedPriceWei) return res.status(400).json({ error: 'priceWei required (no matching stored listing to source it from)' });
     const pos = await loadOnChainPosition(id).catch(() => null);
     recordTrade({
-      tokenId: id, seller, buyer, priceWei,
+      tokenId: id, seller: verified.seller, buyer, priceWei: trustedPriceWei,
       currency: currency || 'USDC', tradeType: 'listing', txHash,
       amount: pos?.amount ?? null, agentId: pos?.agentId ?? null,
     });
+    invalidateListing(id, { reason: 'listing_trade_reported', details: { txHash: txHash || null, buyer } });
     lantsMarketCache = null;
     lantsMarketCacheAt = 0;
     res.json({ ok: true });
@@ -1824,8 +2085,9 @@ app.get('/api/lants/trades', async (req, res) => {
   try {
     const page = Number(req.query.page) || 1;
     const pageSize = Number(req.query.pageSize) || 20;
-    const { rows, total } = await listTrades({ page, pageSize });
-    res.json({ trades: rows, total, page, pageSize });
+    const tokenId = req.query.tokenId != null && req.query.tokenId !== '' ? Number(req.query.tokenId) : null;
+    const { rows, total } = await listTrades({ page, pageSize, tokenId });
+    res.json({ trades: rows, total, page, pageSize, tokenId: Number.isFinite(tokenId) ? tokenId : null });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -1857,7 +2119,7 @@ app.post('/api/lants/cancel', (req, res) => {
   if (!verifySignedAction(message, signature, listing.offerer)) {
     return res.status(401).json({ error: 'signature does not match the listing owner' });
   }
-  invalidateListing(id);
+  invalidateListing(id, { reason: 'seller_cancelled', details: { source: 'api' } });
   lantsMarketCache = null;
   lantsMarketCacheAt = 0;
   res.json({ ok: true });
@@ -1871,7 +2133,12 @@ app.post('/api/lants/offer', async (req, res) => {
     }
     const id = Number(tokenId);
     if (!Number.isFinite(id)) return res.status(400).json({ error: 'tokenId required' });
-    const pos = await loadOnChainPosition(id);
+    const posResult = await loadOnChainPositionResult(id);
+    if (!posResult.ok) {
+      recordListingEvent({ tokenId: id, eventType: 'position_read_failed', reason: 'offer_precheck_failed', details: { error: posResult.error }, dedupMs: 60_000 });
+      return res.status(503).json({ error: 'could not verify position on-chain; retry shortly', detail: posResult.error });
+    }
+    const pos = posResult.position;
     if (!pos) return res.status(400).json({ error: 'position not found or withdrawn' });
     const offerItem = order.parameters.offer?.[0];
     if (!offerItem || offerItem.token?.toLowerCase() !== emissionsCfg.usdcContractAddress.toLowerCase()) {
@@ -1934,32 +2201,35 @@ app.post('/api/lants/offer/cancel', (req, res) => {
 });
 
 // Called by the seller's browser right after their fulfillOrder() tx for
-// this offer confirms on-chain -- this endpoint does no on-chain check of
-// its own (the transaction itself is what actually moved the NFT/WETH);
-// it just records which offer was accepted and retires the others on the
-// same token, since only one buyer can end up owning it.
+// this offer confirms on-chain. Verifies that transaction actually
+// transferred the token to the offer's own buyer (offer.offerer) before
+// touching any state -- previously this accepted an unauthenticated
+// {offerId, seller, txHash} and marked the offer accepted / invalidated
+// the listing / recorded a trade purely on the caller's say-so (see
+// verifyOnchainTransfer's comment for the wider issue this closes). seller
+// is taken from the verified transfer, never from the request body.
 app.post('/api/lants/offer/accept', async (req, res) => {
-  const { offerId, seller, txHash } = req.body || {};
+  const { offerId, txHash } = req.body || {};
   const id = Number(offerId);
   if (!Number.isFinite(id)) return res.status(400).json({ error: 'offerId required' });
   const offer = getOffer(id);
   if (!offer) return res.status(404).json({ error: 'offer not found or already resolved' });
+  const verified = await verifyOnchainTransfer(txHash, offer.tokenId, offer.offerer);
+  if (!verified.ok) return res.status(400).json({ error: verified.error });
   markOfferAccepted(id);
   cancelOtherOffers(offer.tokenId, id);
-  invalidateListing(offer.tokenId); // the position just changed hands -- any listing on it is stale
-  if (seller) {
-    const pos = await loadOnChainPosition(offer.tokenId).catch(() => null);
-    // offer.weth is really "whatever ERC20 token address this offer's
-    // payment item named" (the column predates the USDC switch) -- read
-    // the real currency back from it instead of hardcoding USDC, so an
-    // older still-open WETH offer records its trade history correctly too.
-    const currency = offer.weth?.toLowerCase() === emissionsCfg.usdcContractAddress.toLowerCase() ? 'USDC' : 'WETH';
-    recordTrade({
-      tokenId: offer.tokenId, seller, buyer: offer.offerer, priceWei: offer.priceWei,
-      currency, tradeType: 'offer', txHash: txHash || null,
-      amount: pos?.amount ?? null, agentId: pos?.agentId ?? null,
-    });
-  }
+  invalidateListing(offer.tokenId, { reason: 'offer_accepted', details: { offerId: id, txHash } }); // the position just changed hands -- any listing on it is stale
+  const pos = await loadOnChainPosition(offer.tokenId).catch(() => null);
+  // offer.weth is really "whatever ERC20 token address this offer's
+  // payment item named" (the column predates the USDC switch) -- read
+  // the real currency back from it instead of hardcoding USDC, so an
+  // older still-open WETH offer records its trade history correctly too.
+  const currency = offer.weth?.toLowerCase() === emissionsCfg.usdcContractAddress.toLowerCase() ? 'USDC' : 'WETH';
+  recordTrade({
+    tokenId: offer.tokenId, seller: verified.seller, buyer: offer.offerer, priceWei: offer.priceWei,
+    currency, tradeType: 'offer', txHash,
+    amount: pos?.amount ?? null, agentId: pos?.agentId ?? null,
+  });
   lantsMarketCache = null;
   lantsMarketCacheAt = 0;
   res.json({ ok: true });
@@ -2574,16 +2844,55 @@ app.get('/api/emissions/balance', async (req, res) => {
 // seller usage rewards, buyer usage rewards, legacy emissions, locked M002 pool.
 // ─── /api/rewards bucket loaders (the five buckets run concurrently) ───
 
+// reward_epoch_cache read/write -- see database.js's schema comment for the
+// full rationale (an epoch is only ever cached once it's claimed, since
+// that's the only point its points/amount become immutable).
+const rewardCacheSelectStmt = db.prepare(
+  'SELECT epoch, points, amount FROM reward_epoch_cache WHERE subject = ? AND side = ? AND epoch = ?'
+);
+function readCachedRewardEpochs(subject, side, epochs) {
+  const cached = new Map();
+  for (const epoch of epochs) {
+    const row = rewardCacheSelectStmt.get(String(subject).toLowerCase(), side, epoch);
+    if (row) cached.set(epoch, { points: Number(row.points), amount: Number(row.amount) });
+  }
+  return cached;
+}
+const rewardCacheUpsertStmt = db.prepare(`
+  INSERT OR REPLACE INTO reward_epoch_cache (subject, side, epoch, points, amount, cached_at)
+  VALUES (?, ?, ?, ?, ?, ?)
+`);
+function writeCachedRewardEpochs(subject, side, rows) {
+  const claimedRows = rows.filter((r) => r.claimed);
+  if (claimedRows.length === 0) return;
+  const now = Date.now();
+  const tx = db.transaction((items) => {
+    for (const r of items) {
+      rewardCacheUpsertStmt.run(String(subject).toLowerCase(), side, r.epoch, String(r.points), String(r.amount), now);
+    }
+  });
+  tx(claimedRows);
+}
+
 async function loadSellerUsageRewards(address, stack, agentIdPromise) {
   if (stack.phase !== 'active' || !usageAccountingClient || !usageRewardsClient || stack.recognizedEpochs.length === 0) {
     return { total: 0n, epochs: [] };
   }
   const agentId = await agentIdPromise;
   const epochs = stack.recognizedEpochs;
-  // One multicall: batched pending total (slot 0) + per-epoch rows. With an
-  // agentId every epoch is [claimed, amount, points]; without, just [points].
+  // Cached by agentId (not address -- reward is tied to the agent, and its
+  // owning wallet can change), and only ever for epochs already claimed
+  // (see reward_epoch_cache's schema comment). Uncached epochs still get a
+  // live read below -- in steady state that's just the 1-2 most recent.
+  const cached = agentId ? readCachedRewardEpochs(agentId, 'seller', epochs) : new Map();
+  const uncachedEpochs = epochs.filter((e) => !cached.has(e));
+  // One multicall: batched pending total (slot 0, over the full epoch range
+  // -- pendingEmissions is a single cheap call regardless of how many
+  // epochs, so this one isn't worth caching) + per-epoch rows for only the
+  // uncached epochs. With an agentId every epoch is [claimed, amount,
+  // points]; without, just [points].
   const requests = [{ target: usageAccountingTarget, iface: usageAccountingViewIface, method: 'pendingEmissions', args: [address, epochs] }];
-  for (const epoch of epochs) {
+  for (const epoch of uncachedEpochs) {
     if (agentId) {
       requests.push({ target: usageRewardsTarget, iface: usageRewardsViewIface, method: 'agentEpochClaimed', args: [agentId, epoch] });
       requests.push({ target: usageRewardsTarget, iface: usageRewardsViewIface, method: 'pendingAgentReward', args: [agentId, epoch] });
@@ -2592,9 +2901,9 @@ async function loadSellerUsageRewards(address, stack, agentIdPromise) {
   }
   const decoded = await multicallView(requests);
   const total = decoded[0] ? BigInt(decoded[0][0]) : 0n;
-  const rows = [];
+  const freshRows = [];
   let i = 1;
-  for (const epoch of epochs) {
+  for (const epoch of uncachedEpochs) {
     let claimed = false;
     let amount = 0n;
     if (agentId) {
@@ -2604,13 +2913,17 @@ async function loadSellerUsageRewards(address, stack, agentIdPromise) {
     }
     const points = decoded[i] ? BigInt(decoded[i][0]) : 0n;
     i += 1;
-    rows.push({
-      epoch,
-      points: Number(points) / 1e6,
-      amount: claimed ? 0 : Number(amount) / 1e18,
-      claimed,
-    });
+    // amount is no longer zeroed for a claimed epoch -- it's the real
+    // amount that epoch paid out, kept visible so a claimed/staked row
+    // still shows how much was earned instead of disappearing to 0.
+    freshRows.push({ epoch, points: Number(points) / 1e6, amount: Number(amount) / 1e18, claimed });
   }
+  if (agentId) writeCachedRewardEpochs(agentId, 'seller', freshRows);
+
+  const freshByEpoch = new Map(freshRows.map((r) => [r.epoch, r]));
+  const rows = epochs.map((epoch) => (cached.has(epoch)
+    ? { epoch, ...cached.get(epoch), claimed: true }
+    : freshByEpoch.get(epoch)));
   return { total, epochs: rows };
 }
 
@@ -2620,9 +2933,11 @@ async function loadBuyerUsageRewards(address, stack) {
   }
   const epochs = stack.recognizedEpochs;
   const includePoints = !!usageAccountingClient;
-  // One multicall: per epoch [claimed, amount, points?].
+  const cached = readCachedRewardEpochs(address, 'buyer', epochs);
+  const uncachedEpochs = epochs.filter((e) => !cached.has(e));
+  // One multicall: per uncached epoch [claimed, amount, points?].
   const requests = [];
-  for (const epoch of epochs) {
+  for (const epoch of uncachedEpochs) {
     requests.push({ target: usageRewardsTarget, iface: usageRewardsViewIface, method: 'buyerEpochClaimed', args: [address, epoch] });
     requests.push({ target: usageRewardsTarget, iface: usageRewardsViewIface, method: 'pendingBuyerReward', args: [address, epoch] });
     if (includePoints) {
@@ -2630,10 +2945,10 @@ async function loadBuyerUsageRewards(address, stack) {
     }
   }
   const decoded = await multicallView(requests);
-  const rows = [];
+  const freshRows = [];
   let total = 0n;
   let i = 0;
-  for (const epoch of epochs) {
+  for (const epoch of uncachedEpochs) {
     const claimed = !!decoded[i] && decoded[i][0] === true;
     const amount = decoded[i + 1] ? BigInt(decoded[i + 1][0]) : 0n;
     i += 2;
@@ -2642,15 +2957,18 @@ async function loadBuyerUsageRewards(address, stack) {
       points = decoded[i] ? BigInt(decoded[i][0]) : 0n;
       i += 1;
     }
-    const effective = claimed ? 0n : amount;
-    total += effective;
-    rows.push({
-      epoch,
-      points: Number(points) / 1e6,
-      amount: Number(effective) / 1e18,
-      claimed,
-    });
+    if (!claimed) total += amount;
+    // Same as the seller side: amount is the real per-epoch payout, shown
+    // regardless of claimed status; `claimed` is the separate flag the
+    // frontend uses to decide whether to still show action buttons.
+    freshRows.push({ epoch, points: Number(points) / 1e6, amount: Number(amount) / 1e18, claimed });
   }
+  writeCachedRewardEpochs(address, 'buyer', freshRows);
+
+  const freshByEpoch = new Map(freshRows.map((r) => [r.epoch, r]));
+  const rows = epochs.map((epoch) => (cached.has(epoch)
+    ? { epoch, ...cached.get(epoch), claimed: true }
+    : freshByEpoch.get(epoch)));
   return { total, epochs: rows };
 }
 
@@ -2843,6 +3161,13 @@ app.post('/api/chat/image', async (req, res) => {
 // served at antseed-zh.com root). Pick by Host header so nginx can just
 // proxy_pass everything here for the dedicated domain, instead of needing
 // filesystem read access under /root (which stays 700).
+//
+// There used to be a third, `dist-market` for antseedmarkets.com -- removed
+// 2026-09-24 (same day) once that domain moved to its own standalone repo
+// (../antseedmarkets/) with its own nginx site serving a static build from
+// /var/www/antseedmarkets. This backend still answers antseedmarkets.com's
+// /api/* requests (nginx proxies only that prefix here now), but no longer
+// picks a static dir for it.
 const ROOT_DOMAIN_HOSTS = new Set(['antseed-zh.com', 'www.antseed-zh.com']);
 function staticDirFor(req) {
   const host = (req.hostname || '').toLowerCase();
@@ -2883,6 +3208,9 @@ app.listen(PORT, '0.0.0.0', async () => {
   // readChainMetrics() already has a current epoch to sync against.
   startEpochRewardsPoller(3600);
   console.log('Epoch rewards poller started (refresh every hour).');
+
+  startLantsListingMonitor(600);
+  console.log('lANTS listing monitor started (refresh every 10 min).');
 
   // Warm the tokenomics cache in the background. It needs the chain poller's
   // data, so it runs after startChainPoller. Until it lands, requests are

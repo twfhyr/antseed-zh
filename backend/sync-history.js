@@ -109,7 +109,46 @@ export async function syncSellersOnchain() {
     }
   });
   tx(items);
+  recordSellerEarnings(items);
   return { count: items.length, totalCount: result?.totalCount ?? items.length };
+}
+
+// Addresses whose earnings we keep a real history for (not just the latest
+// snapshot). Just antseed-zh's own seller for now, per explicit ask
+// 2026-09-23 -- add more addresses here if that scope ever grows.
+const TRACKED_EARNINGS_ADDRESSES = new Set([
+  '0x412282c48584073c5aee6a79945f105a7777e194', // antseed-zh (seller-b)
+]);
+
+/** Appends a new row to seller_earnings_history for each tracked address,
+ *  but only when earned_usdc actually changed since the last recorded row
+ *  -- otherwise every 5-minute sync cycle would insert an identical
+ *  duplicate. Called from syncSellersOnchain() itself so this never drifts
+ *  out of sync with the regular seller sync cadence. */
+function recordSellerEarnings(items) {
+  const lastStmt = db.prepare(
+    'SELECT earned_usdc FROM seller_earnings_history WHERE address = ? ORDER BY recorded_at DESC LIMIT 1'
+  );
+  const insertStmt = db.prepare(`
+    INSERT INTO seller_earnings_history (address, earned_usdc, request_count, unique_buyers, recorded_at)
+    VALUES (?, ?, ?, ?, ?)
+  `);
+  const now = Date.now();
+  for (const s of items) {
+    const address = String(s.address || '').toLowerCase();
+    if (!TRACKED_EARNINGS_ADDRESSES.has(address)) continue;
+    const last = lastStmt.get(address);
+    if (last && last.earned_usdc === String(s.earnedUsdc)) continue; // unchanged, skip
+    insertStmt.run(address, String(s.earnedUsdc ?? '0'), s.requestCount != null ? String(s.requestCount) : null, s.uniqueBuyers ?? null, now);
+  }
+}
+
+/** Full recorded earnings history for one address, oldest first -- each
+ *  row is a real observed change, not a fixed-interval snapshot. */
+export function readSellerEarningsHistory(address, limit = 1000) {
+  return db.prepare(
+    'SELECT earned_usdc, request_count, unique_buyers, recorded_at FROM seller_earnings_history WHERE address = ? ORDER BY recorded_at ASC LIMIT ?'
+  ).all(String(address).toLowerCase(), limit);
 }
 
 /** Raw open lANTS stake positions (owner, amount, lock epochs) -- feeds the

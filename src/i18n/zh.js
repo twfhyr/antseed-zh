@@ -11,6 +11,7 @@ export default {
   'nav.stake': 'lANTS',
   'nav.stakers': '质押者',
   'nav.rewards': '奖励',
+  'nav.town': '小镇公告板',
   'nav.about': '关于',
   'nav.chat': '聊天',
   'chat.title': '生成图片',

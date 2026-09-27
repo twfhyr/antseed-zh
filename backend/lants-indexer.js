@@ -14,12 +14,15 @@ const INDEXER_URL = process.env.LANTS_INDEXER_URL || 'http://localhost:42069';
 
 const NATIVE = '0x0000000000000000000000000000000000000000';
 const WETH_BASE = '0x4200000000000000000000000000000000000006'; // same address listLants.js signs offers in
+const USDC_BASE = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913'; // Base USDC, same token lANTS listings use
 
 function currencyLabel(addr) {
+  if (addr == null || addr === '') return '';
   const a = String(addr).toLowerCase();
-  if (a === NATIVE) return 'ETH';
-  if (a === WETH_BASE) return 'WETH';
-  return addr; // an unrecognized ERC20 -- show the real address, don't guess a symbol
+  if (a === 'eth' || a === NATIVE) return 'ETH';
+  if (a === 'usdc' || a === USDC_BASE) return 'USDC';
+  if (a === 'weth' || a === WETH_BASE) return 'WETH';
+  return addr;
 }
 
 async function gql(query, variables = {}) {

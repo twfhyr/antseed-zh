@@ -41,6 +41,19 @@ function rowToTrade(row) {
   };
 }
 
+const positionContextStmt = db.prepare('SELECT amount, agent_id FROM lants_positions WHERE id = ?');
+
+function enrichTradeContext(trade) {
+  if (trade.amount != null && trade.agentId != null) return trade;
+  const p = positionContextStmt.get(trade.tokenId);
+  if (!p) return trade;
+  return {
+    ...trade,
+    amount: trade.amount ?? p.amount,
+    agentId: trade.agentId ?? p.agent_id,
+  };
+}
+
 /** Most recent recorded buyer per token id, self-reported by whichever
  *  browser called /api/lants/trade or /api/lants/offer/accept right after
  *  its own tx confirmed. No on-chain check of its own -- see indexerOwners()
@@ -99,9 +112,10 @@ function tradeTuple(t) {
  *  on the same tokenId, at the exact same price, as one -- a narrow
  *  false-positive on a display list, never a fabricated number, and far
  *  better than showing every real trade twice once the indexer is live. */
-export async function listTrades({ page = 1, pageSize = 20 } = {}) {
+export async function listTrades({ page = 1, pageSize = 20, tokenId = null } = {}) {
   const limit = Math.max(1, Math.min(100, Number(pageSize) || 20));
   const offset = Math.max(0, (Math.max(1, Number(page) || 1) - 1) * limit);
+  const filterId = tokenId == null || tokenId === '' ? null : Number(tokenId);
 
   const localRows = db.prepare('SELECT * FROM lants_trades ORDER BY created_at DESC').all().map(rowToTrade);
 
@@ -121,7 +135,12 @@ export async function listTrades({ page = 1, pageSize = 20 } = {}) {
   }
   const keptLocal = localRows.filter((t) => !supersededLocalIds.has(t.id));
 
-  const merged = [...keptLocal, ...onchainRows].sort((a, b) => b.createdAt - a.createdAt);
+  let merged = [...keptLocal, ...onchainRows]
+    .map(enrichTradeContext)
+    .sort((a, b) => b.createdAt - a.createdAt);
+  if (Number.isFinite(filterId)) {
+    merged = merged.filter((t) => t.tokenId === filterId);
+  }
   const total = merged.length;
   const rows = merged.slice(offset, offset + limit);
   return { rows, total };
