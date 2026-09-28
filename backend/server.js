@@ -2,7 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { Interface, JsonRpcProvider, Contract, verifyMessage } from 'ethers';
+import { Interface, JsonRpcProvider, FallbackProvider, FetchRequest, Network, Contract, verifyMessage } from 'ethers';
 import db from './database.js';
 import { syncFromLocalDiscovery } from './sync-local-discovery.js';
 import { readChainMetrics, updateChainMetrics, startChainPoller } from './chain-poller.js';
@@ -1191,14 +1191,59 @@ function isTransientRpcError(e) {
       || /timeout|rate limit|429|too many requests/i.test(e.message || '');
 }
 
-async function safe(read, fallback) {
+// Real incident, 2026-09-27: /api/rewards hung for 100+ seconds with zero
+// log output for a real address (antseed-zh's own seller -- it has both a
+// registered agentId and open staking positions, so it exercises more RPC
+// calls than a plain wallet does) until Cloudflare gave up and returned 524.
+// Root cause: neither safe()/strict() nor multicallView() ever put a
+// timeout on the underlying RPC call -- they only catch a call that
+// actually rejects. A call that just never resolves (a congested/rate-
+// limited public RPC accepting the connection but never answering, which
+// this codebase has hit before -- see reference_antseed-public-rpc-rate-limit
+// memory) hangs forever, and every reward bucket in /api/rewards runs
+// concurrently via Promise.all, so one hung bucket blocks the whole
+// response. withTimeout() converts that into a real rejection after a
+// bounded wait, which isTransientRpcError() below already recognizes (it
+// matches /timeout/i), so it flows into the exact same retry-then-fallback
+// path a real RPC error already took. Note: Promise.race doesn't cancel
+// the underlying call -- a hung request still finishes in the background
+// eventually -- but the request that was WAITING on it is no longer
+// blocked, which is what actually matters for not hanging the response.
+function withTimeout(promise, ms, label) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      const err = new Error(`${label || 'RPC call'} timed out after ${ms}ms`);
+      err.isTimeout = true;
+      reject(err);
+    }, ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+// A real, direct RPC call that fails (rate-limit, connection reset) comes
+// back in well under a second (confirmed live: 0.3s for a 429 from this
+// exact endpoint) -- 6s is already generous headroom for normal variance,
+// not a number tuned to this one incident.
+const RPC_CALL_TIMEOUT_MS = 6_000;
+
+// A call that TIMED OUT (never got any response at all) is never retried
+// immediately -- confirmed live during this incident that retrying just
+// chains a second full RPC_CALL_TIMEOUT_MS wait for no benefit when the
+// endpoint is genuinely not answering. Only a call that FAILED FAST with a
+// transient error (rate-limit, connection reset) is worth a quick retry,
+// since that failure mode can plausibly clear between attempts.
+function shouldRetryOnce(e) {
+  return !e?.isTimeout && isTransientRpcError(e);
+}
+
+async function safe(read, fallback, label) {
   try {
-    return await read();
+    return await withTimeout(read(), RPC_CALL_TIMEOUT_MS, label);
   } catch (e) {
-    if (isTransientRpcError(e)) {
+    if (shouldRetryOnce(e)) {
       try {
         await new Promise((r) => setTimeout(r, 500));
-        return await read();
+        return await withTimeout(read(), RPC_CALL_TIMEOUT_MS, label);
       } catch { return fallback; }
     }
     return fallback;
@@ -1208,13 +1253,13 @@ async function safe(read, fallback) {
 // strict() retries transient RPC failures once, then rethrows. Used for calls
 // where a fallback would silently fabricate reward data — better to fail the
 // request with a real error than display zeros that look legitimate.
-async function strict(read) {
+async function strict(read, label) {
   try {
-    return await read();
+    return await withTimeout(read(), RPC_CALL_TIMEOUT_MS, label);
   } catch (e) {
-    if (isTransientRpcError(e)) {
+    if (shouldRetryOnce(e)) {
       await new Promise((r) => setTimeout(r, 750));
-      return await read();
+      return await withTimeout(read(), RPC_CALL_TIMEOUT_MS, label);
     }
     throw e;
   }
@@ -1229,6 +1274,16 @@ const RECOGNIZED_USAGE_FIRST_EPOCH = 22;
 
 async function resolveStack() {
   if (stackCache && Date.now() - stackCache.resolvedAt < STACK_TTL_MS) return stackCache;
+
+  // Started immediately rather than after the epoch-resolution steps below
+  // -- it depends on none of their results, so there's no reason to pay
+  // its RPC_CALL_TIMEOUT_MS sequentially on top of theirs (confirmed live,
+  // 2026-09-27: under a genuinely unresponsive RPC this was one of three
+  // fully sequential ~worst-case waits stacked into one request).
+  const lockedRewardsPoolPromise = safe(async () => {
+    const pool = await emissionsClient.sellerRewardsPool();
+    return sameAddress(pool, ZERO_ADDRESS) ? null : pool;
+  }, null);
 
   const [registryEmissions, registryStaking] = await Promise.all([
     safe(() => registryClient.emissions(), null),
@@ -1273,10 +1328,7 @@ async function resolveStack() {
     ? Array.from({ length: Math.max(0, currentEpoch - RECOGNIZED_USAGE_FIRST_EPOCH) }, (_, i) => RECOGNIZED_USAGE_FIRST_EPOCH + i)
     : [];
 
-  const lockedRewardsPool = await safe(async () => {
-    const pool = await emissionsClient.sellerRewardsPool();
-    return sameAddress(pool, ZERO_ADDRESS) ? null : pool;
-  }, null);
+  const lockedRewardsPool = await lockedRewardsPoolPromise;
   const lockedPoolClient = lockedRewardsPool ? new SellerRewardsPoolClient(evmClientConfig(lockedRewardsPool)) : null;
 
   stackCache = {
@@ -1293,8 +1345,37 @@ async function resolveStack() {
 // the per-epoch fan-outs (~130 reads for a 22-epoch lookup) into 1-3 RPCs —
 // critical for latency AND for the tenderly gateway, which queues bursts
 // beyond ~30-40 in-flight calls until they die with TIMEOUT errors.
+//
+// Was a bare single-endpoint JsonRpcProvider(emissionsCfg.rpcUrl) until
+// 2026-09-27 -- the one RPC caller in this file that didn't already get a
+// fallback, since every typed SDK client (registryClient, emissionsClient,
+// etc.) already builds one internally: @antseed/buyer-core's
+// BaseEvmClient/buildProvider() wires rpcUrl + fallbackRpcUrls into a
+// FallbackProvider (quorum 1, priority-ordered, 750ms stall per provider)
+// for every one of them already, via evmClientConfig() below. Mirrors that
+// exact same construction here instead of inventing a different one, so
+// this provider behaves identically to the ones the rest of this file
+// already trusts. See notes/dev-plan.md and the
+// reference_antseed-public-rpc-rate-limit memory for the incident this
+// closes -- confirmed live 2026-09-27 that tenderly's rate-limit is
+// intermittent (not sustained), and drpc/nodies/mainnet.base.org were all
+// healthy at the same moment tenderly wasn't, so failover is a real,
+// verified improvement here, not a theoretical one.
 const MULTICALL3_ADDRESS = '0xcA11bde05977b3631167028862bE2a173976CA11';
-const multicallProvider = new JsonRpcProvider(emissionsCfg.rpcUrl);
+function buildFallbackProvider(rpcUrl, fallbackRpcUrls, evmChainId) {
+  const network = evmChainId ? Network.from(evmChainId) : undefined;
+  const opts = { batchMaxCount: 1, staticNetwork: network ? true : undefined };
+  const makeProvider = (url) => {
+    const request = new FetchRequest(url);
+    request.timeout = 10_000;
+    return new JsonRpcProvider(request, network, opts);
+  };
+  if (!fallbackRpcUrls || fallbackRpcUrls.length === 0) return makeProvider(rpcUrl);
+  const urls = [rpcUrl, ...fallbackRpcUrls];
+  const configs = urls.map((url, i) => ({ provider: makeProvider(url), priority: i + 1, stallTimeout: 750, weight: 1 }));
+  return new FallbackProvider(configs, network, { quorum: 1 });
+}
+const multicallProvider = buildFallbackProvider(emissionsCfg.rpcUrl, emissionsCfg.fallbackRpcUrls, emissionsCfg.evmChainId);
 const multicall3 = new Contract(MULTICALL3_ADDRESS, [
   'function aggregate3(tuple(address target, bool allowFailure, bytes callData)[] calls) payable returns (tuple(bool success, bytes returnData)[] returnData)',
 ], multicallProvider);
@@ -1347,9 +1428,20 @@ async function multicallView(requests, options = {}) {
     const calls = chunk.map((r) => ({ target: r.target, allowFailure: true, callData: r.iface.encodeFunctionData(r.method, r.args) }));
     let returned;
     try {
-      returned = await multicall3.getFunction('aggregate3').staticCall(calls);
-    } catch {
-      if (chunk.length === 1) return;
+      // Same hang risk as safe()/strict() (see withTimeout's comment) --
+      // this call has no retry of its own once it fails, it splits the
+      // chunk and recurses, so a bare timeout rejection here already drives
+      // the existing split-and-retry path correctly.
+      returned = await withTimeout(multicall3.getFunction('aggregate3').staticCall(calls), RPC_CALL_TIMEOUT_MS, 'multicall aggregate3');
+    } catch (e) {
+      // A timeout means the RPC endpoint itself isn't answering right now --
+      // splitting into smaller chunks and retrying (each `run()` call below
+      // is awaited sequentially, not concurrently) would just chain another
+      // full RPC_CALL_TIMEOUT_MS wait per split, compounding into minutes
+      // for a real batch instead of bounding the whole call at one timeout.
+      // Only split for a genuine RPC rejection (e.g. batch too large for
+      // this endpoint), where a smaller batch might actually succeed.
+      if (e?.isTimeout || chunk.length === 1) return;
       const half = Math.ceil(chunk.length / 2);
       await run(offset, half);
       await run(offset + half, chunk.length - half);
@@ -1380,13 +1472,17 @@ async function agentIdOf(address) {
   const key = address.toLowerCase();
   const cached = agentIdCache.get(key);
   if (cached !== undefined) return cached;
-  let agentId = 0;
-  if (sellerRegistryClient) {
-    agentId = await safe(() => sellerRegistryClient.getAgentId(address), 0);
-  }
-  if (!agentId) {
-    agentId = await safe(() => legacyStakingClient.getAgentId(address), 0);
-  }
+  // Run both lookups concurrently rather than sellerRegistry-then-legacy --
+  // they're independent reads with no side effects, so there's no reason
+  // to pay two sequential RPC_CALL_TIMEOUT_MS waits (worst case, e.g. under
+  // the 2026-09-27 RPC-unresponsive incident) when running them together
+  // costs no more than the slower of the two. sellerRegistry still wins
+  // when both resolve to something, same priority as before.
+  const [registryId, legacyId] = await Promise.all([
+    sellerRegistryClient ? safe(() => sellerRegistryClient.getAgentId(address), 0) : Promise.resolve(0),
+    safe(() => legacyStakingClient.getAgentId(address), 0),
+  ]);
+  const agentId = registryId || legacyId;
   if (agentId) agentIdCache.set(key, agentId);
   return agentId;
 }
@@ -1911,7 +2007,7 @@ async function verifyOnchainTransfer(txHash, tokenId, expectedBuyer) {
   if (!expectedBuyer) return { ok: false, error: 'buyer required' };
   let receipt;
   try {
-    receipt = await multicallProvider.getTransactionReceipt(txHash);
+    receipt = await withTimeout(multicallProvider.getTransactionReceipt(txHash), RPC_CALL_TIMEOUT_MS, 'getTransactionReceipt');
   } catch (e) {
     return { ok: false, error: `could not fetch transaction: ${e.message}` };
   }

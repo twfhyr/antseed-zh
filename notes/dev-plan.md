@@ -4,6 +4,33 @@ Last reviewed: 2026-09-20. Keep this current — mark items done and remove
 them (git history is the record of what was done and when; this file is
 only for what's still open).
 
+## ~~Backend RPC has no fallback~~ -- fixed 2026-09-27, same day it was found
+
+`backend/server.js`'s `multicallProvider` was the one RPC caller in this
+file not already using `emissionsCfg.fallbackRpcUrls` -- every typed SDK
+client here (`registryClient`, `emissionsClient`, etc.) already gets a
+proper `FallbackProvider` for free via `@antseed/buyer-core`'s
+`BaseEvmClient`/`buildProvider()`, since `evmClientConfig()` was already
+passing `fallbackRpcUrls` through. `multicallProvider` alone was still a
+bare single-endpoint `JsonRpcProvider(emissionsCfg.rpcUrl)`.
+
+Fixed by mirroring that exact same `buildProvider()` construction locally
+(`buildFallbackProvider()`, same file) instead of inventing a different
+one: `FallbackProvider` over `[rpcUrl, ...fallbackRpcUrls]`, quorum 1,
+priority-ordered, 750ms stall per provider. No paid key needed -- turned
+out to be a "this backend just wasn't using what it already had"
+situation, not a "we can't afford it" one.
+
+Verified live: confirmed all 4 endpoints (tenderly + drpc + nodies +
+mainnet.base.org) healthy at the same moment, then confirmed the
+previously-100+s-hanging address now returns **real, correct on-chain
+data in ~14.5s** (was: all-null fallback in ~24s right after the earlier
+`withTimeout` fix, or an infinite hang before that). The lANTS
+trade-verification path (`verifyOnchainTransfer`, added earlier the same
+day) now rejects a fake tx in ~0.3s instead of riding out the full timeout.
+`withTimeout()` from the earlier fix stays in place as the safety net for
+the case where every endpoint is genuinely down at once.
+
 ## lANTS indexer (new, 2026-09-20 session, not yet integrated or committed)
 
 A previous session scaffolded a Ponder project at `indexer/` (untracked,
