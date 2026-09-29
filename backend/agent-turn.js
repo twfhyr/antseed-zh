@@ -47,7 +47,11 @@ const MAX_TOKENS = 800;
 const AGENTS = {
   luck: {
     port: 8380,
-    model: 'deepseek-chat', // antseed-aggregator's cheap tier
+    model: 'kimi-coding-highspeed', // antseed-aggregator's cheap tier -- was
+    // deepseek-chat (blockrun), broke 2026-09-28 when antseed-aggregator's
+    // blockrun x402 bridge ran out of funds on both chains and the seller
+    // switched providers entirely to kimi (see blockrun-bridge-wallet-mode
+    // memory); kimi-coding-highspeed is the closest-priced replacement.
     persona: `You are Luck, a resident of a small town. You keep chickens and
 run a tiny roadside vegetable stand. You are practical, a little
 superstitious, and you notice small details about your neighbors' lives.`,
@@ -76,7 +80,9 @@ friendly, chatty, and always slightly behind on restocking something.`,
   },
   sage: {
     port: 8379, // antseed-buyer-sg-01, pinned to antseed-zh
-    model: 'claude-sonnet-5',
+    model: 'gpt-5.4', // was claude-sonnet-5, which antseed-zh's active
+    // providers (duggy + minimax) never actually served -- picked the
+    // cheapest model duggy does serve, distinct from heal/duggy's gpt-5.5.
     persona: `You are Sage, the oldest resident of the same small town as
 Luck, Heal, Duggy and Eight, your neighbors. You watch the weather, remember
 things that happened years ago, and dole out unsolicited advice that
