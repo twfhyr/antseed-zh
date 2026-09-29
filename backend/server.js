@@ -20,7 +20,7 @@ import {
   saveListing, getListing, getListingRecord, allActiveListings, invalidateListing,
   recordListingEvent, recentListingEvents,
 } from './lants-listings.js';
-import { upsertPositions } from './lants-positions.js';
+import { upsertPositions, knownPositionIds, markWithdrawn } from './lants-positions.js';
 import {
   saveOffer, getOffer, offersForToken, offererForOffer,
   cancelOffer, markOfferAccepted, cancelOtherOffers,
@@ -1714,6 +1714,20 @@ async function computeLantsMarket(extraIds = []) {
   const ids = new Set([...byAntscan.keys(), ...osItems.map((i) => i.id)]);
   for (const id of localListings.keys()) ids.add(id);
   for (const id of extraIds) ids.add(Number(id));
+  // Real bug reported live 2026-09-29: split 70 ANTS into 30+40, list the
+  // 30, and the unlisted 40 vanishes from Mine on the very next refresh.
+  // Root cause: the two new ids only entered `ids` (and got persisted to
+  // lants_positions below) because doSplit's own frontend call passed them
+  // as ensureIds that one time -- neither Antscan nor OpenSea had indexed
+  // them yet. The *next* recompute (e.g. doList's post-listing refresh,
+  // which rebuilds this same shared, non-owner-scoped cache) calls this
+  // function with no ensureIds at all, so an id known only from that one
+  // earlier forced read falls out of every source above and disappears
+  // from the whole market, not just one user's Mine tab. Reunion every id
+  // this backend has ever confirmed on-chain (persisted here specifically
+  // so this doesn't need Antscan/OpenSea to agree) -- it'll fall out of
+  // `missing` below on its own once byAntscan actually has it again.
+  for (const id of knownPositionIds()) ids.add(id);
 
   // ensureIds ids force a real on-chain read even when Antscan already
   // knows the id -- needed after a direct Seaport buy, which transfers the
@@ -1732,6 +1746,7 @@ async function computeLantsMarket(extraIds = []) {
   const positionReadFailures = new Map();
   if (capped.length > 0) {
     const extra = await Promise.all(capped.map((id) => loadOnChainPositionResult(id)));
+    const confirmedGoneIds = [];
     capped.forEach((id, i) => {
       const result = extra[i];
       if (!result.ok) {
@@ -1744,12 +1759,19 @@ async function computeLantsMarket(extraIds = []) {
       if (p) {
         p.chainOwner = p.owner;
         byAntscan.set(p.id, p);
+      } else {
+        // A confirmed (not failed) null read means this id is genuinely
+        // gone on-chain (withdrawn, or closed by a split/merge/move) --
+        // persist that so knownPositionIds() (below) stops re-forcing an
+        // on-chain read for it on every future recompute forever.
+        confirmedGoneIds.push(id);
+        // A null read for an explicitly-ensured id that already had a (now
+        // stale) cached entry means it's genuinely gone on-chain -- drop
+        // the stale entry rather than leaving it in place unrefreshed.
+        if (forcedReadIds.has(id)) byAntscan.delete(id);
       }
-      // A null read for an explicitly-ensured id that already had a (now
-      // stale) cached entry means it's genuinely gone on-chain -- drop the
-      // stale entry rather than leaving it in place unrefreshed.
-      else if (forcedReadIds.has(id)) byAntscan.delete(id);
     });
+    if (confirmedGoneIds.length) markWithdrawn(confirmedGoneIds);
   }
 
   // Correct ownership against our own trade log + the Ponder indexer's

@@ -108,3 +108,34 @@ export function rowToPosition(row) {
 export function distinctAgentIds() {
   return db.prepare('SELECT DISTINCT agent_id AS agentId FROM lants_positions WHERE withdrawn = 0 AND agent_id IS NOT NULL ORDER BY agent_id').all().map((r) => r.agentId);
 }
+
+/**
+ * Every non-withdrawn position id this backend has ever confirmed on-chain,
+ * regardless of whether Antscan/OpenSea currently know about it. See
+ * computeLantsMarket()'s use of this in server.js for why: a freshly
+ * split/staked position gets upserted here via an explicit ensureIds read,
+ * but Antscan can lag far longer than this cache's 90s TTL, so without this
+ * the position drops out of the *global* market recompute (not just one
+ * user's "Mine" view) the very next time anything else triggers a refresh
+ * without re-listing that exact id in ensureIds -- reported live as a split
+ * position "disappearing" from Mine right after listing its sibling.
+ */
+export function knownPositionIds() {
+  return db.prepare('SELECT id FROM lants_positions WHERE withdrawn = 0').all().map((r) => r.id);
+}
+
+const markWithdrawnStmt = db.prepare('UPDATE lants_positions SET withdrawn = 1, synced_at = @syncedAt WHERE id = @id');
+/**
+ * A confirmed-on-chain-gone id (split/merged/moved/withdrawn) needs to stop
+ * coming back from knownPositionIds(), or computeLantsMarket() re-forces an
+ * on-chain read for it forever -- every id this cache has ever known about
+ * that's since closed, on every single recompute.
+ */
+export function markWithdrawn(ids) {
+  const list = ids.filter((id) => Number.isFinite(id));
+  if (!list.length) return;
+  const tx = db.transaction((items) => {
+    for (const id of items) markWithdrawnStmt.run({ id, syncedAt: Date.now() });
+  });
+  tx(list);
+}
