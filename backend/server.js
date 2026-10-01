@@ -16,6 +16,7 @@ import {
 } from './antscan.js';
 import { registerProviderSocialRoutes } from './provider-social.js';
 import { registerUserProfileRoutes } from './user-profiles.js';
+import { registerProviderDiscoveryRoutes } from './provider-discovery.js';
 import { fetchOpenSeaLantsMarket, OPENSEA_COLLECTION_URL, isProviderActivationStake } from './opensea-lants.js';
 import { postSeaportListing, resolveOpenSeaApiKey, SEAPORT_V16 } from './opensea-list.js';
 import {
@@ -3333,6 +3334,7 @@ app.post('/api/chat/image', async (req, res) => {
 
 registerProviderSocialRoutes(app);
 registerUserProfileRoutes(app);
+registerProviderDiscoveryRoutes(app);
 
 // Two static builds share this backend: `dist` (base='/zh/', served behind
 // the 5.223.54.56:8088/zh path-prefix proxy) and `dist-root` (base='/',

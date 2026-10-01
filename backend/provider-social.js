@@ -13,6 +13,7 @@ import db from './database.js';
 import {
   fetchBuyerSellerPair,
   fetchBuyerSellerPairs,
+  fetchBuyerSellerPairsForBuyer,
   fetchBuyerSellerPairsForSeller,
 } from './antscan.js';
 import { attachAuthorProfiles, publicProfile } from './user-profiles.js';
@@ -29,6 +30,8 @@ const CHAT_COOLDOWN_MS = 2_000;
 const BUYER_COUNT_TTL_MS = 5 * 60_000;
 const MEMBER_TTL_MS = 2 * 60_000;
 const OPERATOR_TTL_MS = 10 * 60_000;
+const OPERATOR_CHUNK = 200;
+const PAIR_TTL_MS = 5 * 60_000;
 const ROLE_ORDER = ['owner', 'buyer', 'staker'];
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 const MULTICALL3_ADDRESS = '0xcA11bde05977b3631167028862bE2a173976CA11';
@@ -44,6 +47,7 @@ const operatorCache = new Map();
 const sellerBuyersCache = new Map();
 const sellerOperatorsCache = new Map();
 let buyerCountCache = { at: 0, map: null, promise: null };
+let pairCache = { at: 0, items: null, promise: null };
 let depositsClient = null;
 
 function getDepositsClient() {
@@ -104,7 +108,7 @@ function parseAgentId(raw) {
   return AGENT_ID_RE.test(id) ? id : null;
 }
 
-function loadSellerByAgentId(agentId) {
+export function loadSellerByAgentId(agentId) {
   const id = parseAgentId(agentId);
   if (!id) return null;
   return db.prepare('SELECT * FROM sellers WHERE agent_id = ?').get(id) || null;
@@ -127,7 +131,7 @@ export function resolveProviderWallet(sellerRow) {
   return m ? `0x${m[1].toLowerCase()}` : null;
 }
 
-function isOwnerAddress(sellerRow, address) {
+export function isOwnerAddress(sellerRow, address) {
   const wallet = resolveProviderWallet(sellerRow);
   if (!wallet || !address) return false;
   return wallet === String(address).toLowerCase();
@@ -177,48 +181,52 @@ async function operatorsOfBuyers(buyers) {
   const client = getDepositsClient();
   const target = client.contractAddress;
   const multicall = new Contract(MULTICALL3_ADDRESS, MULTICALL_IFACE, client.provider);
-  const calls = missing.map((buyer) => ({
-    target,
-    allowFailure: true,
-    callData: OPERATOR_IFACE.encodeFunctionData('getOperator', [buyer]),
-  }));
-  let returned;
-  try {
-    returned = await multicall.getFunction('aggregate3').staticCall(calls);
-  } catch {
-    returned = null;
-  }
 
-  const at = Date.now();
-  if (returned) {
-    missing.forEach((buyer, i) => {
-      const row = returned[i];
-      if (!row?.success || !row.returnData) return;
-      try {
-        const decoded = OPERATOR_IFACE.decodeFunctionResult('getOperator', row.returnData);
-        const op = String(decoded[0] || '').toLowerCase();
-        const value = ADDR_RE.test(op) ? op : ZERO_ADDRESS;
-        operatorCache.set(buyer, { at, value });
-        out.set(buyer, value);
-      } catch {
-        /* skip a single decode miss */
-      }
-    });
-    return out;
-  }
-
-  const rows = await Promise.all(missing.map(async (buyer) => {
+  for (let i = 0; i < missing.length; i += OPERATOR_CHUNK) {
+    const chunk = missing.slice(i, i + OPERATOR_CHUNK);
+    const calls = chunk.map((buyer) => ({
+      target,
+      allowFailure: true,
+      callData: OPERATOR_IFACE.encodeFunctionData('getOperator', [buyer]),
+    }));
+    let returned;
     try {
-      const op = String(await client.getOperator(buyer) || '').toLowerCase();
-      return [buyer, ADDR_RE.test(op) ? op : ZERO_ADDRESS];
+      returned = await multicall.getFunction('aggregate3').staticCall(calls);
     } catch {
-      return [buyer, null];
+      returned = null;
     }
-  }));
-  for (const [buyer, op] of rows) {
-    if (op == null) continue;
-    operatorCache.set(buyer, { at: Date.now(), value: op });
-    out.set(buyer, op);
+
+    const at = Date.now();
+    if (returned) {
+      chunk.forEach((buyer, idx) => {
+        const row = returned[idx];
+        if (!row?.success || !row.returnData) return;
+        try {
+          const decoded = OPERATOR_IFACE.decodeFunctionResult('getOperator', row.returnData);
+          const op = String(decoded[0] || '').toLowerCase();
+          const value = ADDR_RE.test(op) ? op : ZERO_ADDRESS;
+          operatorCache.set(buyer, { at, value });
+          out.set(buyer, value);
+        } catch {
+          /* skip a single decode miss */
+        }
+      });
+      continue;
+    }
+
+    const rows = await Promise.all(chunk.map(async (buyer) => {
+      try {
+        const op = String(await client.getOperator(buyer) || '').toLowerCase();
+        return [buyer, ADDR_RE.test(op) ? op : ZERO_ADDRESS];
+      } catch {
+        return [buyer, null];
+      }
+    }));
+    for (const [buyer, op] of rows) {
+      if (op == null) continue;
+      operatorCache.set(buyer, { at: Date.now(), value: op });
+      out.set(buyer, op);
+    }
   }
   return out;
 }
@@ -241,7 +249,7 @@ async function buyersOfSeller(sellerAddr) {
 /** Display identity for comments/chat: the deposits operator if this
  *  address is a buyer that has set one, otherwise the address itself.
  *  Buyer hot wallet and operator therefore show as the same user. */
-async function displayIdentity(address) {
+export async function displayIdentity(address) {
   const addr = String(address || '').toLowerCase();
   if (!ADDR_RE.test(addr)) return addr;
   try {
@@ -366,7 +374,7 @@ async function loadBuyerCounts() {
   return buyerCountCache.promise;
 }
 
-function verifySignedAction(message, signature, expectedAddress) {
+export function verifySignedAction(message, signature, expectedAddress) {
   if (!message || !signature || !expectedAddress) return false;
   const m = String(message).match(/@ (\d+)$/);
   const ts = m ? Number(m[1]) : NaN;
@@ -482,6 +490,106 @@ function buildCommentLeaderboard() {
     score: row.score,
     prizeLants: i < COMMENT_BOARD.prizeTop ? COMMENT_BOARD.prizeLants : 0,
   })));
+}
+
+function isNetworkStaker(address) {
+  const owner = String(address || '').toLowerCase();
+  if (!ADDR_RE.test(owner)) return false;
+  const rows = db.prepare(
+    `SELECT amount FROM stake_positions
+     WHERE lower(owner) = ? AND COALESCE(closed_at_epoch, 0) = 0`
+  ).all(owner);
+  return rows.some((r) => r.amount != null && Number(r.amount) > 0 && !isActivationStake(r.amount));
+}
+
+async function allPairItems() {
+  if (pairCache.items && Date.now() - pairCache.at < PAIR_TTL_MS) return pairCache.items;
+  if (pairCache.promise) return pairCache.promise;
+  pairCache.promise = fetchBuyerSellerPairs(20000).then((result) => {
+    const items = result.items || [];
+    pairCache = { at: Date.now(), items, promise: null };
+    return items;
+  }).catch((err) => {
+    pairCache.promise = null;
+    throw err;
+  });
+  return pairCache.promise;
+}
+
+/** Network-wide voter roles for Discovery: a buyer of any provider, or a
+ *  staker of any open non-activation lANTS position. Buyer hot wallet and
+ *  its operator count as one identity. */
+export async function networkVoterRoles(address) {
+  const signer = String(address || '').toLowerCase();
+  const identity = ADDR_RE.test(signer) ? await displayIdentity(signer) : signer;
+  const addrs = [...new Set([signer, identity])].filter((a) => ADDR_RE.test(a));
+  let staker = false;
+  for (const a of addrs) {
+    if (isNetworkStaker(a)) staker = true;
+  }
+  let buyer = false;
+  for (const a of addrs) {
+    try {
+      const pairs = await fetchBuyerSellerPairsForBuyer(a);
+      if ((pairs.items || []).length) {
+        buyer = true;
+        break;
+      }
+    } catch {
+      /* try operator reverse below */
+    }
+  }
+  if (!buyer) {
+    try {
+      const items = await allPairItems();
+      const buyers = [];
+      const seen = new Set();
+      for (const p of items) {
+        const b = String(p.buyer || '').toLowerCase();
+        if (!ADDR_RE.test(b) || seen.has(b)) continue;
+        seen.add(b);
+        buyers.push(b);
+      }
+      const ops = await operatorsOfBuyers(buyers);
+      for (const a of addrs) {
+        for (const op of ops.values()) {
+          if (op === a) {
+            buyer = true;
+            break;
+          }
+        }
+        if (buyer) break;
+        if (seen.has(a)) buyer = true;
+      }
+    } catch {
+      /* keep the fast-path result */
+    }
+  }
+  return {
+    identity: ADDR_RE.test(identity) ? identity : signer,
+    buyer,
+    staker,
+  };
+}
+
+export function ownedProvidersFor(address) {
+  const addr = String(address || '').toLowerCase();
+  if (!ADDR_RE.test(addr)) return [];
+  const sellers = db.prepare(
+    'SELECT id, name, agent_id, status FROM sellers WHERE agent_id IS NOT NULL'
+  ).all();
+  const out = [];
+  for (const s of sellers) {
+    if (!AGENT_ID_RE.test(String(s.agent_id))) continue;
+    if (!isOwnerAddress(s, addr)) continue;
+    out.push({
+      agentId: String(s.agent_id),
+      name: s.name || null,
+      sellerId: s.id,
+      online: String(s.status || '').toLowerCase() === 'online',
+    });
+  }
+  return out.sort((a, b) => Number(a.agentId) - Number(b.agentId));
 }
 
 export function registerProviderSocialRoutes(app) {

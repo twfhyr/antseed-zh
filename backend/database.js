@@ -517,6 +517,32 @@ db.exec(`
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
   );
+
+  -- Discovery directory (antseedmarkets). Owner-submitted pitches, not
+  -- the passive Providers catalog. One live listing per agent_id. Votes
+  -- are one per (listing, voter identity, role); buyer and staker each
+  -- get a vote, so a wallet with both roles can vote twice.
+  CREATE TABLE IF NOT EXISTS discovery_listings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    seller_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL UNIQUE,
+    author TEXT NOT NULL,
+    pitch TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_discovery_listings_agent
+    ON discovery_listings(agent_id);
+
+  CREATE TABLE IF NOT EXISTS discovery_votes (
+    listing_id INTEGER NOT NULL,
+    voter TEXT NOT NULL,
+    role TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (listing_id, voter, role)
+  );
+  CREATE INDEX IF NOT EXISTS idx_discovery_votes_listing
+    ON discovery_votes(listing_id);
 `);
 }
 
