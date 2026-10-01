@@ -1,8 +1,28 @@
 # Dev Plan — Live Backlog
 
-Last reviewed: 2026-09-20. Keep this current — mark items done and remove
+Last reviewed: 2026-09-30. Keep this current — mark items done and remove
 them (git history is the record of what was done and when; this file is
 only for what's still open).
+
+## Providers tab social (antseedmarkets frontend, this backend)
+
+Shipped 2026-09-30. antseedmarkets adds a Providers tab of DHT catalog
+cards (`GET /api/sellers`, reused). Sort/display of buyer counts uses
+Antscan `buyerSellerPair` totals (`GET /api/providers/buyer-counts`)
+because `sellers.unique_buyers` is 0 on every indexed row. Comments
+(buyers only), owner announcements, and per-provider group chat persist
+in SQLite (`provider_comments` / `provider_announcements` /
+`provider_chat_messages`). Writes are wallet-signed. Membership is a
+real pair lookup, never `unique_sellers > 0`. A deposits buyer wallet
+or that buyer's on-chain operator can both comment/chat; the stored
+author is the operator wallet when one is set, so they show as one
+user. Owner wallet is `sellers_onchain.address` via `agent_id`
+(Venice's DHT peer id is not its payment address). Provider detail
+tabs are comments, announcement, chat (comments first). Comment
+leaderboard is `GET /api/providers/comment-leaderboard`: score =
+comments×1 + quality (0/1/2 from body length 40/140) + unique
+providers×3. Top 10 wallets get 10 lANTS each; contest window ends
+15 October 2026 23:59 UTC.
 
 ## ~~Backend RPC has no fallback~~ -- fixed 2026-09-27, same day it was found
 

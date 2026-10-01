@@ -12,6 +12,9 @@ for (const stmt of [
   'ALTER TABLE sellers ADD COLUMN unique_buyers INTEGER',
   'ALTER TABLE sellers ADD COLUMN first_seen_at INTEGER',
   'ALTER TABLE sellers ADD COLUMN total_requests TEXT',
+  'ALTER TABLE provider_comments ADD COLUMN rating INTEGER',
+  'ALTER TABLE provider_comments ADD COLUMN roles TEXT',
+  'ALTER TABLE provider_chat_messages ADD COLUMN roles TEXT',
 ]) {
   try { db.prepare(stmt).run(); } catch (_) { /* column already exists */ }
 }
@@ -459,6 +462,60 @@ db.exec(`
     amount TEXT NOT NULL,
     cached_at INTEGER NOT NULL,
     PRIMARY KEY (subject, side, epoch)
+  );
+
+  -- Provider social (antseedmarkets Providers tab). Comments, owner
+  -- announcements, and per-provider group chat. Writes are signed-wallet
+  -- gated in backend/provider-social.js; membership is Antscan
+  -- buyerSellerPair (deposits buyer or that buyer's operator), never
+  -- unique_buyers (that field is currently 0). author on comments/chat
+  -- is the operator wallet when one is set.
+  CREATE TABLE IF NOT EXISTS provider_comments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    seller_id TEXT NOT NULL,
+    author TEXT NOT NULL,
+    body TEXT NOT NULL,
+    rating INTEGER,
+    roles TEXT,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_provider_comments_seller
+    ON provider_comments(seller_id, id);
+
+  CREATE TABLE IF NOT EXISTS provider_announcements (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    seller_id TEXT NOT NULL,
+    author TEXT NOT NULL,
+    body TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_provider_announcements_seller
+    ON provider_announcements(seller_id, id);
+
+  CREATE TABLE IF NOT EXISTS provider_chat_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    seller_id TEXT NOT NULL,
+    author TEXT NOT NULL,
+    role TEXT NOT NULL,
+    roles TEXT,
+    body TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_provider_chat_seller
+    ON provider_chat_messages(seller_id, id);
+
+  -- Public identity for a connected wallet on antseedmarkets. Nickname is
+  -- unique case-insensitively (nickname_key). Avatar bytes stay in this
+  -- row and are served from GET /api/profiles/:address/avatar.
+  CREATE TABLE IF NOT EXISTS user_profiles (
+    address TEXT PRIMARY KEY,
+    nickname TEXT NOT NULL,
+    nickname_key TEXT NOT NULL UNIQUE,
+    bio TEXT,
+    avatar BLOB,
+    avatar_mime TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
   );
 `);
 }

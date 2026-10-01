@@ -14,6 +14,8 @@ import {
 import {
   fetchBuyerEpochs, fetchSellerEpochs, fetchPoolEpochs, fetchOpenStakePositions, fetchStakingEpoch,
 } from './antscan.js';
+import { registerProviderSocialRoutes } from './provider-social.js';
+import { registerUserProfileRoutes } from './user-profiles.js';
 import { fetchOpenSeaLantsMarket, OPENSEA_COLLECTION_URL, isProviderActivationStake } from './opensea-lants.js';
 import { postSeaportListing, resolveOpenSeaApiKey, SEAPORT_V16 } from './opensea-list.js';
 import {
@@ -24,6 +26,7 @@ import { upsertPositions, knownPositionIds, markWithdrawn } from './lants-positi
 import {
   saveOffer, getOffer, offersForToken, offererForOffer,
   cancelOffer, markOfferAccepted, cancelOtherOffers,
+  WETH_BASE,
 } from './lants-offers.js';
 import { recordTrade, listTrades, latestOwners } from './lants-trades.js';
 import {
@@ -43,7 +46,7 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '400kb' }));
 
 // This backend always runs behind nginx (both the `:8088/zh` proxy and the
 // antseed-zh.com vhost `proxy_pass` to 127.0.0.1:3001). Without this, every
@@ -1586,6 +1589,47 @@ function epochToDate(epoch, genesis, epochDuration) {
   return new Date((Number(genesis) + Number(epoch) * Number(epochDuration)) * 1000).toISOString();
 }
 
+function bustLantsMarketCache() {
+  lantsMarketCache = null;
+  lantsMarketCacheAt = 0;
+}
+
+// Public offer rows for the market payload: totals and per-ANT figures from
+// the signed amount and the position size only. USDC is 1:1 USD. WETH stays
+// WETH -- never converted through a spot price.
+function publicOffersForPosition(tokenId, amount) {
+  const usdcAddr = String(emissionsCfg.usdcContractAddress || '').toLowerCase();
+  const wethAddr = String(WETH_BASE || '').toLowerCase();
+  return offersForToken(tokenId).map((o) => {
+    const token = String(o.weth || '').toLowerCase();
+    const currency = token === usdcAddr ? 'USDC' : token === wethAddr ? 'WETH' : null;
+    const decimals = currency === 'USDC' ? 6 : 18;
+    const total = Number(o.priceWei) / (10 ** decimals);
+    const finite = Number.isFinite(total);
+    const usd = currency === 'USDC' && finite ? total : null;
+    const perAnt = finite && amount > 0 ? total / amount : null;
+    const perAntUsd = usd != null && amount > 0 ? usd / amount : null;
+    return {
+      id: o.id,
+      offerer: o.offerer,
+      priceWei: o.priceWei,
+      currency: currency || o.weth,
+      createdAt: o.createdAt,
+      usd,
+      perAnt,
+      perAntUsd,
+    };
+  });
+}
+
+function bestPublicOffer(offers) {
+  const usdc = (offers || []).filter((o) => o.perAntUsd != null);
+  if (usdc.length) {
+    return usdc.reduce((a, b) => (b.perAntUsd > a.perAntUsd ? b : a));
+  }
+  return offers[0] || null;
+}
+
 function sellerNameByAgentId() {
   const rows = db.prepare('SELECT agent_id, name FROM sellers WHERE agent_id IS NOT NULL').all();
   const map = new Map();
@@ -1864,6 +1908,7 @@ async function computeLantsMarket(extraIds = []) {
     const daysRemaining = endDate != null
       ? Math.max(0, Math.ceil((new Date(endDate).getTime() - Date.now()) / 86400000))
       : null;
+    const offers = publicOffersForPosition(id, amount);
     items.push({
       id,
       owner: pos?.owner || sea?.owner || (listing && local ? local.offerer : null),
@@ -1882,7 +1927,9 @@ async function computeLantsMarket(extraIds = []) {
         ? { usd: listing.usd, unit: listing.unit, symbol: listing.symbol, perAntUsd, mcUsd: impliedMcUsd, fdvUsd: impliedFdvUsd }
         : null,
       fulfillableHere: !!(local && listing),
-      offerCount: offersForToken(id).length,
+      offerCount: offers.length,
+      bestOffer: bestPublicOffer(offers),
+      offers,
     });
   }
 
@@ -1917,6 +1964,7 @@ async function computeLantsMarket(extraIds = []) {
     epochDuration,
     totalNfts: tradable.length,
     listedCount: tradable.filter((i) => i.listed).length,
+    offeredCount: tradable.filter((i) => (i.offerCount || 0) > 0).length,
     activationHidden,
     // Listing on antseed-zh's own Seaport order book never depended on
     // OpenSea's key -- that's only needed for the bonus cross-post to
@@ -2285,6 +2333,7 @@ app.post('/api/lants/offer', async (req, res) => {
       orderParameters: order.parameters,
       signature: order.signature,
     });
+    bustLantsMarketCache();
     res.json({ ok: true, offerId });
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message, detail: e.detail || null });
@@ -2315,6 +2364,7 @@ app.post('/api/lants/offer/cancel', (req, res) => {
     return res.status(401).json({ error: 'signature does not match the offer maker' });
   }
   cancelOffer(id);
+  bustLantsMarketCache();
   res.json({ ok: true });
 });
 
@@ -2369,6 +2419,7 @@ function paginateMarketItems(items, query) {
   if (query.minLockDays) rows = rows.filter((i) => i.lockDays != null && i.lockDays >= Number(query.minLockDays));
   if (query.maxLockDays) rows = rows.filter((i) => i.lockDays != null && i.lockDays <= Number(query.maxLockDays));
   if (query.listed === '1') rows = rows.filter((i) => i.listed);
+  if (query.offered === '1') rows = rows.filter((i) => (i.offerCount || 0) > 0);
 
   const sort = query.sort || 'id';
   const dir = query.dir === 'desc' ? -1 : 1;
@@ -2378,6 +2429,7 @@ function paginateMarketItems(items, query) {
     lockDays: (a, b) => ((a.lockDays || 0) - (b.lockDays || 0)) * dir,
     daysRemaining: (a, b) => ((a.daysRemaining ?? -1) - (b.daysRemaining ?? -1)) * dir,
     price: (a, b) => ((a.listing?.perAntUsd ?? Infinity) - (b.listing?.perAntUsd ?? Infinity)) * dir,
+    offer: (a, b) => ((b.bestOffer?.perAntUsd ?? -1) - (a.bestOffer?.perAntUsd ?? -1)) * dir || (b.id - a.id) * dir,
   };
   rows = [...rows].sort(sorters[sort] || sorters.id);
 
@@ -2423,6 +2475,11 @@ app.get('/api/lants-market', async (req, res) => {
       } else {
         base = await refreshLantsMarket(ensureIds); stale = false; fetchedAt = base.fetchedAt;
       }
+    }
+    if (req.query.offered === '1' && (base.items || []).some((i) => (i.offerCount || 0) > 0 && !Array.isArray(i.offers))) {
+      base = await refreshLantsMarket();
+      stale = false;
+      fetchedAt = base.fetchedAt;
     }
     const page = paginateMarketItems(base.items, req.query);
     res.json({ ...base, ...page, stale, fetchedAt });
@@ -3273,6 +3330,9 @@ app.post('/api/chat/image', async (req, res) => {
     return res.status(500).json({ error: e?.message || String(e) });
   }
 });
+
+registerProviderSocialRoutes(app);
+registerUserProfileRoutes(app);
 
 // Two static builds share this backend: `dist` (base='/zh/', served behind
 // the 5.223.54.56:8088/zh path-prefix proxy) and `dist-root` (base='/',

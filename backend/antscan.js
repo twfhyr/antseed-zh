@@ -258,3 +258,51 @@ export async function fetchStakingEpoch(epoch) {
   }`);
   return data.stakingEpoch;
 }
+
+const ADDR_RE = /^0x[a-f0-9]{40}$/;
+
+const PAIR_FIELDS = `
+        buyer
+        seller
+        requestCount
+        volumeUsdc
+`;
+
+/** One buyer↔seller pair from Antscan, or null if they have never settled
+ *  a channel together. This is the membership check for "is this wallet a
+ *  buyer of this provider" — sellers.uniqueBuyers is a count (and as of
+ *  2026-09-30 is 0 on every row), not a pair list. */
+export async function fetchBuyerSellerPair(buyer, seller) {
+  const b = String(buyer || '').toLowerCase();
+  const s = String(seller || '').toLowerCase();
+  if (!ADDR_RE.test(b) || !ADDR_RE.test(s)) return null;
+  const data = await gql(`{
+    buyerSellerPairs(limit: 1, where: {buyer: "${b}", seller: "${s}"}) {
+      items { ${PAIR_FIELDS} }
+    }
+  }`);
+  return data.buyerSellerPairs.items[0] || null;
+}
+
+/** Every buyer↔seller pair Antscan has indexed. Used to count unique
+ *  buyers per provider without trusting the always-zero uniqueBuyers
+ *  field on the seller entity. */
+export async function fetchBuyerSellerPairs(limit = 20000) {
+  return fetchAllPaged('buyerSellerPairs', 'volumeUsdc', PAIR_FIELDS, limit);
+}
+
+/** Pairs for one provider payment address. Used to reverse-lookup
+ *  "is this wallet the deposits operator of a buyer of this provider". */
+export async function fetchBuyerSellerPairsForSeller(seller, limit = 5000) {
+  const s = String(seller || '').toLowerCase();
+  if (!ADDR_RE.test(s)) return { items: [], totalCount: 0 };
+  return fetchAllPaged('buyerSellerPairs', 'volumeUsdc', PAIR_FIELDS, limit, `{seller: "${s}"}`);
+}
+
+/** Pairs for one deposits buyer wallet. Used by the profile page to list
+ *  providers that wallet has actually bought from. */
+export async function fetchBuyerSellerPairsForBuyer(buyer, limit = 5000) {
+  const b = String(buyer || '').toLowerCase();
+  if (!ADDR_RE.test(b)) return { items: [], totalCount: 0 };
+  return fetchAllPaged('buyerSellerPairs', 'volumeUsdc', PAIR_FIELDS, limit, `{buyer: "${b}"}`);
+}
