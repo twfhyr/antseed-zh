@@ -1000,6 +1000,118 @@ app.get('/api/stakers', (req, res) => {
   }
 });
 
+// ─── Staking overview for the antseedmarkets Stake desk ───
+// Same facts the local `antseed ants` dashboard reads (pool epochs, network
+// totals, catalog names). Missing Antscan/chain values stay null (`—` in UI).
+let stakingOverviewCache = null;
+let stakingOverviewCacheAt = 0;
+const STAKING_OVERVIEW_TTL_MS = 60_000;
+
+function weiToAntsOrNull(wei) {
+  if (wei == null || wei === '') return null;
+  const n = Number(wei) / 1e18;
+  return Number.isFinite(n) ? n : null;
+}
+
+function usdcOrNull(raw) {
+  if (raw == null || raw === '') return null;
+  const n = Number(raw) / 1e6;
+  return Number.isFinite(n) ? n : null;
+}
+
+async function computeStakingOverview() {
+  const stack = await resolveStack().catch(() => null);
+  const chain = readChainMetrics();
+  const currentEpoch = stack?.currentEpoch ?? chain?.emissions?.currentEpoch ?? null;
+  const genesis = stack?.genesis ?? chain?.emissions?.genesis ?? null;
+  const epochDuration = stack?.epochDuration ?? chain?.emissions?.epochDuration ?? null;
+  const sellers = db.prepare('SELECT * FROM sellers').all().map(camelize);
+
+  let poolEpochs = { items: [] };
+  let sellerEpochs = { items: [] };
+  let stakingNow = null;
+  let stakingLast = null;
+  let positions = { items: [] };
+  if (currentEpoch != null) {
+    const lastEpoch = currentEpoch > 0 ? currentEpoch - 1 : null;
+    [poolEpochs, sellerEpochs, stakingNow, stakingLast, positions] = await Promise.all([
+      fetchPoolEpochs(currentEpoch).catch(() => ({ items: [] })),
+      lastEpoch != null ? fetchSellerEpochs(lastEpoch).catch(() => ({ items: [] })) : Promise.resolve({ items: [] }),
+      fetchStakingEpoch(currentEpoch).catch(() => null),
+      lastEpoch != null ? fetchStakingEpoch(lastEpoch).catch(() => null) : Promise.resolve(null),
+      fetchOpenStakePositions().catch(() => ({ items: [] })),
+    ]);
+  }
+
+  const poolByAgent = new Map((poolEpochs.items || []).map((p) => [String(p.agentId), p]));
+  const volumeByAgent = new Map((sellerEpochs.items || []).map((p) => [String(p.agentId), p]));
+  const openByAgent = new Map();
+  for (const p of positions.items || []) {
+    if (Number(p.closedAtEpoch ?? p.closed_at_epoch ?? 0) !== 0) continue;
+    const key = String(p.agentId);
+    openByAgent.set(key, (openByAgent.get(key) || 0) + 1);
+  }
+
+  const pools = sellers
+    .filter((s) => s.agentId != null && s.agentId !== '' && Number.isFinite(Number(s.agentId)))
+    .map((s) => {
+      const id = String(s.agentId);
+      const pool = poolByAgent.get(id);
+      const vol = volumeByAgent.get(id);
+      return {
+        agentId: Number(s.agentId),
+        name: s.name || null,
+        models: s.models ?? null,
+        online: s.status === 'online',
+        activeStakeAnts: pool?.activeStake != null ? weiToAntsOrNull(pool.activeStake) : null,
+        weight: pool?.weight != null ? weiToAntsOrNull(pool.weight) : null,
+        lastEpochVolumeUsdc: vol?.volumeUsdc != null ? usdcOrNull(vol.volumeUsdc) : null,
+        openPositions: openByAgent.get(id) ?? 0,
+        stakeable: true,
+      };
+    })
+    .sort((a, b) => (b.activeStakeAnts ?? -1) - (a.activeStakeAnts ?? -1) || a.agentId - b.agentId);
+
+  return {
+    fetchedAt: Date.now(),
+    phase: stack?.phase ?? null,
+    currentEpoch,
+    effectiveEpoch: stack?.effectiveEpoch ?? null,
+    genesis,
+    epochDuration,
+    network: {
+      totalActiveStakeAnts: stakingNow?.totalActiveStake != null ? weiToAntsOrNull(stakingNow.totalActiveStake) : null,
+      totalPowerWeight: stakingNow?.totalPowerWeight != null ? weiToAntsOrNull(stakingNow.totalPowerWeight) : null,
+      stakerBudgetAnts: stakingNow?.stakerBudget != null ? weiToAntsOrNull(stakingNow.stakerBudget) : null,
+      lastEpochVolumeUsdc: stakingLast?.volumeUsdc != null ? usdcOrNull(stakingLast.volumeUsdc) : null,
+    },
+    contracts: {
+      sellerPools: emissionsCfg.sellerPoolsAddress || null,
+      antsToken: emissionsCfg.antsTokenAddress || null,
+    },
+    pools,
+  };
+}
+
+app.get('/api/staking/overview', async (req, res) => {
+  try {
+    const fresh = stakingOverviewCache && Date.now() - stakingOverviewCacheAt < STAKING_OVERVIEW_TTL_MS;
+    if (fresh && req.query.wait !== '1') return res.json({ ...stakingOverviewCache, stale: false });
+    if (stakingOverviewCache && req.query.wait !== '1') {
+      computeStakingOverview()
+        .then((data) => { stakingOverviewCache = data; stakingOverviewCacheAt = Date.now(); })
+        .catch((e) => console.error('[staking/overview] refresh failed:', e.message));
+      return res.json({ ...stakingOverviewCache, stale: true });
+    }
+    const data = await computeStakingOverview();
+    stakingOverviewCache = data;
+    stakingOverviewCacheAt = Date.now();
+    res.json({ ...data, stale: false });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.post('/api/admin/force-epoch-rewards-sync', requireAdminAuth, async (_req, res) => {
   try {
     await syncCurrentEpochRewards();
