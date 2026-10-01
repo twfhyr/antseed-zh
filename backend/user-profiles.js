@@ -1,6 +1,8 @@
 // Wallet profiles for antseedmarkets: unique nickname, optional bio and
 // avatar, plus the providers that wallet has used so they can comment
-// without searching the directory. Writes are signed
+// without searching the directory. Catalog provider names are reserved
+// for that provider's owner wallet: the owner is shown under that name
+// and cannot change it. Writes are signed
 // `antseedmarkets profile: save @ <ts>` with the same 5-minute window as
 // provider social.
 
@@ -17,6 +19,7 @@ const AGENT_ID_RE = /^\d+$/;
 const ACTION_WINDOW_MS = 5 * 60_000;
 const NICK_MIN = 2;
 const NICK_MAX = 24;
+const RESERVED_NICK_MAX = 64;
 const BIO_MAX = 280;
 const AVATAR_MAX_BYTES = 220_000;
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
@@ -33,6 +36,7 @@ const OPERATOR_CHUNK = 200;
 
 const operatorCache = new Map();
 let pairCache = { at: 0, items: null, promise: null };
+let reservedCache = { at: 0, index: null };
 let depositsClient = null;
 
 function getDepositsClient() {
@@ -73,6 +77,106 @@ export function normalizeNickname(raw) {
 
 function nicknameKey(nickname) {
   return nickname.normalize('NFC').toLowerCase();
+}
+
+function normalizeReservedName(raw) {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.replace(/\s+/g, ' ').trim();
+  const chars = [...trimmed];
+  if (chars.length < NICK_MIN || chars.length > RESERVED_NICK_MAX) return null;
+  if (/[\u0000-\u001f\u007f]/.test(trimmed)) return null;
+  if (ADDR_RE.test(trimmed)) return null;
+  return trimmed;
+}
+
+function ownerWalletForSeller(seller) {
+  if (!seller) return null;
+  if (seller.agent_id != null && String(seller.agent_id) !== '') {
+    const onchain = db.prepare(
+      'SELECT address FROM sellers_onchain WHERE agent_id = ?'
+    ).get(String(seller.agent_id));
+    if (onchain?.address && ADDR_RE.test(onchain.address)) {
+      return onchain.address.toLowerCase();
+    }
+  }
+  const m = String(seller.id || '').match(/^seller_([0-9a-fA-F]{40})$/);
+  return m ? `0x${m[1].toLowerCase()}` : null;
+}
+
+function reservedNameIndex() {
+  if (reservedCache.index && Date.now() - reservedCache.at < 30_000) {
+    return reservedCache.index;
+  }
+  const byKey = new Map();
+  const byOwner = new Map();
+  const onchain = db.prepare('SELECT agent_id, address FROM sellers_onchain').all();
+  const onchainByAgent = new Map(
+    onchain
+      .filter((row) => AGENT_ID_RE.test(String(row.agent_id || '')) && ADDR_RE.test(String(row.address || '')))
+      .map((row) => [String(row.agent_id), String(row.address).toLowerCase()])
+  );
+  const sellers = db.prepare(
+    'SELECT id, name, agent_id FROM sellers WHERE agent_id IS NOT NULL'
+  ).all();
+  const rows = [];
+  for (const seller of sellers) {
+    const name = normalizeReservedName(seller.name);
+    if (!name) continue;
+    const agentId = String(seller.agent_id);
+    if (!AGENT_ID_RE.test(agentId)) continue;
+    const owner = onchainByAgent.get(agentId) || ownerWalletForSeller(seller);
+    if (!owner) continue;
+    rows.push({
+      name,
+      owner,
+      agentId,
+      key: nicknameKey(name),
+    });
+  }
+  rows.sort((a, b) => Number(a.agentId) - Number(b.agentId));
+  for (const rec of rows) {
+    if (!byKey.has(rec.key)) byKey.set(rec.key, rec);
+    if (!byOwner.has(rec.owner)) byOwner.set(rec.owner, []);
+    byOwner.get(rec.owner).push(rec);
+  }
+  const index = { byKey, byOwner };
+  reservedCache = { at: Date.now(), index };
+  return index;
+}
+
+function reservedNicknameFor(address) {
+  const addr = normalizeAddress(address);
+  if (!addr) return null;
+  const owned = reservedNameIndex().byOwner.get(addr) || [];
+  return owned[0] || null;
+}
+
+function reservedClaimForKey(key) {
+  if (!key) return null;
+  return reservedNameIndex().byKey.get(key) || null;
+}
+
+function uniqueFallbackNickname(address) {
+  const suffix = String(address || '').replace(/^0x/i, '').slice(0, 6).toLowerCase();
+  const { byKey } = reservedNameIndex();
+  let candidate = `user-${suffix}`;
+  let n = 2;
+  while (loadRowByKey(nicknameKey(candidate)) || byKey.has(nicknameKey(candidate))) {
+    candidate = `user-${suffix}-${n}`;
+    n += 1;
+  }
+  return candidate;
+}
+
+function reclaimNickname(key, ownerAddr) {
+  const taken = loadRowByKey(key);
+  if (!taken || taken.address === ownerAddr) return;
+  const fallback = uniqueFallbackNickname(taken.address);
+  db.prepare(
+    `UPDATE user_profiles
+     SET nickname = ?, nickname_key = ?, updated_at = ?
+     WHERE address = ?`
+  ).run(fallback, nicknameKey(fallback), Date.now(), taken.address);
 }
 
 function normalizeBio(raw) {
@@ -144,11 +248,55 @@ function avatarUrlFor(row) {
 }
 
 export function publicProfile(address) {
-  const row = loadRow(address);
+  const addr = normalizeAddress(address);
+  if (!addr) return null;
+  const reserved = reservedNicknameFor(addr);
+  const row = loadRow(addr);
+  if (reserved) {
+    return {
+      nickname: reserved.name,
+      avatarUrl: avatarUrlFor(row),
+    };
+  }
   if (!row) return null;
+  const claim = reservedClaimForKey(nicknameKey(row.nickname));
+  if (claim && claim.owner !== addr) {
+    if (!row.avatar) return null;
+    return {
+      nickname: null,
+      avatarUrl: avatarUrlFor(row),
+    };
+  }
   return {
     nickname: row.nickname,
     avatarUrl: avatarUrlFor(row),
+  };
+}
+
+function profileResponse(addr, row) {
+  const reserved = reservedNicknameFor(addr);
+  const base = row ? profileJson(row) : { exists: false, address: addr };
+  if (reserved) {
+    return {
+      ...base,
+      address: addr,
+      nickname: reserved.name,
+      reserved: true,
+      nicknameLocked: true,
+      reservedNickname: reserved.name,
+      reservedAgentId: reserved.agentId,
+    };
+  }
+  const claim = row ? reservedClaimForKey(nicknameKey(row.nickname)) : null;
+  const blocked = Boolean(claim && claim.owner !== addr);
+  return {
+    ...base,
+    address: addr,
+    nickname: blocked ? null : (row ? row.nickname : undefined),
+    reserved: false,
+    nicknameLocked: false,
+    reservedNickname: null,
+    nicknameBlocked: blocked,
   };
 }
 
@@ -385,14 +533,19 @@ async function usedProvidersFor(address) {
 
 export function registerUserProfileRoutes(app) {
   app.get('/api/profiles/check-nickname', (req, res) => {
-    const nickname = normalizeNickname(req.query.name);
+    const reservedName = normalizeReservedName(String(req.query.name || ''));
+    const nickname = normalizeNickname(req.query.name) || reservedName;
     if (!nickname) {
       return res.json({ available: false, reason: 'invalid' });
     }
     const key = nicknameKey(nickname);
-    const existing = loadRowByKey(key);
     const self = normalizeAddress(req.query.address);
-    if (existing && existing.address !== self) {
+    const reserved = reservedClaimForKey(key);
+    if (reserved && reserved.owner !== self) {
+      return res.json({ available: false, reason: 'reserved', nickname: reserved.name });
+    }
+    const existing = loadRowByKey(key);
+    if (existing && existing.address !== self && reserved?.owner !== self) {
       return res.json({ available: false, reason: 'taken', nickname });
     }
     return res.json({ available: true, nickname });
@@ -420,9 +573,7 @@ export function registerUserProfileRoutes(app) {
   app.get('/api/profiles/:address', (req, res) => {
     const addr = normalizeAddress(req.params.address);
     if (!addr) return jsonError(res, 400, 'address required');
-    const row = loadRow(addr);
-    if (!row) return res.json({ exists: false, address: addr });
-    return res.json(profileJson(row));
+    return res.json(profileResponse(addr, loadRow(addr)));
   });
 
   app.get('/api/profiles', (req, res) => {
@@ -441,8 +592,11 @@ export function registerUserProfileRoutes(app) {
     }
 
     const existing = loadRow(addr);
+    const reserved = reservedNicknameFor(addr);
     let nickname;
-    if (body.nickname == null || body.nickname === '') {
+    if (reserved) {
+      nickname = reserved.name;
+    } else if (body.nickname == null || body.nickname === '') {
       if (!existing) return jsonError(res, 400, 'nickname required');
       nickname = existing.nickname;
     } else {
@@ -470,34 +624,43 @@ export function registerUserProfileRoutes(app) {
     }
 
     const key = nicknameKey(nickname);
-    const taken = loadRowByKey(key);
-    if (taken && taken.address !== addr) {
-      return jsonError(res, 409, 'that nickname is already taken');
+    if (!reserved && reservedClaimForKey(key)) {
+      return jsonError(res, 409, 'that name is reserved for a provider');
     }
 
     const now = Date.now();
     try {
-      if (existing) {
-        db.prepare(`
-          UPDATE user_profiles
-          SET nickname = ?, nickname_key = ?, bio = ?, avatar = ?, avatar_mime = ?, updated_at = ?
-          WHERE address = ?
-        `).run(nickname, key, bio, avatar, avatarMime, now, addr);
-      } else {
-        db.prepare(`
-          INSERT INTO user_profiles
-            (address, nickname, nickname_key, bio, avatar, avatar_mime, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(addr, nickname, key, bio, avatar, avatarMime, now, now);
-      }
+      const write = db.transaction(() => {
+        if (reserved) reclaimNickname(key, addr);
+        const taken = loadRowByKey(key);
+        if (taken && taken.address !== addr) {
+          const err = new Error('that nickname is already taken');
+          err.code = 'NICK_TAKEN';
+          throw err;
+        }
+        if (existing) {
+          db.prepare(`
+            UPDATE user_profiles
+            SET nickname = ?, nickname_key = ?, bio = ?, avatar = ?, avatar_mime = ?, updated_at = ?
+            WHERE address = ?
+          `).run(nickname, key, bio, avatar, avatarMime, now, addr);
+        } else {
+          db.prepare(`
+            INSERT INTO user_profiles
+              (address, nickname, nickname_key, bio, avatar, avatar_mime, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          `).run(addr, nickname, key, bio, avatar, avatarMime, now, now);
+        }
+      });
+      write();
     } catch (e) {
       const msg = String(e?.message || '');
-      if (msg.includes('UNIQUE') || msg.includes('unique')) {
+      if (e?.code === 'NICK_TAKEN' || msg.includes('UNIQUE') || msg.includes('unique') || msg.includes('already taken')) {
         return jsonError(res, 409, 'that nickname is already taken');
       }
       throw e;
     }
 
-    return res.json(profileJson(loadRow(addr)));
+    return res.json(profileResponse(addr, loadRow(addr)));
   });
 }
