@@ -1,0 +1,102 @@
+function bps(part, whole) {
+    return whole === 0n ? 0 : Number(part * 10000n / whole);
+}
+/** The pool summary carries volume for the current (index 0) and previous (index 1) epoch only. */
+function poolVolumeAt(pool, index) {
+    if (!pool)
+        return null;
+    if (index === 0)
+        return pool.volumeUsdc;
+    if (index === 1)
+        return pool.lastVolumeUsdc;
+    return null;
+}
+function volumesFor(seller, epochs, sellerEpochs, pool) {
+    const rows = seller ? sellerEpochs.get(seller.toLowerCase()) ?? [] : [];
+    return epochs.map((epoch, index) => {
+        const sellerVolume = rows.find((entry) => entry.epoch === epoch)?.volumeUsdc;
+        if (sellerVolume)
+            return { epoch, usdc: sellerVolume };
+        const poolVolume = poolVolumeAt(pool, index);
+        return { epoch, usdc: poolVolume && poolVolume !== '0' ? poolVolume : '0' };
+    });
+}
+/**
+ * Build the dashboard's pool rows from indexer data: every indexed pool, plus
+ * explorer sellers without a pool (so their volume is visible before anyone
+ * stakes), plus pools this wallet stakes in even if the indexer lags. No
+ * chain reads happen here; the caller supplies this wallet's live power.
+ */
+export function mergePools(input) {
+    const { indexed, explorer, sellerEpochs, epochs, own, stakeable } = input;
+    const stakeableFor = (agentId, registered) => stakeable?.get(agentId) ?? registered;
+    const totalPower = BigInt(indexed.network.current?.totalPowerWeight ?? '0');
+    const rows = new Map();
+    const profileFor = (seller) => (seller ? explorer.byAddress.get(seller.toLowerCase()) ?? null : null);
+    for (const pool of indexed.pools) {
+        const seller = pool.seller ?? explorer.byAgent.get(pool.agentId) ?? null;
+        const mine = own.get(pool.agentId);
+        const weight = BigInt(pool.weight);
+        rows.set(pool.agentId, {
+            agentId: pool.agentId,
+            seller,
+            profile: profileFor(seller),
+            hasPool: weight !== 0n || pool.openPositions > 0,
+            stakeable: stakeableFor(pool.agentId, pool.registered),
+            activeStake: pool.activeStake,
+            weight: pool.weight,
+            powerShareBps: pool.powerShareBps || bps(weight, totalPower),
+            securityShareBps: Number(pool.securityShareBps),
+            volumes: volumesFor(seller, epochs, sellerEpochs, pool),
+            usagePoints: pool.usagePoints,
+            weightedUsagePoints: pool.weightedUsagePoints,
+            lastEpochUsagePoints: pool.lastUsagePoints,
+            lastEpochEmission: pool.lastEmission !== '0' ? pool.lastEmission : null,
+            lastEpochEmissionSettled: pool.lastEmissionSettled,
+            lastEpochRewardPer1kPower: pool.lastRewardPer1kPower,
+            projectedRewardPer1kPower: pool.projectedRewardPer1kPower,
+            yourStake: (mine?.stake ?? 0n).toString(),
+            yourPower: (mine?.power ?? 0n).toString(),
+            yourPoolShareBps: bps(mine?.power ?? 0n, weight),
+            yourPositionIds: mine?.positionIds ?? [],
+        });
+    }
+    const candidates = new Set([...explorer.byAgent.keys(), ...own.keys()]);
+    for (const agentId of candidates) {
+        if (rows.has(agentId))
+            continue;
+        const seller = explorer.byAgent.get(agentId) ?? null;
+        const mine = own.get(agentId);
+        rows.set(agentId, {
+            agentId,
+            seller,
+            profile: profileFor(seller),
+            hasPool: false,
+            stakeable: stakeableFor(agentId, false),
+            activeStake: (mine?.stake ?? 0n).toString(),
+            weight: '0',
+            powerShareBps: 0,
+            securityShareBps: 0,
+            volumes: volumesFor(seller, epochs, sellerEpochs),
+            usagePoints: '0',
+            weightedUsagePoints: '0',
+            lastEpochUsagePoints: '0',
+            lastEpochEmission: null,
+            lastEpochEmissionSettled: false,
+            lastEpochRewardPer1kPower: null,
+            projectedRewardPer1kPower: null,
+            yourStake: (mine?.stake ?? 0n).toString(),
+            yourPower: (mine?.power ?? 0n).toString(),
+            yourPoolShareBps: 0,
+            yourPositionIds: mine?.positionIds ?? [],
+        });
+    }
+    return sortPools([...rows.values()]);
+}
+/** Stakeable pools first, then by power, then by recent volume, then by agent id. */
+export function sortPools(views) {
+    const volume = (pool) => BigInt(pool.volumes[1]?.usdc ?? '0') + BigInt(pool.volumes[0]?.usdc ?? '0');
+    const compare = (a, b) => (a > b ? -1 : a < b ? 1 : 0);
+    return views.sort((a, b) => Number(b.stakeable) - Number(a.stakeable) || compare(BigInt(a.weight), BigInt(b.weight)) || compare(volume(a), volume(b)) || a.agentId - b.agentId);
+}
+//# sourceMappingURL=pool-merge.js.map

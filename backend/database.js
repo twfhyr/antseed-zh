@@ -464,6 +464,31 @@ db.exec(`
     PRIMARY KEY (subject, side, epoch)
   );
 
+  -- Hosted My Antseed: per-wallet per-completed-epoch usage rewards.
+  -- Amount is fixed once the epoch ends (claim is one-shot). Filled on
+  -- wallet connect from Antscan participation + one Multicall3; later
+  -- dashboard loads read this table instead of public RPCs. claimed=1
+  -- rows are never re-read on chain. Unclaimed rows only re-check the
+  -- claimed flag (the wallet may have claimed from the CLI).
+  CREATE TABLE IF NOT EXISTS ants_completed_epoch_rewards (
+    address TEXT NOT NULL,
+    side TEXT NOT NULL,
+    epoch INTEGER NOT NULL,
+    agent_id INTEGER,
+    amount_wei TEXT NOT NULL,
+    claimed INTEGER NOT NULL,
+    checked_at INTEGER NOT NULL,
+    PRIMARY KEY (address, side, epoch)
+  );
+
+  -- Wallet overlay for hosted ants (balances, operator, staker/legacy
+  -- pending). Refreshed on connect, not on every page load.
+  CREATE TABLE IF NOT EXISTS ants_wallet_snapshot (
+    address TEXT PRIMARY KEY,
+    data TEXT NOT NULL,
+    fetched_at INTEGER NOT NULL
+  );
+
   -- Provider social (antseedmarkets Providers tab). Comments, owner
   -- announcements, and per-provider group chat. Writes are signed-wallet
   -- gated in backend/provider-social.js; membership is Antscan
